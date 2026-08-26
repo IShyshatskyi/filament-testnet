@@ -1,0 +1,70 @@
+[package]
+name    = "filament"
+version = "0.1.0"
+edition = "2021"
+description = "Filament — Shisha Network MMR light-client library (Gap 8 Phase 2 — physical extraction)"
+
+# ── Features ──────────────────────────────────────────────────────────────────
+# `full-node` / `server` — axum HTTP server (filament_server.rs, port 7380) +
+# Schnorr signing (filament_wallet.rs) + Path-2 P2P. Prefer `server` in public
+# docs; `full-node` remains for monolith feature-name parity.
+[features]
+default   = []
+full-node = [
+    "dep:axum",
+    "dep:tower-http",
+    "dep:hickory-resolver",
+    "dep:p2p_proto",
+    "dep:env_logger",
+]
+server    = ["full-node"]
+
+[[bin]]
+name              = "filament"
+path              = "src/bin/filament.rs"
+required-features = ["full-node"]
+
+# ── Dependencies ───────────────────────────────────────────────────────────────
+# This crate has NO dependency on `shisha-core` — the physical move
+# (Gap 8 Phase 2) inverted the direction: `shisha-core` now depends on this
+# crate. See docs/plan/Crate_Split_Plan.md §Gap 8 for the extraction analysis.
+[dependencies]
+common_types = { package = "filament-types", path = "../filament-types" }
+
+bech32       = "0.11"
+bincode      = { version = "2", features = ["serde"] }
+bip39        = "2.0"
+bitcoin      = "0.32"
+blake3       = "1.6.1"
+futures-util = "0.3"
+hex          = "0.4"
+log          = "0.4"
+rand         = "0.10"
+# Not optional: parallel proof verification (mmr_client::parallel_verifier)
+# is a core light-client optimisation, pure compute with no system deps.
+rayon        = "1.11"
+reqwest      = { version = "0.12", features = ["json"] }
+base64       = "0.22"
+ripemd       = "0.1"
+secp256k1          = { version = "0.29", features = ["rand-std"] }
+chacha20poly1305   = "0.10"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+sha2         = "0.10"
+tokio        = { version = "1", features = ["full"] }
+toml         = "0.8"
+
+# Optional, gated by `full-node`/`server`
+axum             = { version = "0.8", optional = true }
+tower-http       = { version = "0.6", features = ["cors", "fs"], optional = true }
+hickory-resolver = { version = "0.24", optional = true, default-features = false, features = ["tokio-runtime", "system-config"] }
+env_logger       = { version = "0.11", optional = true }
+# Path-2 P2P inbound (WatchAddress / TxInclusionNotif) — PeerManager dialer
+p2p_proto        = { package = "filament-p2p", path = "../filament-p2p", optional = true }
+
+# Unix advisory flock for InvoiceStore::create TOCTOU guard (Path-2 item 12).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.8"

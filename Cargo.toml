@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/filament",
+    "crates/filament-types",
+    "crates/filament-p2p",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["IShyshatskyi"]
+
+# Public Filament-Test packaging for the Heaviest Chain Rule Test Network.
+# Upstream crates sync from the private monorepo via scripts/sync_from_shisha.sh.

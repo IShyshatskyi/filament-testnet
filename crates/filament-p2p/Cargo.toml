@@ -1,0 +1,15 @@
+[package]
+name        = "filament-p2p"
+version     = "0.1.0"
+edition     = "2021"
+description = "Minimal ShishaNet P2P client for the Filament light client (clean-room reimplementation — dial/handshake/WatchAddress/notif receive only; not the full PeerManager sync engine)"
+license     = "MIT"
+
+[dependencies]
+tokio  = { version = "1", features = ["net", "io-util", "rt", "sync", "time", "macros"] }
+blake3 = "1.6.1"
+log    = "0.4"
+rand   = "0.10"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }

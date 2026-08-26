@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Test / nextest
+junit.xml
+tests/test_reports/
+.nextest/
+
+# Local Filament-Test data
+/data/
+filament-data/
+filament-data-smoke/
+.tmp/
+
+# Sync scratch
+.sync-tmp/
+
+# Local-only classic-MMR snapshot (history: git tag archive/sha256-2026-04)
+/archive/
