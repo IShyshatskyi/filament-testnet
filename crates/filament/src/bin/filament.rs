@@ -12,7 +12,14 @@
 //             [--port <port>] [--keystone <http://host:port>]
 //             [--keystone-extra <http://host:port>]...
 //             [--manual-peer <host:port>]... [--keystone-p2p-port <port>]
+//             [--keystone-summary-port <port>]
 //             [--data-dir <path>] [--p2p-listen <host:port>] [--disable-p2p]
+//
+// --keystone-summary-port overrides light_client_summary_port (default 8080)
+// — the port sync_peer_chain_summaries() swaps onto each configured Keystone
+// host to reach its GET /chain/summary API. Real deployments typically run
+// that on a separate port from the main wallet-ops REST API; a single-port
+// Keystone build (e.g. a local soak) needs this set to match.
 //
 // MNT-1: --keystone-extra may be passed multiple times to configure
 // additional Keystone endpoints alongside --keystone; wallet ops fan out to
@@ -83,6 +90,14 @@ fn parse_args() -> (FilamentNodeConfig, String) {
                 if i < args.len() {
                     if let Ok(p) = args[i].parse::<u16>() {
                         cfg.keystone_p2p_port = p;
+                    }
+                }
+            }
+            "--keystone-summary-port" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(p) = args[i].parse::<u16>() {
+                        cfg.light_client_summary_port = p;
                     }
                 }
             }
