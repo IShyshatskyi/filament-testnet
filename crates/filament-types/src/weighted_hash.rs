@@ -13,6 +13,11 @@ use serde::{Deserialize, Serialize};
 pub const HASH_BYTES: usize = 28;
 pub const WEIGHTED_HASH_SIZE: usize = 32;
 
+/// Legacy compact-weight exponent used only by [`WeightedHash::from_leaf`]'s
+/// nBits-to-rBits conversion (test/fixture helper — production leaves are
+/// built via `from_leaf_rbits` with the header-stamped rBits directly).
+pub const BLOCK_HASH_W_BITS: u32 = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct WeightedHash(pub [u8; WEIGHTED_HASH_SIZE]);
 

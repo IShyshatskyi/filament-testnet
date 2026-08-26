@@ -200,33 +200,31 @@ mod tests {
     use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
     use common_types::common::proofs::WeightedMMRBatchProof;
     use common_types::common::crypto::weighted_hash::{WeightedHash, bag_peaks_weighted, BLOCK_HASH_W_BITS};
-    use common_types::common::weighted_mmr_core::WeightedMMR;
 
-    // Build a single-leaf valid WeightedMMRBatchProof.
-    //
-    // A 1-leaf MMR has one peak (the leaf itself), no sibling path, and a
-    // root equal to bag_peaks_weighted([leaf], anchor).  Verification passes
-    // when leaf_idx=0, siblings=[], peaks=[leaf_wh], root=bagged.
+    // Build a single-leaf valid WeightedMMRBatchProof directly from
+    // primitives — no MMR-construction engine needed. A 1-leaf MMR has one
+    // peak (the leaf itself), no sibling path, and a root equal to
+    // bag_peaks_weighted([leaf], anchor). Verification passes when
+    // leaf_idx=0, siblings=[], peaks=[leaf_wh], root=bagged.
     fn make_valid_batch_proof(
         block_seed: u8,
         config: &BeaconGenesisConfig,
     ) -> (WeightedMMRBatchProof, [u8; 32]) {
-        let anchor = config.bitcoin_anchor_hash;
-        let mut mmr = WeightedMMR::new_with_config(config);
+        let anchor_bytes = config.bitcoin_anchor_hash;
+        let anchor = WeightedHash::from_anchor(&anchor_bytes);
         let block_hash = [block_seed; 32];
-        let (root, _) = mmr.append(WeightedHash::from_leaf_rbits(&block_hash, 0x0300_0001));
-        let leaf_wh = mmr.get_leaf(0).expect("leaf 0 must exist after one append");
-        let peaks = mmr.get_peaks();
+        let leaf_wh = WeightedHash::from_leaf_rbits(&block_hash, 0x0300_0001);
+        let root = bag_peaks_weighted(&[leaf_wh], anchor);
 
         let proof = WeightedMMRBatchProof {
             leaf_indices: vec![0],
             leaf_hashes: vec![leaf_wh],
             siblings: vec![],
-            peaks,
+            peaks: vec![leaf_wh],
             leaf_count: 1,
             root,
         };
-        (proof, anchor)
+        (proof, anchor_bytes)
     }
 
     // Build an invalid proof by flipping one byte of the root.
@@ -427,28 +425,41 @@ mod tests {
 
     // ── PPV-12: WeightedMMRRangeProof sequential path ────────────────────────
     //
-    // Range proofs require a contiguous run of leaves.  We build a 3-leaf MMR
-    // via WindowedWeightedMMR (available in all test configurations because
-    // tests are compiled with full-node features in the workspace).
-    //
-    // If the feature is unavailable, this test is excluded at compile time.
-
+    // Range proofs require a contiguous run of leaves. Rather than building
+    // a real MMR via the (excluded, see crate-level module docs) MMR
+    // construction engine, this hand-constructs the exact 3-leaf shape a
+    // real MMR would produce: leaves 0,1 pair into peak_A, leaf 2 is its
+    // own peak_B. The queried range [1,3) = {leaf1, leaf2}; leaf1 climbs to
+    // peak_A via one sibling (leaf0), leaf2 IS peak_B (zero siblings).
     #[test]
     fn ppv12_range_proof_sequential_path() {
-        use common_types::common::crypto::weighted_hash::WeightedHash;
-        use common_types::common::windowed_weighted_mmr::WindowedWeightedMMR;
+        use common_types::common::crypto::weighted_hash::{hash_pair_weighted, WeightedHash};
+        use common_types::common::proofs::WeightedMMRRangeProof;
 
         let config = BeaconGenesisConfig::devnet();
-        let anchor = config.bitcoin_anchor_hash;
+        let anchor_bytes = config.bitcoin_anchor_hash;
+        let anchor = WeightedHash::from_anchor(&anchor_bytes);
 
-        let mut wmmr = WindowedWeightedMMR::new(&config);
-        for seed in 1u8..=3 {
-            wmmr.append(WeightedHash::from_leaf_rbits(&[seed; 32], 0x0300_0001))
-                .expect("append must succeed");
-        }
+        let leaf0 = WeightedHash::from_leaf_rbits(&[1u8; 32], 0x0300_0001);
+        let leaf1 = WeightedHash::from_leaf_rbits(&[2u8; 32], 0x0300_0001);
+        let leaf2 = WeightedHash::from_leaf_rbits(&[3u8; 32], 0x0300_0001);
+        let peak_a = hash_pair_weighted(&leaf0, &leaf1);
+        let peak_b = leaf2;
+        let root = common_types::common::crypto::weighted_hash::bag_peaks_weighted(&[peak_a, peak_b], anchor);
 
-        let proof = wmmr.prove_range(1, 3).expect("prove_range(1,3) must succeed on a 3-leaf MMR");
-        let items: Vec<_> = vec![(&proof, anchor)];
+        let proof = WeightedMMRRangeProof {
+            start: 1,
+            end: 3,
+            leaves: vec![leaf1, leaf2],
+            siblings: vec![leaf0],
+            siblings_per_peak: vec![1, 0],
+            peaks: vec![peak_a, peak_b],
+            leaf_count: 3,
+            root,
+            range_rbits: 0,
+        };
+
+        let items: Vec<_> = vec![(&proof, anchor_bytes)];
         let results = verify_range_proofs_parallel(&items);
         assert_eq!(results, vec![true], "single range proof must pass");
     }

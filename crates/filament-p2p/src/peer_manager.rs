@@ -128,6 +128,13 @@ impl PeerManager {
         PeerCountView(self)
     }
 
+    /// Test-only injection point: dispatch `msg` through the same inbound
+    /// path a real peer's message would take, without needing an actual
+    /// connection. Used to test the notif-handler wiring in isolation.
+    pub async fn inject_message_for_test(self: &Arc<Self>, msg: ShishaMessage) {
+        self.dispatch_inbound(0, msg).await;
+    }
+
     pub fn set_light_client_notif_handler(
         &self,
         handler: Arc<dyn Fn(LightClientInboundNotif) + Send + Sync>,

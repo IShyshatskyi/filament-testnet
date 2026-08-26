@@ -3057,7 +3057,18 @@ mod pd_ui_4_tests {
 ///
 /// Builds a valid weighted chain summary with `WindowedWeightedMMR` from
 /// `common-types` (no monolith / Keystone dependency).
-#[cfg(test)]
+///
+/// Disabled in this public packaging: this integration test builds a
+/// realistic multi-leaf MMR (arbitrary block count, real batch proofs over
+/// a height range) via `WindowedWeightedMMR::append`/`prove_batch` — the
+/// real MMR *construction* engine, deliberately excluded from
+/// `filament-types` (see that crate's own module docs) since it's the
+/// private monorepo's chain-construction internals, not proof-verification
+/// math a light client needs. Unlike the smaller fixture helpers elsewhere
+/// in this file (hand-constructed directly from `WeightedHash` primitives),
+/// an arbitrary-size MMR with real batch-proof generation isn't something
+/// that can be hand-rolled without re-implementing the excluded engine.
+#[cfg(all(test, feature = "__disabled_needs_private_mmr_construction_engine"))]
 mod pd_int_cold_start_tests {
     use super::*;
     use axum::{routing::get, Json, Router};
