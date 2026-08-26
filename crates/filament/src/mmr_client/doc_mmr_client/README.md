@@ -1,12 +1,20 @@
 # MMR Client (Filament) — Doc Index
 
-**Shisha Network · `src/mmr_client/`** | **Last updated: July 3, 2026**
+**Shisha Network · `src/mmr_client/`** | **Last updated: July 3, 2026; path updated Aug 26, 2026**
 
-The authoritative module documentation is **[`../README.md`](../README.md)** (the `mmr-light-client` crate README: FlyClient rationale, `MMRChainWeightProofV2` sampling, verification levels, parallel-verifier thresholds, k-parameter table). This folder holds the design-era supplements.
+> **Aug 26, 2026:** the module reference formerly at `../README.md` moved to
+> [`docs/reference.md`](../../../../../docs/reference.md) at this repo's root (refreshed
+> against the current `filament-types`/`filament-p2p` crate split at the same time) —
+> reference documentation belongs alongside the other top-level docs, not buried in
+> source. This index's other rows below (private-monorepo-only paths like
+> `docs/plan/...`, `filament_app/docs/`) describe the private shisha monorepo's own
+> structure, not this public repo — kept for provenance, not followable from here.
+
+The authoritative module documentation is now **[`docs/reference.md`](../../../../../docs/reference.md)** (FlyClient rationale, verification levels, parallel-verifier thresholds, k-parameter table). This folder holds the design-era supplements.
 
 | Where | What |
 |---|---|
-| `../README.md` | **Current module doc — start here** |
+| `docs/reference.md` (repo root) | **Current module doc — start here** |
 | `verification_strategies.md` | Design rationale for the `VerificationStrategy` enum (Paranoid / Full / Light levels — still live code in `verification.rs`). Design-era prose; see its currency banner |
 | `crates/filament/` | The crate facade Filament apps build against (crate-split Gap 8, ✅ Jun 26) |
 | `docs/plan/Filament_UTXO_Discovery_Design.md`, `docs/plan/P2P_Phase10_Plan.md`, `filament_app/docs/` | Current Filament wallet/light-client planning |

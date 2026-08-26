@@ -1,6 +1,6 @@
 # MMR Proof Design - Verification Strategies
 
-> ⚠️ **Currency note (added Jul 3, 2026):** design-era rationale for the `VerificationStrategy` enum (Paranoid / Full / Light), which remains live code in `verification.rs`. Written before the WeightedHash migration (Mar 2026) and Phase 10 — type names and proof formats mentioned here may predate the `Weighted*` types. For current behaviour, `../README.md` and the source win.
+> ⚠️ **Currency note (added Jul 3, 2026):** design-era rationale for the `VerificationStrategy` enum (Paranoid / Full / Light), which remains live code in `verification.rs`. Written before the WeightedHash migration (Mar 2026) and Phase 10 — type names and proof formats mentioned here may predate the `Weighted*` types. For current behaviour, [`docs/reference.md`](../../../../../docs/reference.md) (repo root) and the source win.
 
 
 ## Core Understanding

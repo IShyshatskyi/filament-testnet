@@ -267,6 +267,7 @@ Filament-Test does **not** mine and does **not** hold a full UTXO database.
 | Doc | Contents |
 |-----|----------|
 | This README | Product narrative, build/run, security stance |
+| [docs/reference.md](docs/reference.md) | **Deep technical reference** — HTTP API endpoint table, proof-size table, verification API, storage trait, security model, troubleshooting, P2P transport details |
 | [DISCLAIMER.md](DISCLAIMER.md) | Legal / experimental notice |
 | [docs/filament_engineering_review.md](docs/filament_engineering_review.md) | Current Filament-Test packaging status (Aug 2026) |
 | [archive/](archive/) (local only; gitignored) | Classic-MMR snapshot — see tag `archive/sha256-2026-04` |

@@ -3,6 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
+> **Moved and refreshed Aug 26, 2026.** Originally `crates/filament/src/mmr_client/README.md`
+> (written Jul 26, 2026, predates this repo's `filament-types`/`filament-p2p` crate split).
+> Crate paths, full-node branding, and the "API Correctness" punch-list were updated against
+> the current codebase; sections not specifically called out were carried forward unverified —
+> see the currency notes inline where they apply. See [`../README.md`](../README.md) for the
+> product-level overview; this is the deep technical reference.
+
 A high-performance Rust library for implementing **Merkle Mountain Range (MMR) light clients** for the Shisha Network blockchain. The library enables lightweight verification of blockchain state with minimal resource requirements — only MMR peaks (O(log N) hashes) and a bounded recent-block cache, versus gigabytes for a full node.
 
 ## 🎯 Why MMR Light Clients?
@@ -71,19 +78,25 @@ A chain weight proof is **trustless** (the sampling seed comes from the tip's Po
 
 ### Installation
 
-This library ships as part of the `rjaxpool` crate, gated behind the `mmr-client` feature flag:
+This library is the `filament` crate (`crates/filament/` in this repo), built on
+`filament-types` (wire types + verification math) and, for the P2P/HTTP surfaces,
+`filament-p2p`:
 
 ```toml
 [dependencies]
-rjaxpool = { version = "0.6", features = ["mmr-client"] }
+filament = { path = "../../crates/filament", features = ["full-node"] }
 ```
+
+`full-node` (alias `server`) enables the HTTP API (`filament_server`), Schnorr wallet
+signing, and the Path-2 P2P dialer (`filament_p2p`). Omit it for a verification-only
+build with no networking.
 
 ### Basic Example
 
 ```rust
-use rjaxpool::{MultiChainClient, InMemoryStorage};
+use filament::{MultiChainClient, InMemoryStorage};
 // Use FilamentBootstrapConfig — LightClientConfig is a deprecated alias (renamed RF-11)
-use rjaxpool::mmr_client::light_client_config::FilamentBootstrapConfig;
+use filament::mmr_client::light_client_config::FilamentBootstrapConfig;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load network configuration
@@ -199,9 +212,11 @@ The beacon chain has two consensus-level voting mechanisms — **k-coefficient v
 let committed_chain_count: u16  = beacon_header.committed_chain_count;
 
 // Decode k from chain state — use EpochKState / ShardParameters, not the header.
-// kbits_to_float is for display/logging only; never use it in consensus arithmetic.
-use rjaxpool::common::crypto::k_bits::kbits_to_float;
-// let k_active: f64 = kbits_to_float(epoch_k_state.k_active_kbits);
+// `k_bits`/`kbits_to_float` (display/logging-only conversion, never consensus
+// arithmetic) is NOT part of this packaging's `filament-types` surface —
+// filament's own code never reads k-coefficient directly, so it wasn't
+// ported. If you need it, add the real `k_bits` module from the private
+// monorepo's `common-types` crate to your own build.
 
 println!("active shard count (network-wide): {}", committed_chain_count);
 ```
@@ -227,7 +242,7 @@ Both fields use `#[serde(default)]` for backward compatibility — headers from 
 `VerificationStrategy` applies to **chain-weight** verification (`verify_chain_weight_proof_with_strategy`). Batch and range inclusion use `WeightedMMR*Proof::verify_with_anchor` directly.
 
 ```rust
-use rjaxpool::mmr_client::verification::{
+use filament::mmr_client::verification::{
     verify_chain_weight_proof_with_strategy,
     VerificationStrategy,
 };
@@ -267,7 +282,7 @@ Benchmark groups: `batch_verify` and `range_verify` in the proof optimization be
 For batches of independent proofs (e.g. during initial sync across multiple shards), use the parallel API:
 
 ```rust
-use rjaxpool::mmr_client::{verify_batch_proofs_parallel, verify_range_proofs_parallel};
+use filament::mmr_client::{verify_batch_proofs_parallel, verify_range_proofs_parallel};
 
 let pairs: Vec<(&WeightedMMRBatchProof, [u8; 32])> =
     proofs.iter().map(|p| (p, anchor)).collect();
@@ -423,13 +438,13 @@ All proof types are defined in `common::proofs`.
 ### Core Functions
 
 ```rust
-use rjaxpool::mmr_client::verification::{
+use filament::mmr_client::verification::{
     verify_fork_proof,
     verify_chain_weight_proof,
     verify_weighted_chain_weight_proof,
     VerificationStrategy,
 };
-use rjaxpool::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof, BlockData};
+use common_types::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof, BlockData};
 
 // Batch / range — verify on the proof type directly
 let ok = batch_proof.verify_with_anchor(anchor);
@@ -437,8 +452,8 @@ let ok = range_proof.verify_with_anchor(anchor);
 
 // Fork proof (ForkProof type) — returns Result<ForkProofResult, ForkProofError>
 // genesis_block_hash is WeightedHash (the weighted leaf hash of genesis), not [u8;32]
-use rjaxpool::common::crypto::weighted_hash::WeightedHash;
-use rjaxpool::common::proofs::fork_proof::{ForkProofResult, ForkProofError};
+use common_types::common::crypto::weighted_hash::WeightedHash;
+use common_types::common::proofs::fork_proof::{ForkProofResult, ForkProofError};
 let genesis_block_hash: WeightedHash = genesis_block.block_hash_weighted();
 match fork_proof.verify(bitcoin_anchor, genesis_block_hash) {
     Ok(ForkProofResult { our_chain_heavier, .. }) => {
@@ -461,8 +476,8 @@ Batch and range proofs take an anchor hash (`[u8; 32]` from `BeaconGenesisConfig
 The `Weighted*` types verify directly on the `WeightedHash` MMR. Use `BeaconGenesisConfig` to obtain the anchor:
 
 ```rust
-use rjaxpool::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
-use rjaxpool::common::genesis::genesis_config::BeaconGenesisConfig;
+use common_types::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
+use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
 
 let config = BeaconGenesisConfig::devnet();
 let anchor = config.bitcoin_anchor_hash;  // [u8; 32]
@@ -490,7 +505,7 @@ Gated behind `ProtocolFeature::DeltaProofs` (introduced Shish v6, confirmed in `
 When you have a set of block heights to prove, `ProofSelector` picks the cheaper strategy automatically:
 
 ```rust
-use rjaxpool::mmr_client::proof_selector::{ProofSelector, ProofStrategy, DEFAULT_DENSITY_THRESHOLD};
+use filament::mmr_client::proof_selector::{ProofSelector, ProofStrategy, DEFAULT_DENSITY_THRESHOLD};
 
 match ProofSelector::analyze(&heights, target_height, DEFAULT_DENSITY_THRESHOLD)? {
     ProofStrategy::Range { start, end } => {
@@ -509,7 +524,7 @@ match ProofSelector::analyze(&heights, target_height, DEFAULT_DENSITY_THRESHOLD)
 ## 🏦 Storage
 
 ```rust
-use rjaxpool::mmr_client::storage::{LightClientStorage, InMemoryStorage, FileStorage};
+use filament::mmr_client::storage::{LightClientStorage, InMemoryStorage, FileStorage};
 
 // In-memory (testing, ephemeral clients)
 let storage = Box::new(InMemoryStorage::new());
@@ -535,11 +550,11 @@ Implement `LightClientStorage` for custom backends (RocksDB, SQLite, etc.). SQLi
 
 ---
 
-## 📡 Connecting to a Full Node (Octopus)
+## 📡 Connecting to a Full Node (Keystone)
 
-Filament communicates with the **Octopus** full node over HTTP REST. The full node runs an Axum HTTP server on the port configured in `[light_client] port` (default 8080).
+Filament communicates with a **Keystone** full node over HTTP REST. The full node runs an Axum HTTP server on the port configured in `[light_client] port` (default 8080).
 
-### HTTP endpoints (Octopus full node)
+### HTTP endpoints (Keystone full node)
 
 | Endpoint | Returns | Notes |
 |---|---|---|
@@ -593,8 +608,8 @@ The `/chain/weight/{start}/{end}` endpoint currently generates proofs via the va
 `LightClientRequest` and `LightClientResponse` are serde-serialisable enums used by `LightClientProtocolHandler` internally. They are not the HTTP wire format — the HTTP API uses plain JSON. These types are relevant if you are implementing a custom transport (e.g. WebSocket or direct TCP) using `LightClientProtocolHandler<C>` on the full node side:
 
 ```rust
-use rjaxpool::mmr_client::protocol::LightClientRequest;
-use rjaxpool::mmr_client::proof_selector::DEFAULT_DENSITY_THRESHOLD;
+use filament::mmr_client::protocol::LightClientRequest;
+use filament::mmr_client::proof_selector::DEFAULT_DENSITY_THRESHOLD;
 
 // Auto-detecting request — server resolves to RangeProof or BatchProof
 let req = LightClientRequest::GetBlockProof {
@@ -622,6 +637,16 @@ Available request variants:
 
 ### P2P push transport: Tiered Broadcast (TB)
 
+> **Scope note (this packaging):** `filament-p2p` in this repo implements the
+> Path-2 mechanism below (`WatchAddress` out, `TxInclusionNotif`/`TxSpentNotif`/
+> `TxRevertNotif` in) — a minimal, independently-written client. It does
+> **not** implement Tiered Broadcast (the header-push mechanism described in
+> this section). The description is kept here as accurate documentation of
+> what a full node's P2P layer offers, not a claim that this crate's client
+> consumes it. If you need live header push rather than Path-2 polling
+> semantics, you'd need to extend `filament-p2p` to classify into the
+> light-client tier and handle the pushed header messages described below.
+
 Beyond the request/response HTTP and `LightClientProtocolHandler` paths above, the P2P layer (`src/p2p/common/manager/core.rs`) supports a third transport: a **push** path where a connected full node proactively sends new beacon/shard headers to light-client peers over a live TCP connection, without the client polling.
 
 **How peer classification works:** on handshake completion, the full node inspects the peer's declared services bit. A peer that does not advertise `NODE_NETWORK` is classified into the **light-client tier** (`light_client_write_halves`) rather than the **full-node tier** (`full_node_write_halves`). These are separate write-half maps — a full node tracks two independent broadcast fan-out lists and sends different payloads to each:
@@ -633,7 +658,7 @@ Beyond the request/response HTTP and `LightClientProtocolHandler` paths above, t
 
 **What gets pushed:** `broadcast_header_to_light_clients(chain_type, shard_id, header_bytes)` sends an 80-byte beacon mining header (`chain_type = 0x00`) or `LightShardHeader` bytes (`chain_type = 0x01`, with `shard_id` set) to every connected peer in the light-client tier, every time a new tip is confirmed. This is a header push, not a proof push — Filament still needs a follow-up `GetRangeProof`/`GetBatchProof` (HTTP or `LightClientProtocolHandler`) to get an MMR inclusion proof for the new header before treating it as verified.
 
-**Operational note for mining pool nodes:** `NodeRole::MiningPool` causes `getheaders` requests from light-client-tier peers to be silently dropped (no response, no ban). This is intentional — mining pool processes do not serve historical sync to light clients. Only full nodes (`NodeRole::FullNode`) serve `getheaders`. If you are implementing a raw P2P transport for Filament (rather than using the HTTP API), connect to an Octopus full node, not a Kameniar mining pool peer.
+**Operational note for mining pool nodes:** `NodeRole::MiningPool` causes `getheaders` requests from light-client-tier peers to be silently dropped (no response, no ban). This is intentional — mining pool processes do not serve historical sync to light clients. Only full nodes (`NodeRole::FullNode`) serve `getheaders`. If you are implementing a raw P2P transport for Filament (rather than using the HTTP API), connect to a Keystone full node, not a Kameniar mining pool peer.
 
 **Why this matters for a custom transport implementation:** if you build a P2P-based sync path for Filament instead of HTTP polling, you do not need to advertise `NODE_NETWORK` in your version message — doing so would place you in the full-node tier and subject you to full block body broadcasts you don't need. Omit the flag to be classified into the lighter-weight tier automatically.
 
@@ -687,7 +712,7 @@ Load in code:
 
 ```rust
 // FilamentBootstrapConfig is the current name; LightClientConfig is a deprecated alias (RF-11)
-use rjaxpool::mmr_client::light_client_config::FilamentBootstrapConfig;
+use filament::mmr_client::light_client_config::FilamentBootstrapConfig;
 
 let config  = FilamentBootstrapConfig::from_file("light_client_config.toml")?;
 let network = config.get_network("devnet").unwrap();
@@ -697,7 +722,7 @@ let genesis = network.to_block_data()?;  // BlockData::Beacon(BeaconBlockData { 
 Alternatively, use `BeaconGenesisConfig` from `common::genesis::genesis_config` for hardcoded constants in tests:
 
 ```rust
-use rjaxpool::common::genesis::genesis_config::BeaconGenesisConfig;
+use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
 
 let cfg    = BeaconGenesisConfig::devnet();
 let anchor = cfg.bitcoin_anchor_hash;  // [u8; 32]
@@ -770,10 +795,10 @@ proofs (`MMRChainWeightProofV2`) are produced and verified by the full node in
 The library's key security feature is the ability to connect to multiple independent full nodes, verify each chain using cryptographic proofs, and automatically follow the heaviest (most-work) chain — without downloading all headers and without trusting any single data source:
 
 ```rust
-use rjaxpool::mmr_client::verification::{
+use filament::mmr_client::verification::{
     verify_chain_weight_proof, verify_weighted_chain_weight_proof,
 };
-use rjaxpool::common::proofs::WeightedChainWeightProof;
+use common_types::common::proofs::WeightedChainWeightProof;
 
 // v1 API (MMRChainWeightProof) — returns bool
 let peers = ["peer1.shisha.network:8333", "peer2.shisha.network:8333"];
@@ -1008,21 +1033,34 @@ proof.verify_with_anchor(anchor)?;
 
 ## 🔧 API Correctness — Before Any Public Release
 
+> **Currency note:** this table predates the Aug 2026 crate-split/repackaging
+> that produced this repo (`filament-types`/`filament-p2p` replacing direct
+> access to the private monorepo's `common-types`/`p2p-proto`). It has not
+> been re-audited item-by-item against the current codebase — treat it as a
+> historical snapshot of known issues as of Jul 26, 2026, not a live status
+> board. One update made during that repackaging, confirmed directly: the
+> vanilla (non-weighted) `verify_chain_weight_proof`/`MMRChainWeightProof`
+> path this table references below is **no longer part of this packaging's
+> public API** — it had zero real callers anywhere in `filament`'s own code,
+> so its re-export was dropped rather than carried forward, making the
+> `chain_weight_verification.rs` test-fixture item moot *for this repo*
+> specifically (it may still describe a real issue in the private monorepo).
+
 Doc/footgun fixes, not roadmapped features — small but worth fixing before wider release:
 
 | Item | Notes |
 |---|---|
-| **`WeightedChainWeightProof::verify` unconditional-true behaviour** | `verify(genesis_anchor)` checks the optional `inclusion_proof` field only; if `inclusion_proof` is `None` it returns `true` unconditionally. Footgun for callers who construct the proof without populating it. |
-| **`verify_advanced_fork_proof` vs `verify_fork_proof`** | `verify_advanced_fork_proof` takes `(proof: &AdvancedForkProof, bitcoin_anchor: [u8; 32])` and returns `AdvancedForkProofResult`. `verify_fork_proof` (or `ForkProof::verify`) takes `ForkProof` and returns `Result<ForkProofResult, ForkProofError>`. Both exist in `verification.rs`; ensure call sites use the right one for the right type. |
-| **`ChainState` field documentation missing** | `anchor_hash`, `expected_shard_id`, and `hash_sorting_bits` are used to validate shard IDs on every applied proof, but are undocumented — a custom storage implementor won't know what to persist. |
-| **`chain_weight_verification.rs` test fixtures** | Escape-hatch bug prevents any valid `MMRChainWeightProofV2` from reaching the verifier in tests; coverage is ~5%. Requires real proofs from `WindowedWeightedMMR::prove_range` to fix. |
-| **Vacuous optimisation validation tests** | `batch_optimization_validation.rs` / `range_optimization_validation.rs` were retargeted by RF-17 Batch D but should be verified against real fixtures to confirm the `assert_eq!(false, false)` pattern no longer applies. |
-| **`FilamentWallet` undocumented** | `filament_wallet.rs` implements watch-only UTXO discovery, fee estimation (`estimate_fee` via Keystone `/chain/fee_filter`), cross-shard UTXO selection, and Schnorr-signed transaction building — none of this is covered in the README. Key constants: `ATOMS_PER_COIN = 100_000_000`, `DEFAULT_FEE_ATOMS = 10_000`. Core methods (`build_signed_transaction`, `submit_transaction`, `refresh_from_keystone`) are gated behind `#[cfg(feature = "full-node")]`. |
-| **`BeaconChainHandler::auto_sync` stub** | Returns `Ok(false)` unconditionally. Documented in Roadmap (v0.4.0) but not called out in the Architecture section where it could mislead readers into expecting live sync. |
-| **`blocks_per_epoch` stale in handlers** | `BeaconChainHandler` and `ShardChainHandler` hardcode `blocks_per_epoch: 1008`. The canonical value is `EPOCH_LENGTH = 4096` from `k_coeff.rs`. Handlers need updating. |
+| **`WeightedChainWeightProof::verify` unconditional-true behaviour** | `verify(genesis_anchor)` checks the optional `inclusion_proof` field only; if `inclusion_proof` is `None` it returns `true` unconditionally. Footgun for callers who construct the proof without populating it. Confirmed still true in this packaging's `filament-types` — ported faithfully, not yet fixed. |
+| **`verify_advanced_fork_proof` vs `verify_fork_proof`** | `verify_advanced_fork_proof` takes `(proof: &AdvancedForkProof, bitcoin_anchor: [u8; 32])` and returns `AdvancedForkProofResult`. `verify_fork_proof` (or `ForkProof::verify`) takes `ForkProof` and returns `Result<ForkProofResult, ForkProofError>`. Both exist in `verification.rs`; ensure call sites use the right one for the right type. Not re-verified against current code. |
+| **`ChainState` field documentation missing** | `anchor_hash`, `expected_shard_id`, and `hash_sorting_bits` are used to validate shard IDs on every applied proof, but are undocumented — a custom storage implementor won't know what to persist. Not re-verified against current code. |
+| ~~**`chain_weight_verification.rs` test fixtures**~~ | Moot for this packaging — see currency note above. |
+| **Vacuous optimisation validation tests** | `batch_optimization_validation.rs` / `range_optimization_validation.rs` were retargeted by RF-17 Batch D but should be verified against real fixtures to confirm the `assert_eq!(false, false)` pattern no longer applies. Not re-verified against current code. |
+| **`FilamentWallet` undocumented** | `filament_wallet.rs` implements watch-only UTXO discovery, fee estimation (`estimate_fee` via Keystone `/chain/fee_filter`), cross-shard UTXO selection, and Schnorr-signed transaction building — none of this is covered in the README. Key constants: `ATOMS_PER_COIN = 100_000_000`, `DEFAULT_FEE_ATOMS = 10_000`. Core methods (`build_signed_transaction`, `submit_transaction`, `refresh_from_keystone`) are gated behind `#[cfg(feature = "full-node")]`. Still undocumented. |
+| **`BeaconChainHandler::auto_sync` stub** | Returns `Ok(false)` unconditionally. Documented in Roadmap (v0.4.0) but not called out in the Architecture section where it could mislead readers into expecting live sync. Not re-verified against current code. |
+| **`blocks_per_epoch` stale in handlers** | `BeaconChainHandler` and `ShardChainHandler` hardcode `blocks_per_epoch: 1008`. The canonical value is `EPOCH_LENGTH = 4096` from `k_coeff.rs`. Handlers need updating. Not re-verified against current code. |
 | ~~**`MultiChainClient::new` signature**~~ | ✅ Resolved — `new(storage: Box<dyn LightClientStorage>)` only; genesis is registered via `init_beacon_chain` / `init_from_network`. Quick Start and Known Issues updated. |
 | **`LightClientConfig` deprecated alias** | The Quick Start previously used `LightClientConfig` (deprecated since 0.5.0, RF-11). Correct import is `FilamentBootstrapConfig` from `mmr_client::light_client_config`. Quick Start updated; any other doc or example using the old name should be migrated. |
-| **`LightShardBlockData` size** | README Key Features table says ~161 bytes; `mod.rs` says ~194 bytes. Needs reconciliation against the actual serialised `LightShardHeader` struct field widths. The "91% savings" claim is directionally correct at both values. |
+| **`LightShardBlockData` size** | Key Features table says ~161 bytes; `mod.rs` says ~194 bytes. Needs reconciliation against the actual serialised `LightShardHeader` struct field widths. The "91% savings" claim is directionally correct at both values. Not re-verified against current code. |
 
 ---
 
