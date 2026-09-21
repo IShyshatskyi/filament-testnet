@@ -188,6 +188,21 @@ impl BlockData {
     }
 }
 
+/// Chain weight proof — proves cumulative difficulty over a height range.
+///
+/// Requires Full/Beacon blocks (PoW-verifiable); Light blocks are rejected
+/// by [`crate::verification::verify_chain_weight_proof`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MMRChainWeightProof {
+    pub target_block: BlockData,
+    pub start_height: u32,
+    pub end_height: u32,
+    pub total_weight: u128,
+    pub difficulties: Vec<u64>,
+    pub range_proof: crate::proofs::WeightedMMRRangeProof,
+    pub range_blocks: Vec<BlockData>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MMRChainSummary {
     pub tip_block: BlockData,

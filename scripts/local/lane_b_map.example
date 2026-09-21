@@ -1,0 +1,6 @@
+# Copy to lane_b_map.txt and replace placeholders with real relative paths.
+# Format: <path-under-UPSTREAM_TYPES_ROOT>:<path-under-public-repo-root>
+# Do not commit lane_b_map.txt.
+
+path/in/upstream/subset/file_a.rs:crates/filament-types/src/genesis.rs
+path/in/upstream/subset/file_b.rs:crates/filament-types/src/hash.rs

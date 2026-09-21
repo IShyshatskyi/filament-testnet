@@ -1,0 +1,3 @@
+# After Lane A rsync, restore these public-path overlays (clean-room adaptations).
+# Paths relative to this repo root only — no upstream layout here.
+crates/filament/src/mmr_client/filament_p2p.rs

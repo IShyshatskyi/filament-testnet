@@ -1,0 +1,33 @@
+# Public packaging denylist (safe to publish).
+# Used by check_public_boundary.sh.
+#
+# Intentionally does NOT inventory private monorepo crates or layouts.
+# Maintainer-only extra patterns may live in gitignored scripts/local/.
+#
+# Sections:
+#   [paths]   — forbidden path substrings under crates/ (hard fail)
+#   [cargo]   — forbidden substrings in **/Cargo.toml (hard fail)
+#   [sources] — forbidden substrings in **/*.rs (warn; --strict fails)
+
+[paths]
+# Historical packaging that must not reappear in this public tree.
+crates/common-types
+crates/p2p-proto
+# Owner-IP write/construction engines (filenames).
+weighted_mmr_core.rs
+windowed_weighted_mmr.rs
+
+[cargo]
+path = "../common-types"
+path = "../p2p-proto"
+path = "../../rustmmrdb"
+path = "../rustmmrdb"
+dep:rustmmrdb
+package = "common-types"
+package = "p2p-proto"
+
+[sources]
+# Stale imports of removed write-engine modules.
+common::weighted_mmr_core
+common::windowed_weighted_mmr
+rustmmrdb::

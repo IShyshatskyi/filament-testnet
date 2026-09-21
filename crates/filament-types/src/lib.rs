@@ -33,7 +33,9 @@ pub mod common {
         pub use crate::tx_sighash;
         pub use crate::tx_sighash::flat_tx_sighash;
         pub use crate::weighted_hash;
-        pub use crate::weighted_hash::{bag_peaks_weighted, rbits_to_u128_approx, WeightedHash};
+        pub use crate::weighted_hash::{
+            bag_peaks_weighted, hash_pair_weighted, rbits_add, rbits_to_u128_approx, WeightedHash,
+        };
     }
 
     pub mod genesis {

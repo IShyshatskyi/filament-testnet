@@ -388,12 +388,23 @@ pub use verification::verify_fork_proof_with_strategy;
 /// and reject Light blocks, as accurate weight calculation requires verifying
 /// actual PoW difficulties, not trusting pre-calculated values.
 ///
-// `verify_chain_weight_proof` / `verify_chain_weight_proof_with_strategy`
-// (the vanilla, non-weighted `MMRChainWeightProof` verifier) dropped from
-// this public packaging — zero real call sites anywhere in this crate
-// (confirmed by grep; only ever mentioned in doc-comment examples above),
-// and it's legacy/superseded by `WeightedChainWeightProof` below. Kept out
-// rather than porting unused vanilla proof-verification code.
+/// # Example
+/// ```rust,ignore
+/// use mmr_client::{verify_chain_weight_proof, MMRChainWeightProof};
+///
+/// let result = verify_chain_weight_proof(&weight_proof);
+/// if result {
+///     println!("Chain weight verified: {}", weight_proof.total_weight);
+/// }
+/// ```
+pub use verification::verify_chain_weight_proof;
+
+/// Verify chain weight proof with custom verification strategy
+///
+/// **Note**: Even with `Full` or `Light` strategy specified, this function
+/// will reject Light blocks and verify PoW for all blocks, as chain weight
+/// calculation requires accurate difficulty values.
+pub use verification::verify_chain_weight_proof_with_strategy;
 
 pub use verification::verify_weighted_chain_weight_proof;
 

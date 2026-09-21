@@ -1,6 +1,6 @@
-// filament-types/src/verification.rs — verification strategy + the
-// HybridMMRState climb-and-descent navigation primitive used by
-// ForkProof::verify.
+// filament-types/src/verification.rs — verification strategy + chain-weight /
+// fork wrappers + the HybridMMRState climb-and-descent navigation primitive
+// used by ForkProof::verify.
 
 use crate::weighted_hash::{hash_pair_weighted, WeightedHash};
 
@@ -61,6 +61,56 @@ pub fn verify_weighted_chain_weight_proof(
     genesis_anchor: [u8; 32],
 ) -> bool {
     proof.verify(genesis_anchor)
+}
+
+/// Verify chain weight proof (Full strategy by default).
+pub fn verify_chain_weight_proof(
+    proof: &crate::proofs::MMRChainWeightProof,
+    genesis_block: &crate::proofs::BlockData,
+) -> bool {
+    verify_chain_weight_proof_with_strategy(proof, VerificationStrategy::default(), genesis_block)
+}
+
+/// Verify chain weight proof with an explicit strategy.
+///
+/// Light blocks are always rejected — chain weight needs PoW-capable blocks.
+/// `Paranoid` additionally spot-checks PoW against each difficulty entry.
+pub fn verify_chain_weight_proof_with_strategy(
+    proof: &crate::proofs::MMRChainWeightProof,
+    strategy: VerificationStrategy,
+    genesis_block: &crate::proofs::BlockData,
+) -> bool {
+    for block in &proof.range_blocks {
+        if !block.can_verify_pow() {
+            return false;
+        }
+    }
+
+    if !proof.target_block.can_verify_pow() {
+        return false;
+    }
+
+    let calculated_weight: u128 = proof.difficulties.iter().map(|&d| d as u128).sum();
+    if calculated_weight != proof.total_weight {
+        return false;
+    }
+
+    if proof.difficulties.len() != (proof.end_height - proof.start_height + 1) as usize {
+        return false;
+    }
+
+    if strategy == VerificationStrategy::Paranoid {
+        for (i, block) in proof.range_blocks.iter().enumerate() {
+            let pow_hash = block.block_hash();
+            let difficulty = proof.difficulties[i];
+            if !verify_pow_hash(&pow_hash, difficulty) {
+                return false;
+            }
+        }
+    }
+
+    let anchor = genesis_block.prev_mmr_root_bytes();
+    proof.range_proof.verify_with_anchor(anchor)
 }
 
 /// Check whether `hash` (read as a little-endian u64 prefix) meets a plain

@@ -13,6 +13,7 @@
 //             [--keystone-extra <http://host:port>]...
 //             [--manual-peer <host:port>]... [--keystone-p2p-port <port>]
 //             [--keystone-summary-port <port>]
+//             [--signing-key-file <path>]
 //             [--data-dir <path>] [--p2p-listen <host:port>] [--disable-p2p]
 //
 // --keystone-summary-port overrides light_client_summary_port (default 8080)
@@ -112,6 +113,10 @@ fn parse_args() -> (FilamentNodeConfig, String) {
                 i += 1;
                 if i < args.len() { address = args[i].clone(); }
             }
+            "--signing-key-file" => {
+                i += 1;
+                if i < args.len() { cfg.signing_key_file = Some(args[i].clone()); }
+            }
             "--data-dir" => {
                 i += 1;
                 if i < args.len() { cfg.data_dir = args[i].clone(); }
@@ -146,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_module("filament", log::LevelFilter::Info)
         .init();
 
-    let (cli_config, address) = parse_args();
+    let (cli_config, mut address) = parse_args();
 
     // Merge: CLI flags take precedence over persisted config
     let config = if let Some(mut persisted) = load_config_from_disk(&cli_config.data_dir).await {
@@ -181,6 +186,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if cli_config.bitcoin_anchor_hex.is_some() {
             persisted.bitcoin_anchor_hex = cli_config.bitcoin_anchor_hex;
         }
+        if cli_config.signing_key_file.is_some() {
+            persisted.signing_key_file = cli_config.signing_key_file;
+        }
+        if cli_config.light_client_summary_port != FilamentNodeConfig::default().light_client_summary_port {
+            persisted.light_client_summary_port = cli_config.light_client_summary_port;
+        }
         persisted.data_dir = cli_config.data_dir;
         persisted
     } else {
@@ -189,10 +200,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Filament starting — network: {}, port: {}", config.network, config.port);
 
+    // TS-PORTAL-2f: optional spending-key custody for `/wallet/sign-message`.
+    // Precedence: FILAMENT_SIGNING_KEY (raw hex) > config.signing_key_file.
+    let signing_key: Option<bitcoin::secp256k1::SecretKey> = {
+        let raw = env::var("FILAMENT_SIGNING_KEY").ok().or_else(|| {
+            config
+                .signing_key_file
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        });
+        raw.and_then(|h| {
+            match hex::decode(h.trim()) {
+                Ok(b) if b.len() == 32 => bitcoin::secp256k1::SecretKey::from_slice(&b).ok(),
+                _ => {
+                    eprintln!(
+                        "filament: signing key is not 32-byte hex — ignoring, staying watch-only"
+                    );
+                    None
+                }
+            }
+        })
+    };
+    if let Some(sk) = signing_key {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let kp = bitcoin::secp256k1::Keypair::from_secret_key(&secp, &sk);
+        let (xonly, _) = kp.x_only_public_key();
+        address = hex::encode(xonly.serialize());
+        info!(
+            "Filament: signing key loaded — wallet address {address}; /wallet/sign-message enabled"
+        );
+    }
+
     // MNT-1/7 + PD-INT-1: wallet endpoints include discovery merge at startup;
     // `start_server` runs `apply_startup_peer_discovery` before serving.
     let mut wallet = FilamentWallet::new(address, config.keystone_endpoint.clone());
     wallet.set_keystone_endpoints(config.all_keystone_endpoints());
+    if let Some(sk) = signing_key {
+        wallet.set_signing_key(sk);
+    }
     let storage = Box::new(InMemoryStorage::new());
 
     // Bootstrap the beacon chain's genesis so sync/proof verification actually has

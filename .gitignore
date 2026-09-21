@@ -23,5 +23,10 @@ filament-data-smoke/
 # Sync scratch
 .sync-tmp/
 
+# Maintainer-only sync maps (private path inventory — never publish)
+scripts/local/*
+!scripts/local/README.md
+!scripts/local/*.example
+
 # Local-only classic-MMR snapshot (history: git tag archive/sha256-2026-04)
 /archive/

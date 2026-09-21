@@ -17,6 +17,24 @@ use crate::wallet::transaction_builder::SchnorrSigner;
 
 pub const ATOMS_PER_COIN: f64 = 100_000_000.0;
 
+/// TS-PORTAL-2f — the Testnet Portal auth domain tag. These bytes MUST stay
+/// **byte-identical** to `tools/testnet-portal-api` `auth::AUTH_DOMAIN` /
+/// `auth::auth_digest`: the portal API verifies the returned signature against
+/// exactly `BLAKE3(this || x_only_pubkey(32) || nonce(32))`. The trailing
+/// newline is part of the domain.
+#[cfg(feature = "full-node")]
+pub(crate) const PORTAL_AUTH_DOMAIN: &[u8] = b"shisha:testnet-portal:auth:v1\n";
+
+/// Result of [`FilamentWallet::sign_portal_auth`].
+#[cfg(feature = "full-node")]
+pub struct PortalAuthSignature {
+    /// 64-byte BIP-340 Schnorr signature, hex (128 chars).
+    pub signature: String,
+    /// The signing wallet's x-only public key, hex (64 chars) — the address
+    /// the portal will bind the session to.
+    pub address: String,
+}
+
 // Fallback fee: 10 000 atoms = 0.0001 SHISHA
 pub const DEFAULT_FEE_ATOMS: u64 = 10_000;
 
@@ -119,6 +137,12 @@ pub struct FilamentWallet {
     /// encrypt messages addressed to this wallet.
     f2f_seckey: [u8; 32],
     f2f_pubkey: [u8; 33],
+    /// TS-PORTAL-2f: optional spending secret key. When set (via
+    /// `--signing-key-file` / `FILAMENT_SIGNING_KEY`), the local HTTP API can
+    /// sign a domain-separated Testnet Portal auth challenge without the key
+    /// ever leaving this process. Watch-only when `None`.
+    #[cfg(feature = "full-node")]
+    signing_key: Option<SecretKey>,
 }
 
 impl FilamentWallet {
@@ -145,6 +169,8 @@ impl FilamentWallet {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             f2f_seckey,
             f2f_pubkey,
+            #[cfg(feature = "full-node")]
+            signing_key: None,
         }
     }
 
@@ -193,6 +219,56 @@ impl FilamentWallet {
 
     /// The configured Keystone REST endpoints, in priority order.
     pub fn keystone_endpoints(&self) -> &[String] { &self.keystone_endpoints }
+
+    /// TS-PORTAL-2f: attach the wallet's spending secret key so the local HTTP
+    /// API's `/wallet/sign-message` can sign a Testnet Portal auth challenge.
+    /// The key is never returned by any route or accepted in any request body.
+    #[cfg(feature = "full-node")]
+    pub fn set_signing_key(&mut self, key: SecretKey) {
+        self.signing_key = Some(key);
+    }
+
+    /// True when a signing key is attached (see [`set_signing_key`]).
+    #[cfg(feature = "full-node")]
+    pub fn has_signing_key(&self) -> bool {
+        self.signing_key.is_some()
+    }
+
+    /// TS-PORTAL-2f: sign the Testnet Portal auth challenge for `nonce`.
+    ///
+    /// ```text
+    /// digest    = BLAKE3( PORTAL_AUTH_DOMAIN || x_only_pubkey(32) || nonce(32) )
+    /// signature = BIP-340 Schnorr(digest) with the wallet's spending key
+    /// ```
+    ///
+    /// The digest preimage is re-derived here by hand and MUST match
+    /// `tools/testnet-portal-api` `auth::auth_digest` byte-for-byte — the
+    /// portal verifies against exactly this. `PORTAL_AUTH_DOMAIN`'s trailing
+    /// newline is deliberate and part of the preimage.
+    #[cfg(feature = "full-node")]
+    pub fn sign_portal_auth(&self, nonce: &[u8; 32]) -> Result<PortalAuthSignature, String> {
+        use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
+
+        let sk = self
+            .signing_key
+            .ok_or("no signing key configured — start Filament with --signing-key-file")?;
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &sk);
+        let (xonly, _parity) = keypair.x_only_public_key();
+        let address = xonly.serialize();
+
+        let mut h = blake3::Hasher::new();
+        h.update(PORTAL_AUTH_DOMAIN);
+        h.update(&address);
+        h.update(nonce);
+        let digest: [u8; 32] = *h.finalize().as_bytes();
+
+        let sig = secp.sign_schnorr_no_aux_rand(&Message::from_digest(digest), &keypair);
+        Ok(PortalAuthSignature {
+            signature: hex::encode(sig.as_ref()),
+            address: hex::encode(address),
+        })
+    }
 
     /// Refresh UTXOs + history via address-indexed **explorer** endpoints
     /// (Eratosthenes Path 4: `GET /explorer/utxos?address=` /
@@ -518,5 +594,57 @@ impl FilamentWallet {
         _current_height: u32,
     ) -> Result<((), Vec<()>), String> {
         Err("Schnorr signing requires full-node feature".to_string())
+    }
+}
+
+#[cfg(all(test, feature = "full-node"))]
+mod portal_auth_tests {
+    use super::*;
+    use bitcoin::secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
+    use bitcoin::secp256k1::schnorr::Signature;
+
+    /// Independent re-derivation of `tools/testnet-portal-api` `auth::auth_digest`
+    /// — kept here so a drift in either side fails this test.
+    fn portal_digest(address: &[u8; 32], nonce: &[u8; 32]) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(b"shisha:testnet-portal:auth:v1\n");
+        h.update(address);
+        h.update(nonce);
+        *h.finalize().as_bytes()
+    }
+
+    #[test]
+    fn sign_portal_auth_round_trips_and_matches_portal_api_digest() {
+        let secp = Secp256k1::new();
+        let mut seed = [7u8; 32];
+        seed[0] = 1; // valid non-zero scalar
+        let sk = bitcoin::secp256k1::SecretKey::from_slice(&seed).unwrap();
+        let (xonly, _) = Keypair::from_secret_key(&secp, &sk).x_only_public_key();
+        let expected_addr = xonly.serialize();
+
+        let mut w = FilamentWallet::new("watch-only".into(), None);
+        assert!(!w.has_signing_key());
+        assert!(w.sign_portal_auth(&[0u8; 32]).is_err());
+
+        w.set_signing_key(sk);
+        assert!(w.has_signing_key());
+
+        let nonce = [0xABu8; 32];
+        let out = w.sign_portal_auth(&nonce).unwrap();
+
+        // Address is the wallet's x-only pubkey.
+        assert_eq!(out.address, hex::encode(expected_addr));
+
+        // Signature verifies against the exact digest the portal API computes.
+        let digest = portal_digest(&expected_addr, &nonce);
+        let sig = Signature::from_slice(&hex::decode(&out.signature).unwrap()).unwrap();
+        let vk = XOnlyPublicKey::from_slice(&expected_addr).unwrap();
+        secp.verify_schnorr(&sig, &Message::from_digest(digest), &vk)
+            .expect("portal-api would verify this signature");
+    }
+
+    #[test]
+    fn domain_constant_is_the_portal_api_bytes() {
+        assert_eq!(PORTAL_AUTH_DOMAIN, b"shisha:testnet-portal:auth:v1\n");
     }
 }
