@@ -139,19 +139,25 @@ shells treat `<` as redirection).
 
 ```bash
 ./target/release/filament \
-  --network testnet1 \
-  --keystone 'https://rpc.testnet.shisha.network' \
+  --network testnet-stress \
+  --keystone 'http://13.60.206.131:8080' \
+  --keystone-summary-port 8080 \
   --port 7380 \
   --disable-p2p
 ```
 
-Regional RPC examples (confirm live status before relying on them):
+Public Keystone **summary** API (AWS `eu-north-1`, plain HTTP `:8080`). Confirm instances are
+up before relying on them.
 
 | Region | URL |
 |--------|-----|
-| EU | `https://rpc.testnet.shisha.network` |
-| US | `https://rpc-us.testnet.shisha.network` |
-| AP | `https://rpc-ap.testnet.shisha.network` |
+| EU (K1) | `http://13.60.206.131:8080` |
+| US-label (K2) | `http://13.60.241.210:8080` |
+
+**Do not** use `*.shisha.network` hostnames for this project — that domain is a **third-party**
+registration unrelated to this stack (see `website/content/hosting_plan.md` Track **E0**).
+Named URLs land only after we register a domain we control (Track E1). These listeners are
+`mmr_light_client.summary_port`, not TLS on 443. Wallet-ops (`:18180`) stay off the public Internet.
 
 Local API (loopback): `http://127.0.0.1:7380`
 
@@ -163,9 +169,10 @@ Multi-node trust (optional):
 
 ```bash
 ./target/release/filament \
-  --network testnet1 \
-  --keystone 'https://rpc.testnet.shisha.network' \
-  --keystone-extra 'https://rpc-us.testnet.shisha.network'
+  --network testnet-stress \
+  --keystone 'http://13.60.206.131:8080' \
+  --keystone-summary-port 8080 \
+  --keystone-extra 'http://13.60.241.210:8080'
 ```
 
 Path-2 P2P (Keystone ShishaNet port often **18334**):

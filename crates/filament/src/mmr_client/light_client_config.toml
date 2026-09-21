@@ -1,9 +1,14 @@
 # Light Client Configuration (Filament public package)
 #
 # Public testnet Keystone / RPC defaults (CLI --keystone overrides):
-#   EU  https://rpc.testnet.shisha.network
-#   US  https://rpc-us.testnet.shisha.network
-#   AP  https://rpc-ap.testnet.shisha.network
+# Public Keystone summary API (CLI --keystone overrides):
+#   Project-owned hostnames TBD (hosting_plan Track E). Do NOT use
+#   *.shisha.network — that FQDN is a third-party registration unrelated to
+#   this project (Track E0, Sep 22, 2026).
+#   Current public endpoints (AWS eu-north-1):
+#     K1  http://13.60.206.131:8080
+#     K2  http://13.60.241.210:8080
+#   Do not publish Keystone wallet-ops :18180.
 # ShishaNet P2P toward Keystone light peers often uses port 18334.
 #
 [mainnet]
