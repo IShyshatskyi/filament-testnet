@@ -98,6 +98,14 @@ pub struct FilamentNodeConfig {
     /// the proofs were built against.
     #[serde(default)]
     pub bitcoin_anchor_hex: Option<String>,
+    /// TS-PORTAL-2f: optional path to a file holding this wallet's 32-byte
+    /// spending secret key, hex-encoded (same shape as `faucet-server`'s
+    /// `secret_key_file`). When set, the wallet address is derived from this
+    /// key and `POST /wallet/sign-message` can sign a Testnet Portal auth
+    /// challenge. Watch-only when unset. The env var `FILAMENT_SIGNING_KEY`
+    /// (raw hex) takes precedence over the file.
+    #[serde(default)]
+    pub signing_key_file: Option<String>,
 }
 
 fn default_dns_seeds() -> Vec<String> {
@@ -134,6 +142,7 @@ impl Default for FilamentNodeConfig {
             p2p_listen: default_p2p_listen(),
             confirmation_depth: default_confirmation_depth(),
             bitcoin_anchor_hex: None,
+            signing_key_file: None,
         }
     }
 }
@@ -1689,6 +1698,76 @@ async fn wallet_sign(
     }
 }
 
+/// TS-PORTAL-2f: sign a Testnet Portal auth challenge with the wallet's
+/// **held** key. The key is never accepted in the body and never returned —
+/// this is the difference from `/wallet/sign`. Requires Filament to have been
+/// started with a signing key (`--signing-key-file` / `FILAMENT_SIGNING_KEY`).
+/// Local-only, like every route on this server.
+///
+/// Body: `{ "domain": "shisha:testnet-portal:auth:v1", "nonce": "<64hex>" }`
+/// 200:  `{ "signature": "<128hex>", "address": "<64hex>" }`
+///
+/// `domain` is validated against a one-item allowlist so a compromised page
+/// can't coax a signature over arbitrary content. Filament builds the
+/// domain-separated BLAKE3 digest itself (see `FilamentWallet::sign_portal_auth`).
+#[derive(Deserialize)]
+struct SignMessageRequest {
+    #[serde(default)]
+    domain: String,
+    nonce: String,
+}
+
+/// Canonical portal auth domain without the trailing newline — the newline is
+/// added by `FilamentWallet::sign_portal_auth` / `PORTAL_AUTH_DOMAIN`.
+const PORTAL_AUTH_DOMAIN_STR: &str = "shisha:testnet-portal:auth:v1";
+
+async fn wallet_sign_message(
+    State(s): State<FilamentAppState>,
+    Json(req): Json<SignMessageRequest>,
+) -> axum::response::Response {
+    if !req.domain.is_empty()
+        && req.domain.trim_end_matches('\n') != PORTAL_AUTH_DOMAIN_STR
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "unsupported signing domain" })),
+        )
+            .into_response();
+    }
+    let nonce = match hex::decode(req.nonce.trim()) {
+        Ok(b) if b.len() == 32 => {
+            let mut a = [0u8; 32];
+            a.copy_from_slice(&b);
+            a
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "nonce must be 64 hex chars" })),
+            )
+                .into_response()
+        }
+    };
+    let wallet = s.wallet.read().await;
+    match wallet.sign_portal_auth(&nonce) {
+        Ok(out) => {
+            s.notify(
+                "INFO",
+                "wallet",
+                "Portal auth challenge signed",
+                &format!("addr {}…", &out.address[..8.min(out.address.len())]),
+                Some("wallet"),
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "signature": out.signature, "address": out.address })),
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let client = s.client.read().await;
     let mut chains: Vec<Value> = Vec::new();
@@ -2937,6 +3016,7 @@ pub async fn start_server(
         .route("/wallet/send",      post(wallet_send))
         .route("/wallet/fee",       get(wallet_fee_estimate))
         .route("/wallet/sign",      post(wallet_sign))
+        .route("/wallet/sign-message", post(wallet_sign_message))
         .route("/chain/all",        get(chain_all))
         .route("/chain/beacon",     get(chain_beacon))
         .route("/chain/shard/{id}", get(chain_shard))
@@ -3055,30 +3135,18 @@ mod pd_ui_4_tests {
 /// PD-INT cold-start: two configured Keystones → trust floor 2/2 after one
 /// chain-summary sync tick (`FilamentRuntime::sync_peer_chain_summaries`).
 ///
-/// Builds a valid weighted chain summary with `WindowedWeightedMMR` from
-/// `common-types` (no monolith / Keystone dependency).
-///
-/// Disabled in this public packaging: this integration test builds a
-/// realistic multi-leaf MMR (arbitrary block count, real batch proofs over
-/// a height range) via `WindowedWeightedMMR::append`/`prove_batch` — the
-/// real MMR *construction* engine, deliberately excluded from
-/// `filament-types` (see that crate's own module docs) since it's the
-/// private monorepo's chain-construction internals, not proof-verification
-/// math a light client needs. Unlike the smaller fixture helpers elsewhere
-/// in this file (hand-constructed directly from `WeightedHash` primitives),
-/// an arbitrary-size MMR with real batch-proof generation isn't something
-/// that can be hand-rolled without re-implementing the excluded engine.
-#[cfg(all(test, feature = "__disabled_needs_private_mmr_construction_engine"))]
+/// Builds a valid 2-leaf weighted chain summary with public `WeightedHash`
+/// helpers only (private `WindowedWeightedMMR` is out of public packaging scope).
+#[cfg(test)]
 mod pd_int_cold_start_tests {
     use super::*;
     use axum::{routing::get, Json, Router};
     use common_types::common::crypto::weighted_hash::{
-        rbits_to_u128_approx, WeightedHash,
+        bag_peaks_weighted, hash_pair_weighted, rbits_to_u128_approx, WeightedHash,
     };
     use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
     use common_types::common::proofs::types::{BeaconBlockData, BlockData};
-    use common_types::common::proofs::MMRChainSummary;
-    use common_types::common::windowed_weighted_mmr::WindowedWeightedMMR;
+    use common_types::common::proofs::{MMRChainSummary, WeightedMMRBatchProof};
 
     const SUMMARY_PORT: u16 = 28_180;
 
@@ -3104,51 +3172,38 @@ mod pd_int_cold_start_tests {
         })
     }
 
-    /// Build genesis + a heavier tip summary (50 leaves) without Keystone.
-    fn build_beacon_summary(block_count: u32) -> (BlockData, MMRChainSummary) {
-        assert!(
-            block_count > 1,
-            "need at least genesis + one block for a heavier summary"
-        );
-
+    /// Genesis + tip (2-leaf MMR) with a verifiable batch proof for the tip.
+    fn build_beacon_summary(_block_count: u32) -> (BlockData, MMRChainSummary) {
         let genesis_cfg = BeaconGenesisConfig::devnet();
         let anchor = genesis_cfg.bitcoin_anchor_hash;
         let bits = genesis_cfg.bits;
-        let mut wmmr = WindowedWeightedMMR::new(&genesis_cfg);
+        let anchor_wh = WeightedHash::from_anchor(&anchor);
 
-        let mut blocks: Vec<BlockData> = Vec::with_capacity(block_count as usize);
-        let mut prev_root = WeightedHash::from_anchor(&anchor);
+        let leaf0 = WeightedHash::from_leaf_rbits(&[1u8; 32], bits);
+        let leaf1 = WeightedHash::from_leaf_rbits(&[2u8; 32], bits);
+        let root0 = bag_peaks_weighted(&[leaf0], anchor_wh);
+        let parent = hash_pair_weighted(&leaf0, &leaf1);
+        let root1 = bag_peaks_weighted(&[parent], anchor_wh);
 
-        for height in 0..block_count {
-            let raw = [(height as u8).wrapping_add(1); 32];
-            let leaf = WeightedHash::from_leaf_rbits(&raw, bits);
-            let (new_root, _weight, _evicted) = wmmr
-                .append(leaf)
-                .expect("append must succeed");
-            blocks.push(make_beacon_block(height, leaf, prev_root, new_root, bits));
-            prev_root = new_root;
-        }
+        let genesis = make_beacon_block(0, leaf0, anchor_wh, root0, bits);
+        let tip = make_beacon_block(1, leaf1, root0, root1, bits);
 
-        let recent_count = 10u32.min(block_count.saturating_sub(1));
-        let start = block_count - recent_count;
-        // Match Keystone: exclude genesis (height 0) from the batch proof.
-        let heights: Vec<u32> = (start.max(1)..block_count).collect();
-        let recent_blocks_proof = wmmr
-            .prove_batch(&heights)
-            .expect("prove_batch must succeed");
-        let recent_blocks: Vec<BlockData> = heights
-            .iter()
-            .map(|&h| blocks[h as usize].clone())
-            .collect();
-
-        let tip_block = blocks.last().expect("non-empty").clone();
-        let summary = MMRChainSummary {
-            tip_block,
-            chain_weight: wmmr.canonical_chain_weight(),
-            recent_blocks_proof,
-            recent_blocks,
+        let recent_blocks_proof = WeightedMMRBatchProof {
+            leaf_indices: vec![1],
+            leaf_hashes: vec![leaf1],
+            siblings: vec![leaf0],
+            peaks: vec![parent],
+            leaf_count: 2,
+            root: root1,
         };
-        (blocks[0].clone(), summary)
+
+        let summary = MMRChainSummary {
+            tip_block: tip.clone(),
+            chain_weight: root1.cumulative_difficulty_approx().max(1),
+            recent_blocks_proof,
+            recent_blocks: vec![tip],
+        };
+        (genesis, summary)
     }
 
     async fn spawn_summary_server(summary: MMRChainSummary) -> tokio::task::JoinHandle<()> {

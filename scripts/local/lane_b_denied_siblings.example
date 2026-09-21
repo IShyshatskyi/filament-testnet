@@ -1,0 +1,6 @@
+# Copy to lane_b_denied_siblings.txt. One basename per line.
+# List upstream filenames under UPSTREAM_TYPES_ROOT that must never be copied.
+# Do not commit lane_b_denied_siblings.txt.
+
+example_blocked_module.rs
+another_blocked_module.rs

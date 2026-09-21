@@ -267,7 +267,6 @@ Filament-Test does **not** mine and does **not** hold a full UTXO database.
 | Doc | Contents |
 |-----|----------|
 | This README | Product narrative, build/run, security stance |
-| [docs/reference.md](docs/reference.md) | **Deep technical reference** — HTTP API endpoint table, proof-size table, verification API, storage trait, security model, troubleshooting, P2P transport details |
 | [DISCLAIMER.md](DISCLAIMER.md) | Legal / experimental notice |
 | [docs/filament_engineering_review.md](docs/filament_engineering_review.md) | Current Filament-Test packaging status (Aug 2026) |
 | [archive/](archive/) (local only; gitignored) | Classic-MMR snapshot — see tag `archive/sha256-2026-04` |
@@ -280,10 +279,29 @@ the April README). Obsolete classic-MMR **source** is not published in this bran
 
 ## Sync from private monorepo
 
+Public packaging is **allowlist-only** (`filament` + clean-room
+`filament-types` / `filament-p2p`). Do **not** use the legacy
+`sync_from_shisha.sh` (disabled — it would reintroduce stripped crates).
+
 ```bash
-./scripts/sync_from_shisha.sh /path/to/private-monorepo
+# Boundary check (enforces public packaging constraints)
+./scripts/check_public_boundary.sh --strict
+
+# Dry-run / status vs a local upstream checkout (copies nothing)
+./scripts/sync_filament_public.sh --dry-run /path/to/private-monorepo
+
+# Lane A only: copy crates/filament, remap deps, restore clean-room overlays,
+# boundary-check, write VERSION. Does not port filament-types / filament-p2p.
+./scripts/sync_filament_public.sh --apply /path/to/private-monorepo
+
 cat VERSION   # SYNCED_FROM_SHISHA=<git-sha>
 ```
+
+Published policy (no private path inventory):
+`scripts/public_allowlist.txt`, `scripts/public_denylist.txt`,
+`scripts/lane_a_keep_public.txt`.
+
+Maintainer-only upstream maps (gitignored): see `scripts/local/README.md`.
 
 ---
 

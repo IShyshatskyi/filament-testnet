@@ -1,0 +1,10 @@
+# Copy to extra_denylist.txt for maintainer-only patterns merged into
+# check_public_boundary.sh. Same section headers as scripts/public_denylist.txt.
+# Do not commit extra_denylist.txt — use it to name private crates/layouts
+# you do not want published in the public denylist.
+
+[paths]
+crates/example-private-crate
+
+[sources]
+example_private_module::

@@ -204,7 +204,7 @@ impl FilamentBootstrapConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-
+        
         toml::from_str(&content)
             .map_err(|e| format!("Failed to parse config: {}", e))
     }
@@ -221,7 +221,7 @@ impl FilamentBootstrapConfig {
         toml::from_str(EMBEDDED)
             .expect("embedded light_client_config.toml must parse — this is a build-time invariant")
     }
-
+    
     /// Get network genesis info by network ID
     pub fn get_network(&self, network_id: &str) -> Option<&NetworkGenesisInfo> {
         match network_id {

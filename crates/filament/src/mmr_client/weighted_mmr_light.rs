@@ -489,14 +489,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn leaf(seed: u8) -> WeightedHash {
-        WeightedHash::from_leaf_rbits(&[seed; 32], 0x1d00ffff)
+        // Public packaging: use header-native rBits (no legacy nBits→rBits helper).
+        WeightedHash::from_leaf_rbits(&[seed; 32], 0x0300_0001)
     }
 
     /// Build a `WeightedMMRLight` populated with blocks `0..n`.
     fn mmr_with_blocks(n: u32) -> WeightedMMRLight {
         let mut m = WeightedMMRLight::with_capacity(100);
         let blocks: Vec<(WeightedHash, u32)> = (0..n).map(|i| (leaf(i as u8 + 1), i)).collect();
-        let peaks = vec![WeightedHash::from_leaf_rbits(&[0xAAu8; 32], 0x1d00ffff)];
+        let peaks = vec![WeightedHash::from_leaf_rbits(&[0xAAu8; 32], 0x0300_0001)];
         m.update_from_verified_proof(peaks, n, &blocks);
         m
     }

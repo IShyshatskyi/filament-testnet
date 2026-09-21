@@ -13,7 +13,7 @@
 //! *nothing else* in the entire codebase: `crate::wallet::` had exactly one
 //! external consumer (`mmr_client::filament_wallet`), and `crate::address::`
 //! had exactly one (`wallet::`). Verified via `grep` before moving, same
-//! rule used for Gap 9/10's `weighted_mmr_core`/`k_voting_config`/etc.
+//! rule used for Gap 9/10's construction-engine modules / `k_voting_config` / etc.
 //!
 //! The monolith keeps `crate::mmr_client::*` and `crate::wallet::*` resolving
 //! unchanged via one-line re-export shims at their old locations — no call
@@ -35,12 +35,13 @@
 //! `mmr_client::filament_wallet`). Full history:
 //! `docs/reports/RF-19_RF-20_Completion_Report.md` §3.
 //!
-//! ## The one remaining note on WindowedWeightedMMR tests
+//! ## Public packaging note (MMR write engine)
 //!
-//! `mmr_client::parallel_verifier`'s range-proof path builds a real multi-leaf
-//! MMR via `common_types::common::windowed_weighted_mmr::WindowedWeightedMMR`
-//! (moved into common-types Aug 2026). This crate has **zero** dependency on
-//! `shisha-core`.
+//! Proof *verification* uses `filament-types` (weighted hash + batch/range/fork
+//! checkers). The private MMR *write/construction* engines
+//! (`weighted_mmr_core` / `windowed_weighted_mmr`) are intentionally out of
+//! scope for this public packaging. Unit tests build fixtures with public
+//! `WeightedHash` helpers only.
 //!
 //! See `docs/plan/Crate_Split_Plan.md` §Gap 8 for the full extraction
 //! analysis.

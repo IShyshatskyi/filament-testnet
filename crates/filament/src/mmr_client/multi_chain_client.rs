@@ -661,9 +661,9 @@ impl MultiChainClient {
         storage: Box<dyn LightClientStorage>,
     ) -> Result<Self, String> {
         use crate::mmr_client::light_client_config::FilamentBootstrapConfig;
-
+        
         info!("Loading light client config from {:?}", config_path.as_ref());
-
+        
         let config = FilamentBootstrapConfig::from_file(config_path)?;
         Self::from_config(config, storage)
     }
@@ -677,12 +677,10 @@ impl MultiChainClient {
         config: crate::mmr_client::light_client_config::FilamentBootstrapConfig,
         storage: Box<dyn LightClientStorage>,
     ) -> Result<Self, String> {
-        // Determine which network is configured
         let network_id = Self::detect_network_id(&config)?;
 
         info!("Detected network: {:?}", network_id);
 
-        // Convert SyncSettings to SyncConfiguration
         let sync_config = SyncConfiguration {
             poll_interval_secs: config.sync.poll_interval_secs,
             max_concurrent_requests: config.sync.max_concurrent_requests,
@@ -694,15 +692,13 @@ impl MultiChainClient {
             ..SyncConfiguration::default()
         };
 
-        // Create client
         let mut client = Self::new_with_config(
             storage,
-            sync_config,  // ← Now correct type
+            sync_config,
             network_id,
             100, // max_shards
         );
 
-        // Store config
         client.config = Some(config);
 
         Ok(client)
