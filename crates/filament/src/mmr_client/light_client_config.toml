@@ -1,11 +1,11 @@
-# Light Client Configuration
-# 
-# This file contains hardcoded genesis block information for different networks.
-# Light clients use this to bootstrap their chain state without trusting external sources.
+# Light Client Configuration (Filament public package)
 #
-# CRITICAL: Genesis blocks use Bitcoin anchor hashes to prevent pre-mining
-# The prev_block_hash and prev_mmr_root fields MUST equal the Bitcoin anchor hash
-
+# Public testnet Keystone / RPC defaults (CLI --keystone overrides):
+#   EU  https://rpc.testnet.shisha.network
+#   US  https://rpc-us.testnet.shisha.network
+#   AP  https://rpc-ap.testnet.shisha.network
+# ShishaNet P2P toward Keystone light peers often uses port 18334.
+#
 [mainnet]
 # Network identifier
 network_id = "mainnet"
@@ -114,6 +114,29 @@ genesis_mmr_root = "4ae19982df01cb02b282c9fd53076599d5d2791333a20000000000000000
 bitcoin_anchor_hash = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
 bitcoin_anchor_height = 935093
 bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block (2024-01-01 00:00:00 UTC)
+
+
+[testnet-stress]
+network_id = "testnet-stress"
+
+# Real genesis, mined Aug 26, 2026 against a real Bitcoin anchor (block 964050) —
+# NOT a placeholder like the sections above. Source of truth:
+# shisha/config/genesis_testnet_stress.toml + genesis_config.rs::BeaconGenesisConfig::testnet_stress()
+# (the private monorepo). Keep these two in sync if the network is ever re-genesised.
+genesis_hash = "00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040"
+genesis_height = 0
+genesis_timestamp = 1787689496
+genesis_difficulty = 64
+genesis_bits = 0x03000040
+
+genesis_mmr_root = "32b14ff02f18f19a4a66c4b5dd837e2ff14548a0b13f295a603c176503000040"
+
+# Bitcoin anchor: block 964050 (internal/reversed byte order — see the note on the
+# [devnet] section above for what that means; this is the true internal-order value,
+# not a placeholder-devnet-anchor copy).
+bitcoin_anchor_hash = "6974209176d5a4b1fdb1a2a146ae8265dfbd30b2f2b300000000000000000000"
+bitcoin_anchor_height = 964050
+bitcoin_anchor_timestamp = 1787689496
 
 
 # Light client synchronization settings

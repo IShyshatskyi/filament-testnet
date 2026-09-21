@@ -15,7 +15,11 @@ pub struct FilamentBootstrapConfig {
     pub testnet1: NetworkGenesisInfo,
     pub testnet2: NetworkGenesisInfo,
     pub devnet: NetworkGenesisInfo,
-    
+    /// Real, mined genesis for the Heaviest Chain Rule test network (matches
+    /// the private monorepo's `config/genesis_testnet_stress.toml`).
+    #[serde(rename = "testnet-stress")]
+    pub testnet_stress: NetworkGenesisInfo,
+
     /// Sync settings
     pub sync: SyncSettings,
     
@@ -204,6 +208,19 @@ impl FilamentBootstrapConfig {
         toml::from_str(&content)
             .map_err(|e| format!("Failed to parse config: {}", e))
     }
+
+    /// Load the bootstrap config embedded in the binary at compile time.
+    ///
+    /// The standalone `filament` binary has no guaranteed working directory
+    /// containing `light_client_config.toml`, so it embeds this crate's own
+    /// copy via `include_str!` rather than reading a runtime path. Panics on
+    /// parse failure — a malformed embedded file is a build-time bug, not a
+    /// runtime condition callers can recover from.
+    pub fn from_embedded() -> Self {
+        const EMBEDDED: &str = include_str!("light_client_config.toml");
+        toml::from_str(EMBEDDED)
+            .expect("embedded light_client_config.toml must parse — this is a build-time invariant")
+    }
     
     /// Get network genesis info by network ID
     pub fn get_network(&self, network_id: &str) -> Option<&NetworkGenesisInfo> {
@@ -212,6 +229,7 @@ impl FilamentBootstrapConfig {
             "testnet1" => Some(&self.testnet1),
             "testnet2" => Some(&self.testnet2),
             "devnet" => Some(&self.devnet),
+            "testnet-stress" | "testnet_stress" => Some(&self.testnet_stress),
             _ => None,
         }
     }

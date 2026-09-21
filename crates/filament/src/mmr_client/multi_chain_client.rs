@@ -664,15 +664,23 @@ impl MultiChainClient {
         
         info!("Loading light client config from {:?}", config_path.as_ref());
         
-        // Load config
         let config = FilamentBootstrapConfig::from_file(config_path)?;
-        
-        // Determine which network is configured
+        Self::from_config(config, storage)
+    }
+
+    /// Build a client from an already-loaded [`FilamentBootstrapConfig`] (no file I/O).
+    ///
+    /// Shared by `from_config_file` and the standalone `filament` binary, which embeds
+    /// `light_client_config.toml` at compile time via `FilamentBootstrapConfig::from_embedded()`
+    /// rather than reading a runtime path.
+    pub fn from_config(
+        config: crate::mmr_client::light_client_config::FilamentBootstrapConfig,
+        storage: Box<dyn LightClientStorage>,
+    ) -> Result<Self, String> {
         let network_id = Self::detect_network_id(&config)?;
-        
+
         info!("Detected network: {:?}", network_id);
-        
-        // Convert SyncSettings to SyncConfiguration
+
         let sync_config = SyncConfiguration {
             poll_interval_secs: config.sync.poll_interval_secs,
             max_concurrent_requests: config.sync.max_concurrent_requests,
@@ -683,18 +691,16 @@ impl MultiChainClient {
             // SyncSettings has no proof_density_threshold; use the tuned default.
             ..SyncConfiguration::default()
         };
-        
-        // Create client
+
         let mut client = Self::new_with_config(
             storage,
-            sync_config,  // ← Now correct type
+            sync_config,
             network_id,
             100, // max_shards
         );
-        
-        // Store config
+
         client.config = Some(config);
-        
+
         Ok(client)
     }
     
@@ -733,6 +739,11 @@ impl MultiChainClient {
         if config.mainnet.genesis_hash != zero {
             Ok(NetworkId::Mainnet)
         } else if config.testnet1.genesis_hash != zero {
+            Ok(NetworkId::Testnet)
+        } else if config.testnet_stress.genesis_hash != zero {
+            // No dedicated NetworkId variant for testnet-stress; this field is
+            // cosmetic (logged once, never read elsewhere — see multi_chain_client.rs
+            // module notes), so Testnet is the closest real match.
             Ok(NetworkId::Testnet)
         } else if config.devnet.genesis_hash != zero {
             Ok(NetworkId::Devnet)
