@@ -18,7 +18,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json,
     },
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use futures_util::stream;
@@ -579,7 +579,7 @@ pub async fn load_config_from_disk(data_dir: &str) -> Option<FilamentNodeConfig>
 // ── Pending TX watch (FI-5) ───────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
-struct PendingTxMeta {
+pub struct PendingTxMeta {
     txid:         String,
     shard_id:     u16,
     amount_atoms: u64,
@@ -2351,7 +2351,7 @@ async fn invoice_parse(_state: State<FilamentAppState>, Query(q): Query<ParseUri
 
 // ── Contact / address-book routes ─────────────────────────────────────────────
 
-use crate::mmr_client::contact_store::{Contact, ContactStore, ContactError};
+use crate::mmr_client::contact_store::{ContactStore, ContactError};
 
 fn contact_store_open(cfg: &FilamentNodeConfig) -> Result<ContactStore, ContactError> {
     let path = std::path::PathBuf::from(&cfg.data_dir);
@@ -2515,7 +2515,7 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
     match status {
         ChainSyncStatus::Synced =>
             ("synced".into(), tip, 1.0),
-        ChainSyncStatus::Syncing { current_height, target_height, progress_percent } =>
+        ChainSyncStatus::Syncing { current_height, target_height: _, progress_percent } =>
             ("syncing".into(), *current_height, *progress_percent as f64 / 100.0),
         ChainSyncStatus::NotStarted =>
             ("bootstrapping".into(), 0, 0.0),

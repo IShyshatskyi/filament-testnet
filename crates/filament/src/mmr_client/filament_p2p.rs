@@ -24,7 +24,6 @@ use p2p_proto::p2p::shishanet::ShishaProtocol;
 use tokio::sync::{watch, RwLock};
 
 use super::multi_chain_client::MultiChainClient;
-use super::storage::InMemoryStorage;
 
 /// Running Filament-side PeerManager + shutdown handle.
 pub struct FilamentP2p {
@@ -246,6 +245,7 @@ pub async fn start_filament_p2p(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::storage::InMemoryStorage;
     use p2p_proto::p2p::shishanet::ShishaMessage;
     use tokio::sync::mpsc;
 

@@ -8,13 +8,11 @@
 //! - Epoch tracking
 //! - Consensus parameter updates
 
-use log::{info, debug};
-use std::collections::HashMap;
+use log::info;
 
 //use common_types::common::proofs::types::BlockData;
 use common_types::common::proofs::{MMRChainSummary,BlockData};
 use crate::mmr_client::chain_handler::{ChainHandler, ChainState, ChainType};
-use crate::mmr_client::verification::*;
 use crate::mmr_client::storage::LightClientStorage;
 
 /// Beacon chain specific handler

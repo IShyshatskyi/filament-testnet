@@ -17,7 +17,6 @@
 // Design reference: `docs/plan/P2P_Phase10_Plan.md` §2
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -97,6 +96,7 @@ pub enum InvoiceState {
 
 impl InvoiceState {
     /// Numeric discriminant for compact serialisation in the binary codec.
+    #[allow(dead_code)] // reserved — wire encode does not yet embed state
     fn tag(&self) -> u8 {
         match self {
             Self::Created        => 0,
@@ -110,6 +110,7 @@ impl InvoiceState {
         }
     }
 
+    #[allow(dead_code)] // reserved — wire encode does not yet embed state
     fn pending_depth(&self) -> u8 {
         if let Self::Pending(d) = self { *d } else { 0 }
     }

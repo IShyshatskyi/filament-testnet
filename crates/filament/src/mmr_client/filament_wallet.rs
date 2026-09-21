@@ -4,7 +4,6 @@
 // All returned data is independently verifiable against local MMR peaks.
 
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "full-node")]
 use log::warn;
@@ -48,10 +47,6 @@ pub struct FeeEstimate {
     pub source: String,
     /// Estimated sat/vbyte equivalent (atoms per byte)
     pub atoms_per_byte: u64,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 // ── Wire types (match UI expectations exactly) ─────────────────────────────
