@@ -34,6 +34,38 @@ impl SchnorrSigner {
         keys: &[SecretKey],
         chain_id: u8,
     ) -> Result<Vec<WitnessEntry>, String> {
+        Self::sign_with(tx, keys, |i| Self::sighash(tx, i, chain_id))
+    }
+
+    /// VF-3 Phase 2: sign with sighash v2 (`version` must be 2 for a node to
+    /// select v2 once it is active). `prevouts` are the `(value, recipient)`
+    /// of the outputs being spent, in input order; they are committed, so a
+    /// wrong value makes the signature invalid. Not used by the wallet until
+    /// the network's activation point is known.
+    pub fn sign_transaction_v2(
+        tx: &Transaction,
+        keys: &[SecretKey],
+        chain_id: u8,
+        prevouts: &[(u64, [u8; 32])],
+    ) -> Result<Vec<WitnessEntry>, String> {
+        if prevouts.len() != tx.inputs.len() {
+            return Err(format!(
+                "prevout count {} != input count {}",
+                prevouts.len(), tx.inputs.len()
+            ));
+        }
+        let txid = tx.txid(chain_id).0;
+        let prev = common_types::common::crypto::prevouts_hash(prevouts);
+        Self::sign_with(tx, keys, |i| {
+            Ok(common_types::common::crypto::sighash_v2(&txid, &prev, i as u32))
+        })
+    }
+
+    fn sign_with(
+        tx: &Transaction,
+        keys: &[SecretKey],
+        sighash_for: impl Fn(usize) -> Result<[u8; 32], String>,
+    ) -> Result<Vec<WitnessEntry>, String> {
         if tx.inputs.len() != keys.len() {
             return Err(format!(
                 "key count {} != input count {}",
@@ -44,7 +76,7 @@ impl SchnorrSigner {
         let mut witnesses = Vec::with_capacity(keys.len());
 
         for (i, key) in keys.iter().enumerate() {
-            let sighash = Self::sighash(tx, i, chain_id)?;
+            let sighash = sighash_for(i)?;
             let msg = Message::from_digest(sighash);
             let keypair = Keypair::from_secret_key(&secp, key);
             let sig = secp.sign_schnorr_with_rng(&msg, &keypair, &mut OsRng);
@@ -160,5 +192,27 @@ mod tests {
         let h0 = SchnorrSigner::sighash(&tx, 0, 0).unwrap();
         let h1 = SchnorrSigner::sighash(&tx, 0, 1).unwrap();
         assert_ne!(h0, h1, "chain_id must provide cross-shard replay protection");
+    }
+
+    /// VF-3 Phase 2: each v2 witness verifies against sighash v2 for its own
+    /// input, and a wrong prevout count is refused.
+    #[test]
+    fn sign_transaction_v2_verifies_per_input() {
+        use bitcoin::secp256k1::{schnorr::Signature, XOnlyPublicKey};
+        let secp = TestSecp256k1::new();
+        let key = SecretKey::new(&mut TestOsRng);
+        let pk: XOnlyPublicKey = Keypair::from_secret_key(&secp, &key).x_only_public_key().0;
+        let mut tx = make_tx(2, 1);
+        tx.version = 2;
+        let prevouts = [(1000u64, pk.serialize()), (500u64, pk.serialize())];
+        let w = SchnorrSigner::sign_transaction_v2(&tx, &[key, key], 1, &prevouts).unwrap();
+        let txid = tx.txid(1).0;
+        let prev = common_types::common::crypto::prevouts_hash(&prevouts);
+        for (i, wit) in w.iter().enumerate() {
+            let msg = Message::from_digest(common_types::common::crypto::sighash_v2(&txid, &prev, i as u32));
+            let sig = Signature::from_slice(&wit.witness_data[1..]).unwrap();
+            secp.verify_schnorr(&sig, &msg, &pk).expect("v2 witness verifies");
+        }
+        assert!(SchnorrSigner::sign_transaction_v2(&tx, &[key, key], 1, &prevouts[..1]).is_err());
     }
 }
