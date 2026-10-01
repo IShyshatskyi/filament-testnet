@@ -20,6 +20,7 @@ pub mod hash;
 pub mod hash_sorting;
 pub mod transaction_impl;
 pub mod tx_sighash;
+pub mod txid;
 pub mod relay_hash;
 pub mod types;
 pub mod genesis;
@@ -55,6 +56,7 @@ pub mod common {
 
 pub mod transaction {
     pub use crate::transaction_impl::*;
+    pub use crate::txid::{shard_chain_id, txid_from_parts, BEACON_CHAIN_ID, TXID_DOMAIN_TAG};
 
     pub mod types {
         pub use crate::transaction_impl::*;
