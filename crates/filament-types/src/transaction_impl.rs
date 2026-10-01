@@ -5,7 +5,6 @@
 // transactions. Pure data + serialization — no chain-application logic.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -238,16 +237,8 @@ impl Transaction {
         Ok(tx)
     }
 
-    /// SHA256d of the witness-less wire serialization (BIP-141-style
-    /// malleability fix: witness data never affects txid).
-    pub fn txid(&self) -> Txid {
-        let serialized = self.serialize();
-        let first = Sha256::digest(&serialized);
-        let second = Sha256::digest(first);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&second);
-        Txid(out)
-    }
+    // The transaction id is `Transaction::txid(chain_id)` in `txid.rs`
+    // (VF-3: one id, BLAKE3, chain-separated). The old SHA256d id is gone.
 }
 
 fn read_u32<R: Read>(reader: &mut R) -> Result<u32, DeserializeError> {
@@ -317,9 +308,9 @@ mod tests {
     #[test]
     fn txid_ignores_witnesses() {
         let mut tx = sample_tx();
-        let txid_before = tx.txid();
+        let txid_before = tx.txid(1);
         tx.witnesses.push(WitnessEntry { witness_data: vec![9, 9] });
-        assert_eq!(tx.txid().0, txid_before.0);
+        assert_eq!(tx.txid(1), txid_before);
     }
 
     #[test]

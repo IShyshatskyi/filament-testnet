@@ -47,6 +47,19 @@ pub fn flat_tx_sighash(
 mod tests {
     use super::*;
 
+    /// Same value the monorepo's common-types, tools/tx-spammer and the
+    /// Ledger app's host test pin. If it changes, change all of them.
+    #[test]
+    fn matches_node_flat_tx_sighash_vector() {
+        let inputs = [FlatInput { prev_height: 1, prev_output_idx: 0 }];
+        let outputs = [FlatOutput { value: 100, recipient: [7u8; 32] }];
+        let h = flat_tx_sighash(7, 1, 0, 0, &inputs, &outputs, 0).unwrap();
+        assert_eq!(
+            hex::encode(h),
+            "070d917f26abf799bba0573cbd79dd95c2282eace117f8dd4d111576132fcf98"
+        );
+    }
+
     #[test]
     fn out_of_range_input_index_errors() {
         let r = flat_tx_sighash(1, 1, 0, 0, &[], &[], 0);

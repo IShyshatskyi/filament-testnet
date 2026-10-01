@@ -6,8 +6,6 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "full-node")]
-use log::warn;
-#[cfg(feature = "full-node")]
 use bitcoin::secp256k1::SecretKey;
 #[cfg(feature = "full-node")]
 use common_types::transaction::types::{Transaction, TxInput, TxOutput};
@@ -480,21 +478,13 @@ impl FilamentWallet {
             }
         }
 
-        // Every configured endpoint failed or doesn't have this route yet —
-        // fall back to the pre-existing stub-txid behaviour so callers that
-        // relied on it (Keystone routes not deployed everywhere yet) keep
-        // working the same way they did with a single endpoint.
-        warn!(
-            "submit_transaction: all {} configured endpoint(s) failed ({}); using stub response",
-            self.keystone_endpoints.len(),
+        // Every configured endpoint failed. Report it rather than invent an id:
+        // a fabricated "txid" can never match what a node or the explorer
+        // reports, so `watch_tx` would wait on it forever (VF-3).
+        Err(format!(
+            "no Keystone endpoint accepted the transaction ({})",
             last_err.unwrap_or_default(),
-        );
-        Ok(SendResponse {
-            txid: hex::encode(blake3::hash(
-                &[req.to.as_bytes(), &req.amount_atoms.to_le_bytes()].concat()
-            ).as_bytes()),
-            status: "pending".to_string(),
-        })
+        ))
     }
 
     #[cfg(not(feature = "full-node"))]
@@ -575,7 +565,10 @@ impl FilamentWallet {
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)
         let keys: Vec<SecretKey> = (0..tx.inputs.len()).map(|_| secret_key).collect();
-        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, req.shard_id as u8)?;
+        // chain_id = shard_id + 1. This used to pass `req.shard_id as u8`, so
+        // every signature was for the wrong chain and failed TX-5 on a node.
+        let chain_id = common_types::transaction::shard_chain_id(req.shard_id);
+        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, chain_id)?;
 
         Ok((tx, witnesses))
     }
