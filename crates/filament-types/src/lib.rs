@@ -32,7 +32,7 @@ pub mod common {
         pub use crate::hash;
         pub use crate::hash::hash_pair;
         pub use crate::tx_sighash;
-        pub use crate::tx_sighash::flat_tx_sighash;
+        pub use crate::tx_sighash::{prevouts_hash, sighash_v2};
         pub use crate::weighted_hash;
         pub use crate::weighted_hash::{
             bag_peaks_weighted, hash_pair_weighted, rbits_add, rbits_to_u128_approx, WeightedHash,
@@ -65,6 +65,6 @@ pub mod transaction {
 
 pub use hash::hash_pair;
 pub use relay_hash::relay_id;
-pub use tx_sighash::flat_tx_sighash;
+pub use tx_sighash::{prevouts_hash, sighash_v2};
 pub use types::ChainType;
 pub use weighted_hash::{bag_peaks_weighted, rbits_to_u128_approx, WeightedHash};
