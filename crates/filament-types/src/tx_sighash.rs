@@ -1,52 +1,15 @@
-// filament-types/src/tx_sighash.rs — per-input signature preimage.
+// filament-types/src/tx_sighash.rs — per-input signature hash (sighash v2).
 //
 // Domain-separated by `chain_id` (the sole cross-shard replay protection
 // under the single-key address model) and binds the full flat input/output
 // set plus the specific input being signed.
 
-use crate::transaction::{FlatInput, FlatOutput};
-
-/// Compute the BLAKE3 sighash for `inputs[input_index]`.
-pub fn flat_tx_sighash(
-    chain_id: u8,
-    tx_version: u8,
-    locktime: u32,
-    expiration_height: u32,
-    inputs: &[FlatInput],
-    outputs: &[FlatOutput],
-    input_index: u32,
-) -> Result<[u8; 32], String> {
-    if input_index as usize >= inputs.len() {
-        return Err(format!("sighash input_index {input_index} out of range"));
-    }
-
-    let mut preimage = Vec::new();
-    preimage.push(chain_id);
-    preimage.push(tx_version);
-    preimage.extend_from_slice(&locktime.to_le_bytes());
-    preimage.extend_from_slice(&expiration_height.to_le_bytes());
-
-    preimage.extend_from_slice(&(inputs.len() as u32).to_le_bytes());
-    for input in inputs {
-        preimage.extend_from_slice(&input.prev_height.to_le_bytes());
-        preimage.extend_from_slice(&input.prev_output_idx.to_le_bytes());
-    }
-
-    preimage.extend_from_slice(&(outputs.len() as u32).to_le_bytes());
-    for output in outputs {
-        preimage.extend_from_slice(&output.value.to_le_bytes());
-        preimage.extend_from_slice(&output.recipient);
-    }
-
-    preimage.extend_from_slice(&input_index.to_le_bytes());
-
-    Ok(*blake3::hash(&preimage).as_bytes())
-}
 
 // ── VF-3 Phase 2: sighash v2 ───────────────────────────────────────────────
 // Mirrors the monorepo's common-types `prevouts_hash` / `sighash_v2`; the
-// vectors below are pinned there too. Nodes use v2 only once the R-4
-// activation selects it; until then every transaction signs v1.
+// vectors below are pinned there too. The only sighash: every spend is
+// version 2 and signs this (the old v1 preimage was removed before any
+// network ran it).
 
 /// `BLAKE3("shisha/prevouts/v1" ‖ n:u32 ‖ [value u64 ‖ recipient [u8;32]] × n)`:
 /// the outputs being spent, in input order.
@@ -74,34 +37,6 @@ pub fn sighash_v2(txid: &[u8; 32], prevouts_hash: &[u8; 32], input_index: u32) -
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Same value the monorepo's common-types, tools/tx-spammer and the
-    /// Ledger app's host test pin. If it changes, change all of them.
-    #[test]
-    fn matches_node_flat_tx_sighash_vector() {
-        let inputs = [FlatInput { prev_height: 1, prev_output_idx: 0 }];
-        let outputs = [FlatOutput { value: 100, recipient: [7u8; 32] }];
-        let h = flat_tx_sighash(7, 1, 0, 0, &inputs, &outputs, 0).unwrap();
-        assert_eq!(
-            hex::encode(h),
-            "070d917f26abf799bba0573cbd79dd95c2282eace117f8dd4d111576132fcf98"
-        );
-    }
-
-    #[test]
-    fn out_of_range_input_index_errors() {
-        let r = flat_tx_sighash(1, 1, 0, 0, &[], &[], 0);
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn different_chain_id_gives_different_sighash() {
-        let inputs = [FlatInput { prev_height: 1, prev_output_idx: 0 }];
-        let outputs = [FlatOutput { value: 100, recipient: [1u8; 32] }];
-        let a = flat_tx_sighash(1, 1, 0, 0, &inputs, &outputs, 0).unwrap();
-        let b = flat_tx_sighash(2, 1, 0, 0, &inputs, &outputs, 0).unwrap();
-        assert_ne!(a, b);
-    }
 
     /// VF-3 Phase 2 vectors, same values as the monorepo's common-types
     /// `txid.rs::sighash_v2_vectors`. Change them together.

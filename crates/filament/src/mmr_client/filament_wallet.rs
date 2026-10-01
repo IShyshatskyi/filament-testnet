@@ -530,8 +530,13 @@ impl FilamentWallet {
             prev_output_idx: u.output_idx,
         }).collect();
 
+        // Atoms per input. `UtxoEntry.value` is f64 coins: round, never
+        // truncate (0.29 * 1e8 = 28_999_999.99...). Sighash v2 commits each
+        // spent value exactly, so an off-by-one atom invalidates the signature.
+        let in_atoms: Vec<u64> = utxos.iter().map(|u| (u.value * ATOMS_PER_COIN).round() as u64).collect();
+
         // Compute total input value and change
-        let total_in: u64 = utxos.iter().map(|u| (u.value * ATOMS_PER_COIN) as u64).sum();
+        let total_in: u64 = in_atoms.iter().sum();
         let total_out = req.amount_atoms.checked_add(req.fee_atoms)
             .ok_or("amount + fee overflow")?;
         if total_in < total_out {
@@ -555,7 +560,7 @@ impl FilamentWallet {
         }
 
         let tx = Transaction {
-            version: 1,
+            version: 2, // TX-11: every spend is version 2 (sighash v2)
             inputs,
             outputs,
             locktime: current_height,
@@ -568,7 +573,11 @@ impl FilamentWallet {
         // chain_id = shard_id + 1. This used to pass `req.shard_id as u8`, so
         // every signature was for the wrong chain and failed TX-5 on a node.
         let chain_id = common_types::transaction::shard_chain_id(req.shard_id);
-        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, chain_id)?;
+        // Sighash v2 commits the spent outputs: our own key received every one.
+        let own = bitcoin::secp256k1::Keypair::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &secret_key)
+            .x_only_public_key().0.serialize();
+        let prevouts: Vec<(u64, [u8; 32])> = in_atoms.iter().map(|&v| (v, own)).collect();
+        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, chain_id, &prevouts)?;
 
         Ok((tx, witnesses))
     }

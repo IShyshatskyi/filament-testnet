@@ -25,24 +25,13 @@ use bitcoin::secp256k1::rand::rngs::OsRng;
 pub struct SchnorrSigner;
 
 impl SchnorrSigner {
-    /// Sign a transaction, returning one `WitnessEntry` per input.
+    /// Sign a transaction with sighash v2, returning one `WitnessEntry` per
+    /// input (TX-5). `tx.version` must be 2 (TX-11).
     ///
-    /// `keys` must have the same length as `tx.inputs`. Each key signs the
-    /// sighash for its corresponding input using BIP-340 Schnorr.
+    /// `keys[i]` signs input `i`. `prevouts[i]` is the `(value, recipient)` of
+    /// the output input `i` spends; they are committed, so a wrong value
+    /// makes every signature invalid.
     pub fn sign_transaction(
-        tx: &Transaction,
-        keys: &[SecretKey],
-        chain_id: u8,
-    ) -> Result<Vec<WitnessEntry>, String> {
-        Self::sign_with(tx, keys, |i| Self::sighash(tx, i, chain_id))
-    }
-
-    /// VF-3 Phase 2: sign with sighash v2 (`version` must be 2 for a node to
-    /// select v2 once it is active). `prevouts` are the `(value, recipient)`
-    /// of the outputs being spent, in input order; they are committed, so a
-    /// wrong value makes the signature invalid. Not used by the wallet until
-    /// the network's activation point is known.
-    pub fn sign_transaction_v2(
         tx: &Transaction,
         keys: &[SecretKey],
         chain_id: u8,
@@ -59,6 +48,20 @@ impl SchnorrSigner {
         Self::sign_with(tx, keys, |i| {
             Ok(common_types::common::crypto::sighash_v2(&txid, &prev, i as u32))
         })
+    }
+
+    /// The sighash v2 for input `input_index`.
+    pub fn sighash(
+        tx: &Transaction,
+        input_index: usize,
+        chain_id: u8,
+        prevouts: &[(u64, [u8; 32])],
+    ) -> [u8; 32] {
+        common_types::common::crypto::sighash_v2(
+            &tx.txid(chain_id).0,
+            &common_types::common::crypto::prevouts_hash(prevouts),
+            input_index as u32,
+        )
     }
 
     fn sign_with(
@@ -89,57 +92,6 @@ impl SchnorrSigner {
         }
         Ok(witnesses)
     }
-
-    /// Compute the Shisha sighash for one input.
-    ///
-    /// Preimage (all LE):
-    ///   chain_id(u8) || tx_version(u8) || locktime(u32) || expiration_height(u32)
-    ///   || n_inputs(u32) || [prev_height(u32) + prev_output_idx(u16)] × n
-    ///   || n_outputs(u32) || [value(u64) + recipient([u8;32])] × m
-    ///   || input_index(u32)
-    ///
-    /// Notes:
-    /// - `chain_id` is a u8 shard identifier providing cross-shard replay protection.
-    /// - `tx_version` is cast to u8; the u32 field in `Transaction` is legacy and will
-    ///   be narrowed to u8 in a future struct migration.
-    /// - `expiration_height` commits the CV-11/TE-2 expiry window so it cannot be
-    ///   stripped post-signing (design §20.5).
-    /// - Extension data (e.g., ShortAddrHints) will be appended before `input_index`
-    ///   once `Transaction` gains an `extensions: Vec<ExtensionRecord>` field (SAM phase).
-    /// - Prevout values will be appended for Ledger hardware wallet fee display once
-    ///   `sign_transaction` receives UTXO value inputs.
-    pub fn sighash(
-        tx: &Transaction,
-        input_index: usize,
-        chain_id: u8,
-    ) -> Result<[u8; 32], String> {
-        let inputs: Vec<common_types::transaction::FlatInput> = tx
-            .inputs
-            .iter()
-            .map(|i| common_types::transaction::FlatInput {
-                prev_height: i.prev_height,
-                prev_output_idx: i.prev_output_idx,
-            })
-            .collect();
-        let outputs: Vec<common_types::transaction::FlatOutput> = tx
-            .outputs
-            .iter()
-            .map(|o| common_types::transaction::FlatOutput {
-                value: o.value,
-                recipient: o.recipient,
-            })
-            .collect();
-        common_types::common::crypto::flat_tx_sighash(
-            chain_id,
-            tx.version.min(u32::from(u8::MAX)) as u8,
-            tx.locktime,
-            tx.expiration_height,
-            &inputs,
-            &outputs,
-            input_index as u32,
-        )
-        .map_err(|e| format!("{e}"))
-    }
 }
 
 #[cfg(test)]
@@ -151,7 +103,7 @@ mod tests {
 
     fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         Transaction {
-            version: 1,
+            version: 2,
             inputs: (0..n_inputs)
                 .map(|i| TxInput { prev_height: 1, prev_output_idx: i as u16 })
                 .collect(),
@@ -170,7 +122,7 @@ mod tests {
         let secp = TestSecp256k1::new();
         let key = SecretKey::new(&mut TestOsRng);
         let _ = &secp;
-        let err = SchnorrSigner::sign_transaction(&tx, &[key], 0).unwrap_err();
+        let err = SchnorrSigner::sign_transaction(&tx, &[key], 0, &[(1, [7u8; 32]); 2]).unwrap_err();
         assert!(err.contains("key count"));
     }
 
@@ -178,7 +130,7 @@ mod tests {
     fn sign_transaction_produces_one_witness_per_input() {
         let tx = make_tx(2, 1);
         let keys = vec![SecretKey::new(&mut TestOsRng), SecretKey::new(&mut TestOsRng)];
-        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, 0).unwrap();
+        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, 0, &[(1, [7u8; 32]); 2]).unwrap();
         assert_eq!(witnesses.len(), 2);
         for w in &witnesses {
             assert_eq!(w.witness_data.len(), 65);
@@ -189,8 +141,8 @@ mod tests {
     #[test]
     fn sighash_differs_by_chain_id() {
         let tx = make_tx(1, 1);
-        let h0 = SchnorrSigner::sighash(&tx, 0, 0).unwrap();
-        let h1 = SchnorrSigner::sighash(&tx, 0, 1).unwrap();
+        let h0 = SchnorrSigner::sighash(&tx, 0, 0, &[(1, [7u8; 32])]);
+        let h1 = SchnorrSigner::sighash(&tx, 0, 1, &[(1, [7u8; 32])]);
         assert_ne!(h0, h1, "chain_id must provide cross-shard replay protection");
     }
 
@@ -205,7 +157,7 @@ mod tests {
         let mut tx = make_tx(2, 1);
         tx.version = 2;
         let prevouts = [(1000u64, pk.serialize()), (500u64, pk.serialize())];
-        let w = SchnorrSigner::sign_transaction_v2(&tx, &[key, key], 1, &prevouts).unwrap();
+        let w = SchnorrSigner::sign_transaction(&tx, &[key, key], 1, &prevouts).unwrap();
         let txid = tx.txid(1).0;
         let prev = common_types::common::crypto::prevouts_hash(&prevouts);
         for (i, wit) in w.iter().enumerate() {
@@ -213,6 +165,6 @@ mod tests {
             let sig = Signature::from_slice(&wit.witness_data[1..]).unwrap();
             secp.verify_schnorr(&sig, &msg, &pk).expect("v2 witness verifies");
         }
-        assert!(SchnorrSigner::sign_transaction_v2(&tx, &[key, key], 1, &prevouts[..1]).is_err());
+        assert!(SchnorrSigner::sign_transaction(&tx, &[key, key], 1, &prevouts[..1]).is_err());
     }
 }
