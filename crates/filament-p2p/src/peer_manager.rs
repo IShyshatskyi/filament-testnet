@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -20,6 +21,12 @@ use crate::messages::{
     NetAddr, ShishaMessage, VersionMessage, GENESIS_HASH_LEN, MIN_ACCEPTED_VERSION, UNKNOWN_GENESIS_HASH,
     WIRE_VERSION,
 };
+
+/// A peer must finish the version/verack exchange within this long, or the
+/// connection is dropped (the full node uses the same 5 s).
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Dialing gives up after this long.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const NODE_NETWORK: u64 = 1 << 0;
 pub const NODE_LIGHT: u64 = 1 << 1;
@@ -137,6 +144,7 @@ pub struct PeerManager {
     listen_addr: Mutex<Option<SocketAddr>>,
     listen_addr_notify: Notify,
     backlog: usize,
+    handshake_timeout_ms: AtomicU64,
 }
 
 /// Read-only view of the connected-peer count and bookkeeping — mirrors the
@@ -172,7 +180,13 @@ impl PeerManager {
             listen_addr: Mutex::new(None),
             listen_addr_notify: Notify::new(),
             backlog,
+            handshake_timeout_ms: AtomicU64::new(HANDSHAKE_TIMEOUT.as_millis() as u64),
         })
+    }
+
+    /// Override [`HANDSHAKE_TIMEOUT`] (tests, slow links).
+    pub fn set_handshake_timeout(&self, timeout: Duration) {
+        self.handshake_timeout_ms.store(timeout.as_millis() as u64, Ordering::Relaxed);
     }
 
     pub fn protocol(&self) -> &ShishaProtocol {
@@ -249,7 +263,11 @@ impl PeerManager {
     }
 
     pub async fn connect(self: &Arc<Self>, addr: SocketAddr) {
-        match TcpStream::connect(addr).await {
+        let dialed = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(r) => r,
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out")),
+        };
+        match dialed {
             Ok(stream) => {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
@@ -278,60 +296,13 @@ impl PeerManager {
         addr: SocketAddr,
         inbound: bool,
     ) -> Result<(), String> {
-        let our_nonce = self.caps.nonce;
         let magic = self.protocol.magic();
 
-        // Outbound: send Version first. Inbound: wait for theirs first.
-        if !inbound {
-            let v = self.build_version_msg(addr);
-            self.write_frame(&mut stream, &v).await?;
-        }
-
-        let mut buf: Vec<u8> = Vec::with_capacity(4096);
-        let mut read_buf = [0u8; 4096];
-        let mut got_version = false;
-        let mut got_verack = false;
-        let mut sent_verack = false;
-
-        while !(got_version && got_verack) {
-            let n = stream
-                .read(&mut read_buf)
-                .await
-                .map_err(|e| format!("handshake read: {e}"))?;
-            if n == 0 {
-                return Err("connection closed during handshake".into());
-            }
-            buf.extend_from_slice(&read_buf[..n]);
-
-            while let Some((raw, consumed)) = try_decode(magic, &buf).map_err(|e| format!("handshake decode: {e}"))? {
-                let msg = ShishaMessage::decode(&raw.command, &raw.payload).map_err(|e| format!("handshake parse: {e}"))?;
-                buf.drain(..consumed);
-
-                match msg {
-                    ShishaMessage::Version(v) => {
-                        if v.nonce == our_nonce {
-                            return Err("self-connection".into());
-                        }
-                        self.protocol.check_peer_version(&v)?;
-                        got_version = true;
-                        if inbound {
-                            let ours = self.build_version_msg(addr);
-                            self.write_frame(&mut stream, &ours).await?;
-                        }
-                        if !sent_verack {
-                            self.write_frame(&mut stream, &ShishaMessage::VerAck).await?;
-                            sent_verack = true;
-                        }
-                    }
-                    ShishaMessage::VerAck => {
-                        got_verack = true;
-                    }
-                    _ => {
-                        // Anything else this early is out of scope — ignore.
-                    }
-                }
-            }
-        }
+        let limit = Duration::from_millis(self.handshake_timeout_ms.load(Ordering::Relaxed));
+        let buf = match tokio::time::timeout(limit, self.handshake(&mut stream, addr, inbound, magic)).await {
+            Ok(r) => r?,
+            Err(_) => return Err(format!("handshake timed out after {limit:?}")),
+        };
 
         // Handshake complete — register the peer and run the steady-state loop.
         let peer_id = self.next_peer_id.fetch_add(1, Ordering::Relaxed);
@@ -357,16 +328,18 @@ impl PeerManager {
         let read_result: Result<(), String> = async {
             let mut rb = [0u8; 8192];
             loop {
-                let n = read_half.read(&mut rb).await.map_err(|e| e.to_string())?;
-                if n == 0 {
-                    return Ok(());
-                }
-                leftover.extend_from_slice(&rb[..n]);
+                // Frames already buffered (read together with the handshake)
+                // are delivered before blocking on the socket again.
                 while let Some((raw, consumed)) = try_decode(magic, &leftover)? {
                     let msg = ShishaMessage::decode(&raw.command, &raw.payload)?;
                     leftover.drain(..consumed);
                     this.dispatch_inbound(peer_id, msg).await;
                 }
+                let n = read_half.read(&mut rb).await.map_err(|e| e.to_string())?;
+                if n == 0 {
+                    return Ok(());
+                }
+                leftover.extend_from_slice(&rb[..n]);
             }
         }
         .await;
@@ -406,6 +379,78 @@ impl PeerManager {
         if let Some(handler) = handler {
             handler(notif);
         }
+    }
+
+    /// Version/verack exchange. Returns the bytes read past the handshake:
+    /// they may already hold complete frames (a node pushes right behind its
+    /// `verack`), so nothing after the handshake is consumed here.
+    async fn handshake(
+        &self,
+        stream: &mut TcpStream,
+        addr: SocketAddr,
+        inbound: bool,
+        magic: u32,
+    ) -> Result<Vec<u8>, String> {
+        let our_nonce = self.caps.nonce;
+
+        // Outbound: send Version first. Inbound: wait for theirs first.
+        if !inbound {
+            let v = self.build_version_msg(addr);
+            self.write_frame(stream, &v).await?;
+        }
+
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
+        let mut read_buf = [0u8; 4096];
+        let mut got_version = false;
+        let mut got_verack = false;
+        let mut sent_verack = false;
+
+        while !(got_version && got_verack) {
+            let n = stream
+                .read(&mut read_buf)
+                .await
+                .map_err(|e| format!("handshake read: {e}"))?;
+            if n == 0 {
+                return Err("connection closed during handshake".into());
+            }
+            buf.extend_from_slice(&read_buf[..n]);
+
+            // Stop as soon as both halves are in: anything behind the verack is
+            // regular traffic and stays in `buf` for the caller.
+            while !(got_version && got_verack) {
+                let Some((raw, consumed)) = try_decode(magic, &buf).map_err(|e| format!("handshake decode: {e}"))? else {
+                    break;
+                };
+                let msg = ShishaMessage::decode(&raw.command, &raw.payload).map_err(|e| format!("handshake parse: {e}"))?;
+                buf.drain(..consumed);
+
+                match msg {
+                    ShishaMessage::Version(v) => {
+                        if v.nonce == our_nonce {
+                            return Err("self-connection".into());
+                        }
+                        self.protocol.check_peer_version(&v)?;
+                        got_version = true;
+                        if inbound {
+                            let ours = self.build_version_msg(addr);
+                            self.write_frame(stream, &ours).await?;
+                        }
+                        if !sent_verack {
+                            self.write_frame(stream, &ShishaMessage::VerAck).await?;
+                            sent_verack = true;
+                        }
+                    }
+                    ShishaMessage::VerAck => {
+                        got_verack = true;
+                    }
+                    _ => {
+                        // Anything else this early is out of scope — ignore.
+                    }
+                }
+            }
+        }
+
+        Ok(buf)
     }
 
     fn build_version_msg(&self, their_addr: SocketAddr) -> ShishaMessage {

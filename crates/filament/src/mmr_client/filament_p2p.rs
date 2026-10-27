@@ -362,4 +362,57 @@ mod tests {
 
         p2p.shutdown();
     }
+    /// The hash the full node documents for testnet-stress. If this drifts, every
+    /// real client is refused at the handshake, so it is pinned here on purpose.
+    const TESTNET_STRESS_GENESIS: &str = "00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040";
+
+    fn hex32(s: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn testnet_stress_is_pinned_to_the_documented_genesis_hash() {
+        let p = protocol_for_network("testnet-stress");
+        assert_eq!(p.genesis_hash(), hex32(TESTNET_STRESS_GENESIS));
+        assert_eq!(p.magic(), u32::from_le_bytes(*b"SHTS"));
+    }
+
+    #[test]
+    fn networks_without_a_mined_genesis_advertise_unknown() {
+        // devnet / testnet1 / testnet2 / mainnet carry an all-zero hash in the
+        // bootstrap config until they are mined; zero must never be sent as a
+        // real identity (a node compares only when both sides are non-zero, but
+        // pinning zero would make intent unreadable).
+        for net in ["devnet", "testnet1", "testnet2", "mainnet"] {
+            assert_eq!(protocol_for_network(net).genesis_hash(), [0u8; 32], "{net} should be unpinned");
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_network_is_unpinned_but_still_has_its_own_magic() {
+        let p = protocol_for_network("my-private-net");
+        assert_eq!(p.genesis_hash(), [0u8; 32]);
+        assert_eq!(p.magic(), p2p_proto::magic_for_network("my-private-net"));
+    }
+
+    #[test]
+    fn a_node_on_another_testnet_stress_chain_is_refused_by_the_overlay_protocol() {
+        use p2p_proto::{NetAddr, VersionMessage, WIRE_VERSION};
+        let p = protocol_for_network("testnet-stress");
+        let mut theirs = VersionMessage::new(
+            WIRE_VERSION,
+            1,
+            7,
+            NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+            NetAddr::from_socket_addr("127.0.0.1:2".parse().unwrap(), 1),
+        );
+        theirs.genesis_hash = [0xAB; 32];
+        assert!(p.check_peer_version(&theirs).unwrap_err().contains("genesis mismatch"));
+        theirs.genesis_hash = hex32(TESTNET_STRESS_GENESIS);
+        assert!(p.check_peer_version(&theirs).is_ok());
+    }
 }
