@@ -12,4 +12,4 @@ license = "MIT"
 authors = ["IShyshatskyi"]
 
 # Public Filament-Test packaging for the Heaviest Chain Rule Test Network.
-# Upstream crates sync from the private monorepo via scripts/sync_from_shisha.sh.
+# Maintainer sync tooling lives in scripts/.

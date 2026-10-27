@@ -1,6 +1,6 @@
 // crates/filament/src/seeds.rs
 //
-// PD-4 — Compile-time hardcoded seed list (Layer 4 of peer discovery).
+// Compile-time hardcoded seed list (Layer 4 of peer discovery).
 // Updated with every release.  Last resort: used only when cache, manual
 // peers, and DNS all yield nothing.
 

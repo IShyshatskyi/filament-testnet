@@ -451,8 +451,7 @@ impl ChainHandler {
     
     /// Verify a peer-supplied chain summary's proof and shard-id validity,
     /// WITHOUT mutating local state or comparing weight against the current
-    /// tip. Extracted from `apply_chain_summary` (MNT-3,
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`) so multi-peer
+    /// tip. Extracted from `apply_chain_summary` so multi-peer
     /// reconciliation can independently verify every candidate response
     /// before picking the max-weight winner — a response can't be trusted
     /// just because it answered first or claims a higher weight than

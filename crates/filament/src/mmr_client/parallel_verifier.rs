@@ -11,7 +11,7 @@
 //
 // # Design mirrors S5 (parallel PoW validation in P2P)
 //
-// The S5 module (`src/p2p/common/pow_validator.rs`) established the pattern:
+// The full node's parallel PoW validator established the pattern:
 //   - A single `OnceLock<rayon::ThreadPool>` shared across all callers.
 //   - An adaptive threshold: below it, fall back to sequential verification
 //     on the caller's thread to avoid rayon scheduling overhead.
@@ -203,8 +203,8 @@ mod tests {
         bag_peaks_weighted, hash_pair_weighted, WeightedHash,
     };
 
-    // Build a single-leaf valid WeightedMMRBatchProof without the private
-    // MMR write/construction engine (weighted_mmr_core is out of public scope).
+    // Build a single-leaf valid WeightedMMRBatchProof with the public
+    // hash helpers only (this crate does not construct MMRs).
     //
     // A 1-leaf MMR has one peak (the leaf itself), no sibling path, and a
     // root equal to bag_peaks_weighted([leaf], anchor).
@@ -427,8 +427,7 @@ mod tests {
 
     // ── PPV-12: WeightedMMRRangeProof sequential path ────────────────────────
     //
-    // Build a 2-leaf range covering [0, 2) with public hash helpers only
-    // (no private WindowedWeightedMMR write engine).
+    // Build a 2-leaf range covering [0, 2) with public hash helpers only.
 
     #[test]
     fn ppv12_range_proof_sequential_path() {

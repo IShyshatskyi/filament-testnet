@@ -3,9 +3,7 @@
 // Starts the Filament HTTP server (port 7380) backed by MultiChainClient
 // MMR proof verifier and a watch-only wallet delegate.
 //
-// Moved here from `shisha-core` `src/bin/filament.rs` once Gap 9 made a
-// sole `filament` + `common-types` dependency feasible (no monolith).
-// The Tauri desktop binary uses this crate via `filament_app/`.
+// The desktop app builds on the same `filament` library crate.
 //
 // Usage:
 //   filament [--network <testnet1|testnet2|mainnet|devnet|testnet-stress>]
@@ -22,10 +20,9 @@
 // that on a separate port from the main wallet-ops REST API; a single-port
 // Keystone build (e.g. a local soak) needs this set to match.
 //
-// MNT-1: --keystone-extra may be passed multiple times to configure
-// additional Keystone endpoints alongside --keystone; wallet ops fan out to
-// all of them rather than trusting a single node. See
-// filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
+// --keystone-extra may be passed multiple times to configure additional
+// Keystone endpoints alongside --keystone; wallet ops fan out to all of them
+// rather than trusting a single node.
 //
 // Path-2 P2P dial sources:
 //   • --keystone / REST endpoints → host + --keystone-p2p-port (default 18334)
@@ -200,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Filament starting — network: {}, port: {}", config.network, config.port);
 
-    // TS-PORTAL-2f: optional spending-key custody for `/wallet/sign-message`.
+    // Optional spending-key custody for `/wallet/sign-message`.
     // Precedence: FILAMENT_SIGNING_KEY (raw hex) > config.signing_key_file.
     let signing_key: Option<bitcoin::secp256k1::SecretKey> = {
         let raw = env::var("FILAMENT_SIGNING_KEY").ok().or_else(|| {
@@ -231,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // MNT-1/7 + PD-INT-1: wallet endpoints include discovery merge at startup;
+    // + wallet endpoints include discovery merge at startup;
     // `start_server` runs `apply_startup_peer_discovery` before serving.
     let mut wallet = FilamentWallet::new(address, config.keystone_endpoint.clone());
     wallet.set_keystone_endpoints(config.all_keystone_endpoints());

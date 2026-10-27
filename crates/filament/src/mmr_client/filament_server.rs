@@ -1,6 +1,6 @@
 // src/mmr_client/filament_server.rs — Filament HTTP API server (port 7380)
 //
-// All 14+ endpoints described in docs/plan/Filament_App_Plan.md.
+// HTTP API endpoints for the Filament light client.
 // Only compiled when the `full-node` feature is active (axum, tower-http).
 
 #![cfg(feature = "full-node")]
@@ -40,12 +40,11 @@ pub struct FilamentNodeConfig {
     pub port: u16,
     pub node_endpoint: Option<String>,
     pub keystone_endpoint: Option<String>,
-    /// MNT-1: additional Keystone REST endpoints to fan wallet-ops queries
+    /// Additional Keystone REST endpoints to fan wallet-ops queries
     /// out to, alongside `keystone_endpoint`/`node_endpoint` (kept for
     /// backward compatibility with existing config files — see
     /// `all_keystone_endpoints()` for the merged, de-duplicated list
-    /// actually used by the wallet). See
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` Track B.
+    /// actually used by the wallet).
     #[serde(default)]
     pub keystone_rest_endpoints: Vec<String>,
     pub data_dir: String,
@@ -58,17 +57,16 @@ pub struct FilamentNodeConfig {
     /// DNS seed hostnames for Layer 3 peer discovery.
     #[serde(default = "default_dns_seeds")]
     pub dns_seeds: Vec<String>,
-    /// Live sync loop (MNT-2/3/4 wired to real peers): port each configured
+    /// Live sync loop (wired to real peers): port each configured
     /// Keystone's light-client `GET /chain/summary` API listens on —
     /// same host as each `keystone_rest_endpoints`/`keystone_endpoint` entry,
     /// different port (Keystone's `mmr_light_client.port`, default 8080 on
     /// the Keystone side; matches `default_light_client_summary_port` here).
-    /// See `light_client_summary_url` and
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+    /// See `light_client_summary_url`.
     #[serde(default = "default_light_client_summary_port")]
     pub light_client_summary_port: u16,
     /// Keystone wallet REST port used when converting discovery `(host, port)`
-    /// tuples into `http://host:port` endpoint URLs (PD-INT-1). Discovery
+    /// tuples into `http://host:port` endpoint URLs. Discovery
     /// seeds advertise ShishaNet P2P ports; wallet ops use this port instead.
     #[serde(default = "default_keystone_rest_port")]
     pub keystone_rest_port: u16,
@@ -98,7 +96,7 @@ pub struct FilamentNodeConfig {
     /// the proofs were built against.
     #[serde(default)]
     pub bitcoin_anchor_hex: Option<String>,
-    /// TS-PORTAL-2f: optional path to a file holding this wallet's 32-byte
+    /// Optional path to a file holding this wallet's 32-byte
     /// spending secret key, hex-encoded (same shape as `faucet-server`'s
     /// `secret_key_file`). When set, the wallet address is derived from this
     /// key and `POST /wallet/sign-message` can sign a Testnet Portal auth
@@ -169,7 +167,7 @@ impl FilamentNodeConfig {
 }
 
 impl FilamentNodeConfig {
-    /// MNT-1: the full, de-duplicated list of Keystone REST endpoints this
+    /// The full, de-duplicated list of Keystone REST endpoints this
     /// wallet should query — `keystone_rest_endpoints` plus the legacy
     /// single-URL `keystone_endpoint`/`node_endpoint` fields, so existing
     /// config files keep working unedited. `keystone_rest_endpoints` comes
@@ -184,7 +182,7 @@ impl FilamentNodeConfig {
         eps
     }
 
-    /// PD-INT-1: configured Keystone REST endpoints plus any peers returned
+    /// Configured Keystone REST endpoints plus any peers returned
     /// by `PeerDiscovery::resolve()` (cache → manual → hardcoded seeds).
     pub fn effective_keystone_endpoints(
         &self,
@@ -228,7 +226,7 @@ impl FilamentNodeConfig {
             .collect()
     }
 
-    /// PD-INT-1: light-client summary URLs derived from discovery-aware endpoints.
+    /// Light-client summary URLs derived from discovery-aware endpoints.
     pub fn effective_light_client_summary_urls(
         &self,
         cache: Option<&crate::peer_cache::PeerCache>,
@@ -239,7 +237,7 @@ impl FilamentNodeConfig {
             .collect()
     }
 
-    /// PD-UI-4: record a user-added peer in `manual_peers` (idempotent).
+    /// Record a user-added peer in `manual_peers` (idempotent).
     pub fn upsert_manual_peer(&mut self, host: impl Into<String>, port: u16) -> bool {
         let host = host.into();
         if self.manual_peers.iter().any(|(h, p)| h == &host && *p == port) {
@@ -249,7 +247,7 @@ impl FilamentNodeConfig {
         true
     }
 
-    /// PD-UI-4: drop a user-added peer from `manual_peers`.
+    /// Drop a user-added peer from `manual_peers`.
     pub fn drop_manual_peer(&mut self, host: &str, port: u16) -> bool {
         let before = self.manual_peers.len();
         self.manual_peers.retain(|(h, p)| !(h == host && *p == port));
@@ -283,7 +281,7 @@ fn light_client_summary_url(endpoint: &str, light_client_summary_port: u16) -> O
     Some(format!("{}:{}", scheme_and_host, light_client_summary_port))
 }
 
-/// PD-INT-1: run peer discovery at startup — merge resolved peers into the
+/// Run peer discovery at startup — merge resolved peers into the
 /// wallet's Keystone REST endpoint list and seed `MultiChainClient` for trust
 /// reconciliation before the first sync tick.
 pub async fn apply_startup_peer_discovery(
@@ -303,7 +301,7 @@ pub async fn apply_startup_peer_discovery(
         }
     };
 
-    // PD-INT-2: resolve DNS seeds into the cache before synchronous resolve().
+    // Resolve DNS seeds into the cache before synchronous resolve().
     let dns_written = crate::dns_seeds::refresh_dns_seeds_into_cache(
         &cache,
         &config.dns_seeds,
@@ -311,7 +309,7 @@ pub async fn apply_startup_peer_discovery(
     )
     .await;
     if dns_written > 0 {
-        info!("PD-INT-2: cached {dns_written} DNS seed peer(s) at startup");
+        info!("cached {dns_written} DNS seed peer(s) at startup");
     }
 
     let peers = resolve_discovery_peers(
@@ -359,7 +357,7 @@ pub async fn apply_startup_peer_discovery(
         }
     }
     if added > 0 {
-        info!("PD-INT-1: registered {added} discovery peer(s) from startup resolve");
+        info!("registered {added} discovery peer(s) from startup resolve");
     }
 }
 
@@ -534,7 +532,7 @@ impl SyncStats {
             ChainSyncStatus::Error { .. } => {
                 self.phase = "error".into();
             }
-            // MNT-6: chain state may be current, but not enough independent
+            // Chain state may be current, but not enough independent
             // peers are connected to trust it — surfaced distinctly rather
             // than folded into "synced".
             ChainSyncStatus::InsufficientPeers { .. } => {
@@ -565,7 +563,7 @@ async fn save_config_to_disk(cfg: &FilamentNodeConfig) {
     }
 }
 
-/// PD-UI-4: atomically persist `FilamentNodeConfig` to `<data_dir>/config.toml`.
+/// Atomically persist `FilamentNodeConfig` to `<data_dir>/config.toml`.
 pub async fn save_filament_config(cfg: &FilamentNodeConfig) {
     save_config_to_disk(cfg).await;
 }
@@ -706,7 +704,7 @@ pub async fn wire_f2f_inbox_subscription(
     })).await;
 }
 
-// ── FUD-5: Watch notifications (LC-45..LC-47c) ─────────────────────────────
+// ── Watch notifications ─────────────────────────────
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -897,7 +895,7 @@ async fn advance_watch_invoice_confirmations(
             min_depth,
         ) {
             for id in confirmed {
-                log::info!("FUD-5: invoice confirmed on shard {shard_id} at tip {tip}");
+                log::info!("invoice confirmed on shard {shard_id} at tip {tip}");
                 if let Some(tx) = sse_tx {
                     let _ = tx.send(json!({
                         "type": "tx_inclusion",
@@ -1006,8 +1004,8 @@ pub async fn wire_watch_notify_subscription(
     } else {
         confirmation_depth
     };
-    // FUD-5: per-shard anchor cache (shard_id -> genesis anchor). A shard's
-    // own anchor is dynamic (CV-23) and unrelated to the beacon's — see
+    // Per-shard anchor cache (shard_id -> genesis anchor). A shard's
+    // own anchor is dynamic and unrelated to the beacon's — see
     // `fetch_shard_genesis_anchor`'s own doc comment. No production path
     // ever calls `MultiChainClient::add_shard_chain` (it exists only as a
     // doc example / test helper — confirmed by grep), so `get_shard_state`
@@ -1041,8 +1039,8 @@ pub async fn wire_watch_notify_subscription(
                         process_inclusion_notif, InclusionApplyResult,
                     };
 
-                    // FUD-5 fix: a shard's own MMR is constructed with its own
-                    // dynamic per-shard genesis anchor (CV-23: the beacon chain's
+                    // Fix: a shard's own MMR is constructed with its own
+                    // dynamic per-shard genesis anchor (the beacon chain's
                     // `current_mmr_root` at the shard's activation height), not
                     // the beacon chain's own — structurally unrelated — genesis
                     // anchor. `TxInclusionNotif` is exclusively a shard-watch
@@ -1075,7 +1073,7 @@ pub async fn wire_watch_notify_subscription(
                                 Some(a) => a,
                                 None => {
                                     log::warn!(
-                                        "FUD-5: could not resolve shard {shard_id}'s genesis \
+                                        "could not resolve shard {shard_id}'s genesis \
                                          anchor (no local ChainState, no light-client API \
                                          endpoint reachable) — dropping inclusion notif"
                                     );
@@ -1152,12 +1150,12 @@ pub async fn wire_watch_notify_subscription(
                         }
                         Ok((InclusionApplyResult::InvalidProof, _)) => {
                             log::warn!(
-                                "FUD-5: rejected inclusion notif — invalid MMR proof \
+                                "rejected inclusion notif — invalid MMR proof \
                                  (invalidating shard {shard_id} genesis-anchor cache)"
                             );
                             shard_anchor_cache.lock().await.remove(&shard_id);
                         }
-                        Err(e) => log::warn!("FUD-5: inclusion processing error: {e}"),
+                        Err(e) => log::warn!("inclusion processing error: {e}"),
                     }
                 });
             }
@@ -1168,7 +1166,7 @@ pub async fn wire_watch_notify_subscription(
                     if client.read().await.watch_state().lock().unwrap()
                         .apply_spent(shard_id, output_height, output_idx)
                     {
-                        log::debug!("FUD-5: UTXO spent ({shard_id}, {output_height}, {output_idx})");
+                        log::debug!("UTXO spent ({shard_id}, {output_height}, {output_idx})");
                     }
                 });
             }
@@ -1177,7 +1175,7 @@ pub async fn wire_watch_notify_subscription(
                     if client.read().await.watch_state().lock().unwrap()
                         .apply_revert(shard_id, height, output_idx)
                     {
-                        log::debug!("FUD-5: UTXO reverted ({shard_id}, {height}, {output_idx})");
+                        log::debug!("UTXO reverted ({shard_id}, {height}, {output_idx})");
                     }
                     let Ok(store) = crate::mmr_client::invoice::InvoiceStore::open(&data_dir) else {
                         return;
@@ -1377,14 +1375,14 @@ impl FilamentRuntime {
         }
     }
 
-    /// MNT-7: refresh wallet state from all configured Keystone REST endpoints.
+    /// Refresh wallet state from all configured Keystone REST endpoints.
     pub async fn refresh_wallet_from_keystone(
         &self,
     ) -> Result<crate::mmr_client::filament_wallet::RefreshOutcome, String> {
         self.wallet.write().await.refresh_from_keystone().await
     }
 
-    /// G-4: prune expired invoices using the current beacon tip.
+    /// Prune expired invoices using the current beacon tip.
     pub async fn prune_expired_invoices(&self) {
         let tip = {
             let client = self.client.read().await;
@@ -1403,7 +1401,7 @@ impl FilamentRuntime {
         }
     }
 
-    /// PD-3/PD-4: evict stale cache entries, refresh DNS seeds, preserve manual peers.
+    /// Evict stale cache entries, refresh DNS seeds, preserve manual peers.
     /// Returns the number of new DNS seed peers written to the cache.
     pub async fn maintain_peer_cache(&self, cache: &crate::peer_cache::PeerCache) -> usize {
         let (seeds, manual_peers) = {
@@ -1426,7 +1424,7 @@ impl FilamentRuntime {
         dns_written
     }
 
-    /// MNT-2/3/4: fetch light-client chain summaries and reconcile trust state.
+    /// Fetch light-client chain summaries and reconcile trust state.
     /// Returns `(label, result)` pairs for optional HTTP notification wiring.
     pub async fn sync_peer_chain_summaries(
         &self,
@@ -1688,7 +1686,7 @@ async fn wallet_sign(
     }
 }
 
-/// TS-PORTAL-2f: sign a Testnet Portal auth challenge with the wallet's
+/// Sign a Testnet Portal auth challenge with the wallet's
 /// **held** key. The key is never accepted in the body and never returned —
 /// this is the difference from `/wallet/sign`. Requires Filament to have been
 /// started with a signing key (`--signing-key-file` / `FILAMENT_SIGNING_KEY`).
@@ -1764,7 +1762,7 @@ async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
 
     match client.get_beacon_state().await {
         Ok(state) => {
-            // MNT-6: trust-aware — a beacon that's otherwise "synced" but
+            // Trust-aware — a beacon that's otherwise "synced" but
             // backed by too few independent peers shows insufficient_peers.
             let sync = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
             chains.push(chain_to_json(state, sync));
@@ -1784,7 +1782,7 @@ async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
 
     for shard_id in client.shard_ids() {
         if let Ok(state) = client.get_shard_state(shard_id).await {
-            // MNT-6 (shard precision fix): per-shard trust, not the
+            // Per-shard trust, not the
             // blanket-capability beacon check.
             let sync = client.get_trusted_sync_status_for_shard(shard_id).await;
             chains.push(chain_to_json(state, sync));
@@ -1823,11 +1821,10 @@ async fn sync_status(State(s): State<FilamentAppState>) -> impl IntoResponse {
     Json(s.sync_stats.read().await.clone())
 }
 
-/// `GET /sync/trust` — MNT-5: surfaces the multi-node trust state
-/// `MultiChainClient` tracks (MNT-2/6) for the beacon chain — how many
+/// `GET /sync/trust` — surfaces the multi-node trust state
+/// `MultiChainClient` tracks for the beacon chain — how many
 /// reputable, capability-matching peers are connected, whether that meets
 /// the configured minimum, and each qualifying peer's own reputation.
-/// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
 async fn sync_trust(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let snapshot = beacon_peer_trust_snapshot(&*s.client.read().await).await;
     Json(json!({
@@ -1838,7 +1835,7 @@ async fn sync_trust(State(s): State<FilamentAppState>) -> impl IntoResponse {
     }))
 }
 
-/// `GET /sync/proof-latency` — TS-F-3: recent `verify_with_anchor` samples
+/// `GET /sync/proof-latency` — recent `verify_with_anchor` samples
 /// from Path-2 inclusion processing (microseconds, oldest first, cap 64).
 async fn sync_proof_latency(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let samples = {
@@ -1861,7 +1858,7 @@ async fn sync_proof_latency(State(s): State<FilamentAppState>) -> impl IntoRespo
     }))
 }
 
-/// MNT-5 / PD-INT verification: beacon trust floor snapshot shared by HTTP
+/// / PD-INT verification: beacon trust floor snapshot shared by HTTP
 /// `GET /sync/trust`, Tauri `get_peer_trust`, and integration tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeaconPeerTrustSnapshot {
@@ -2125,7 +2122,7 @@ struct BroadcastRequest {
     shard_id: u16,
 }
 
-/// MNT-7: broadcasts to every configured Keystone endpoint for propagation
+/// Broadcasts to every configured Keystone endpoint for propagation
 /// redundancy — a reliability improvement, not a trust check. The first
 /// endpoint to accept wins; the rest aren't waited on.
 async fn wallet_broadcast(
@@ -2210,7 +2207,7 @@ async fn invoice_create(
     };
     match store.create(recipient, body.amount_atoms, body.shard_id, body.memo, body.expiry_height, now_ms()) {
         Ok(id) => {
-            // FUD-5: register WatchAddress so Keystone can push inclusion notifs.
+            // Register WatchAddress so Keystone can push inclusion notifs.
             s.client.write().await.watch_address(recipient, body.shard_id);
             (StatusCode::OK, Json(json!({ "invoice_id": base64url_encode16(&id) }))).into_response()
         }
@@ -2518,7 +2515,7 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
     }
 }
 
-/// Live multi-node sync (MNT-2/3/4, wired to a real transport): fetch chain
+/// Live multi-node sync (wired to a real transport): fetch chain
 /// summaries from every configured Keystone's light-client API
 /// (`FilamentNodeConfig::light_client_summary_urls`, same host as the
 /// wallet-ops endpoints, different port — see that method's doc) and
@@ -2528,13 +2525,12 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
 /// is surfaced rather than silently resolved. Covers the beacon chain and
 /// every shard chain Filament already tracks locally (`client.shard_ids()`)
 /// — Keystone's light-client API now serves both
-/// (`GET /chain/summary` and `GET /shard/{id}/chain/summary`). See
-/// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// (`GET /chain/summary` and `GET /shard/{id}/chain/summary`).
 ///
 /// Each endpoint that answers the beacon fetch is registered as a peer
-/// (MNT-2's `get_top_peers` candidate pool) if not already known, using the
+/// (the `get_top_peers` candidate pool) if not already known, using the
 /// endpoint URL as `peer_id` — this is what makes `has_min_trusted_peers`/
-/// `get_trusted_sync_status` (MNT-6) see real peers instead of staying
+/// `get_trusted_sync_status` see real peers instead of staying
 /// permanently at zero. Shard fetches reuse the same peer set; they don't
 /// register peers on their own (a peer that can't serve shards but can serve
 /// beacon is still a real, useful peer).
@@ -2580,7 +2576,7 @@ pub(crate) fn consensus_shard_anchor(found: &[[u8; 32]]) -> Option<[u8; 32]> {
 /// cache. Disagreement is logged and **not** cached, so a later retry can
 /// still converge. An `InvalidProof` on a subsequent inclusion invalidates
 /// that `shard_id` so a shard reactivation with a new anchor can refetch
-/// (P0-3 / P1-6). `keystone_rest_endpoints` is Keystone's always-on main
+/// `keystone_rest_endpoints` is Keystone's always-on main
 /// API list (`FilamentNodeConfig::all_keystone_endpoints()`), not the
 /// separate opt-in light-client summary API.
 async fn fetch_shard_genesis_anchor(
@@ -2614,7 +2610,7 @@ async fn fetch_shard_genesis_anchor(
             let nonzero = found.iter().filter(|a| **a != [0u8; 32]).count();
             if nonzero > 1 {
                 warn!(
-                    "FUD-5: shard {shard_id} genesis-anchor disagreement among \
+                    "shard {shard_id} genesis-anchor disagreement among \
                      {nonzero} Keystone answers — not caching"
                 );
             }
@@ -2722,7 +2718,7 @@ async fn background_task(s: FilamentAppState) {
         // Refresh sync stats (FA-11: real per-chain breakdown)
         {
             let client = s.client.read().await;
-            // MNT-6: trust-aware status for the beacon headline — "synced"
+            // Trust-aware status for the beacon headline — "synced"
             // only counts if enough independent peers back it up.
             let beacon_status = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
             let beacon_tip = client.get_beacon_state().await.map(|st| st.tip.height()).unwrap_or(0);
@@ -2739,7 +2735,7 @@ async fn background_task(s: FilamentAppState) {
                 progress: b_progress,
             });
             for shard_id in client.shard_ids() {
-                // MNT-6 (shard precision fix): per-shard trust — a shard is
+                // Per-shard trust — a shard is
                 // only "synced" here if peers proven capable of *this*
                 // shard specifically meet the trust floor, which is exactly
                 // what F2F shard-transaction confirmation needs to rely on.
@@ -2819,7 +2815,7 @@ async fn background_task(s: FilamentAppState) {
             ).await;
         }
 
-        // Live multi-node chain-summary sync every 30 s (MNT-2/3/4)
+        // Live multi-node chain-summary sync every 30 s
         sync_peer_tick += 1;
         if sync_peer_tick >= 6 {
             sync_peer_tick = 0;
@@ -2883,7 +2879,7 @@ async fn background_task(s: FilamentAppState) {
             }
         }
 
-        // G-4: invoice expiry pruning every 5 min (60 ticks × 5 s)
+        // Invoice expiry pruning every 5 min (60 ticks × 5 s)
         {
             static INVOICE_TICK: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
@@ -2893,7 +2889,7 @@ async fn background_task(s: FilamentAppState) {
             }
         }
 
-        // PD-3: DNS seed resolution + PD-4: peer-cache eviction every 10 min
+        // DNS seed resolution + peer-cache eviction every 10 min
         {
             static PEER_TICK: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
@@ -2948,7 +2944,7 @@ pub async fn start_server(
     }
     *state.p2p.write().await = p2p;
 
-    // FUD-5: watch notifications → invoice FSM (LC-45..LC-47c).
+    // Watch notifications → invoice FSM.
     wire_watch_notify_subscription(
         Arc::clone(&state.client),
         data_dir.clone(),
@@ -2970,7 +2966,7 @@ pub async fn start_server(
         Some(state.sse_tx.clone()),
     ).await;
 
-    // MNT-4: surface peer disagreement to the UI via SSE.
+    // Surface peer disagreement to the UI via SSE.
     {
         let sse_tx = state.sse_tx.clone();
         state.client.write().await.subscribe(Arc::new(move |event| {
@@ -3126,7 +3122,7 @@ mod pd_ui_4_tests {
 /// chain-summary sync tick (`FilamentRuntime::sync_peer_chain_summaries`).
 ///
 /// Builds a valid 2-leaf weighted chain summary with public `WeightedHash`
-/// helpers only (private `WindowedWeightedMMR` is out of public packaging scope).
+/// helpers only.
 #[cfg(test)]
 mod pd_int_cold_start_tests {
     use super::*;

@@ -188,10 +188,20 @@ if text == orig:
     print("warning: remap_filament_cargo: no substitutions applied — check Cargo.toml shape", file=sys.stderr)
     sys.exit(2)
 
-bad = []
-for needle in ('../common-types', '../p2p-proto', 'rustmmrdb', 'p2p-proto/full-node'):
-    if needle in text:
-        bad.append(needle)
+needles = ['../common-types', '../p2p-proto', 'p2p-proto/full-node']
+# Maintainer-only tokens live in the gitignored local denylist ([cargo] section).
+local = path.parents[2] / 'scripts' / 'local' / 'extra_denylist.txt'
+if local.exists():
+    section = ''
+    for raw in local.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1]
+        elif section == 'cargo':
+            needles.append(line)
+bad = [n for n in needles if n in text]
 if bad:
     print(f"error: remap left forbidden tokens: {bad}", file=sys.stderr)
     sys.exit(1)

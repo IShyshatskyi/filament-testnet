@@ -15,8 +15,7 @@ pub struct FilamentBootstrapConfig {
     pub testnet1: NetworkGenesisInfo,
     pub testnet2: NetworkGenesisInfo,
     pub devnet: NetworkGenesisInfo,
-    /// Real, mined genesis for the Heaviest Chain Rule test network (matches
-    /// the private monorepo's `config/genesis_testnet_stress.toml`).
+    /// Real, mined genesis for the Heaviest Chain Rule test network.
     #[serde(rename = "testnet-stress")]
     pub testnet_stress: NetworkGenesisInfo,
 
@@ -196,7 +195,7 @@ pub struct PeerList {
 }
 
 /// Deprecated alias — use [`FilamentBootstrapConfig`].
-#[deprecated(since = "0.5.0", note = "renamed to FilamentBootstrapConfig (RF-11 naming collision fix)")]
+#[deprecated(since = "0.5.0", note = "renamed to FilamentBootstrapConfig (naming collision fix)")]
 pub type LightClientConfig = FilamentBootstrapConfig;
 
 impl FilamentBootstrapConfig {

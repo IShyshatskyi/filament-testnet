@@ -17,10 +17,9 @@ pub use peer_manager::{
     Capabilities, LightClientInboundNotif, PeerManager, ShishaProtocol, NODE_LIGHT, NODE_NETWORK,
 };
 
-/// Path-compatibility shim matching the private monorepo's `p2p-proto`
-/// module layout (`p2p_proto::p2p::common::manager::PeerManager`, etc.) so
-/// `filament`'s own source, written against that crate, compiles unchanged
-/// against this one.
+/// Path-compatibility shim: exposes this crate under the module layout
+/// (`p2p_proto::p2p::common::manager::PeerManager`, etc.) that `filament`'s
+/// source imports, so it compiles unchanged against this one.
 pub mod p2p {
     pub mod common {
         pub mod manager {

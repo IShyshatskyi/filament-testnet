@@ -2,7 +2,7 @@
 name        = "filament-types"
 version     = "0.1.0"
 edition     = "2021"
-description = "Minimal wire types and proof-verification primitives for the Filament light client (clean-room reimplementation — does not depend on or expose the private shisha monorepo's common-types)"
+description = "Minimal wire types and proof-verification primitives for the Filament light client (clean-room implementation)"
 license     = "MIT"
 
 [dependencies]

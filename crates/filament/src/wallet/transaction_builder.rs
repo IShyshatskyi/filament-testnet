@@ -1,12 +1,10 @@
 // src/wallet/transaction_builder.rs
 //
-// Trimmed 2026-07-04 (RF-20 follow-up): this file used to also hold
+// Trimmed: this file used to also hold
 // `TransactionBuilder`/`TransactionSigner`/`TransactionHelper`, built on top
-// of the dead `MultiShardWallet`/`WalletManager`/`AddressConfig` subsystem
-// (see docs/reports/RF-19_RF-20_Completion_Report.md §3 for the full history
-// — that subsystem predates the FV-3 flat-vector migration and was never
-// updated to match it). Those three types had zero callers outside their own
-// tests and were deleted along with the rest of that subsystem.
+// of an earlier wallet subsystem that predated the flat-vector transaction
+// format. Those types had no callers outside their own tests and were
+// removed along with that subsystem.
 // `SchnorrSigner` is the one real, load-bearing piece of this file — it's
 // used directly by `mmr_client::filament_wallet`, which builds its own
 // transactions against the current flat-vector `Transaction`/`WitnessEntry`

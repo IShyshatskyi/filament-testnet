@@ -5,7 +5,7 @@
 //
 // F2F messages are wallet-to-wallet layer messages relayed by the full node.
 // They are encrypted at Track D (relay) using X25519+ChaCha20-Poly1305 once
-// the Filament Key Management Design is finalised (LC-59..LC-64, §13).
+// the Filament key-management design is finalised.
 // In this implementation we send them in plaintext as `payload` bytes inside
 // `RelayMessage` wire messages.
 //
@@ -351,11 +351,9 @@ pub fn new_msg_id() -> [u8; 8] {
 
 /// Compute the relay dedup id: `BLAKE3(payload)[0..8]` (Track H).
 ///
-/// Gap 10 Phase 2 (Jul 3, 2026): the implementation moved to
-/// `crates/common-types/src/common/relay_hash.rs` — p2p-proto's
-/// relay_store.rs needed it and can't depend back on mmr_client (would
-/// recreate the cycle Gap 10 broke). Re-exported here so every existing
-/// `crate::mmr_client::f2f::relay_id` call site keeps resolving unchanged.
+/// The implementation lives in `filament-types` (shared with the p2p layer,
+/// which cannot depend back on this module). Re-exported here so existing
+/// `crate::mmr_client::f2f::relay_id` paths keep resolving.
 pub use common_types::common::relay_hash::relay_id;
 
 #[cfg(test)]
@@ -382,7 +380,6 @@ mod tests {
         inv.encode().unwrap()
     }
 
-    // LC-18
     #[test]
     fn f2f_invoice_request_roundtrip() {
         let msg = F2fMessage::InvoiceRequest(InvoiceRequest {
@@ -394,7 +391,6 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
-    // LC-19
     #[test]
     fn f2f_payment_proof_roundtrip() {
         let msg = F2fMessage::PaymentProof(PaymentProof {
@@ -410,7 +406,6 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
-    // LC-20
     #[test]
     fn f2f_payment_ack_roundtrip() {
         let msg = F2fMessage::PaymentAck(PaymentAck {
@@ -420,7 +415,6 @@ mod tests {
         assert_eq!(f2f_decode(&f2f_encode(&msg)).unwrap(), msg);
     }
 
-    // LC-21
     #[test]
     fn f2f_invoice_cancel_roundtrip() {
         let msg = F2fMessage::InvoiceCancel(InvoiceCancel {
@@ -431,7 +425,6 @@ mod tests {
         assert_eq!(f2f_decode(&f2f_encode(&msg)).unwrap(), msg);
     }
 
-    // LC-22
     #[test]
     fn f2f_reject_roundtrip_all_reasons() {
         let reasons = [
@@ -460,7 +453,6 @@ mod tests {
         }
     }
 
-    // LC-23
     #[test]
     fn f2f_wrong_magic_rejected() {
         let mut bytes = f2f_encode(&F2fMessage::PaymentAck(PaymentAck {
@@ -472,7 +464,6 @@ mod tests {
         assert!(matches!(f2f_decode(&bytes), Err(F2fError::WrongMagic(_))));
     }
 
-    // LC-24
     #[test]
     fn f2f_truncated_rejected() {
         let bytes = f2f_encode(&F2fMessage::PaymentAck(PaymentAck {
@@ -482,7 +473,7 @@ mod tests {
         assert!(matches!(f2f_decode(&bytes[..3]), Err(F2fError::Truncated)));
     }
 
-    // LC-25 (Track H): relay_id is stable for same payload
+    // Relay_id is stable for same payload
     #[test]
     fn relay_id_is_deterministic() {
         let payload = b"hello relay";
@@ -491,7 +482,7 @@ mod tests {
         assert_eq!(id1, id2);
     }
 
-    // LC-54 (Track H): changing msg_id changes the payload and thus the relay_id
+    // Changing msg_id changes the payload and thus the relay_id
     #[test]
     fn relay_id_changes_when_msg_id_changes() {
         let msg1 = F2fMessage::PaymentAck(PaymentAck {
@@ -507,7 +498,7 @@ mod tests {
         assert_ne!(relay_id(&bytes1), relay_id(&bytes2));
     }
 
-    // LC-55 (Track H): same payload → same relay_id (relay dedup works)
+    // Same payload → same relay_id (relay dedup works)
     #[test]
     fn relay_id_same_for_identical_payload() {
         let msg = F2fMessage::PaymentAck(PaymentAck {
@@ -518,7 +509,7 @@ mod tests {
         assert_eq!(relay_id(&bytes), relay_id(&bytes));
     }
 
-    // LC-56 (Track H): RejectReason tag roundtrip
+    // RejectReason tag roundtrip
     #[test]
     fn reject_reason_tag_roundtrip() {
         for tag in 0x01..=0x07u8 {
@@ -527,7 +518,7 @@ mod tests {
         assert_eq!(RejectReason::from_tag(0xFF).tag(), 0xFF);
     }
 
-    // LC-57 (Track H): retryable reasons are correct
+    // Retryable reasons are correct
     #[test]
     fn reject_reason_retryable_flags() {
         assert!(!RejectReason::MalformedMessage.is_retryable());
@@ -540,7 +531,7 @@ mod tests {
         assert!(RejectReason::Other.is_retryable());
     }
 
-    // LC-58 (Track H): unknown type rejected
+    // Unknown type rejected
     #[test]
     fn f2f_unknown_type_rejected() {
         let mut bytes = f2f_encode(&F2fMessage::PaymentAck(PaymentAck {

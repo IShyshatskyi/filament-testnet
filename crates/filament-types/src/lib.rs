@@ -9,11 +9,10 @@
 //! reorg/orphan-pool logic) — see each module's own doc comment for what
 //! was excluded and why.
 //!
-//! The public module tree below (`common::`, `transaction::`) mirrors the
-//! private monorepo's `common-types` crate path-for-path, purely so
-//! `filament`'s own source (which was written against that crate) compiles
-//! unchanged against this one. The real implementation lives in the
-//! top-level modules; `common`/`transaction` are thin `pub use` shims.
+//! The module tree below (`common::`, `transaction::`) exists so that
+//! `filament`'s source, which imports those paths, compiles unchanged. The
+//! real implementation lives in the top-level modules; `common`/`transaction`
+//! are thin `pub use` shims.
 
 pub mod expand_voting;
 pub mod weighted_hash;

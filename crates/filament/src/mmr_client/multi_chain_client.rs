@@ -133,7 +133,7 @@ pub struct MultiChainClient {
     active_network: Option<String>,
 
     // ========================================================================
-    // ADDRESS WATCH (G-3)
+    // ADDRESS WATCH
     // ========================================================================
 
     /// Addresses registered for inclusion-notification watch.
@@ -154,7 +154,7 @@ pub struct MultiChainClient {
     /// silently when unset.
     relay_send_fn: Option<Arc<dyn Fn([u8; 32], Vec<u8>) + Send + Sync>>,
 
-    /// FUD-5: UTXOs learned from verified watch notifications.
+    /// UTXOs learned from verified watch notifications.
     watch_state: std::sync::Mutex<super::watch_notify::WatchNotifyState>,
 }
 
@@ -293,16 +293,15 @@ pub struct SyncConfiguration {
     /// Valid range: [0.0, 1.0]; values outside are clamped by `ProofSelector`.
     pub proof_density_threshold: f32,
 
-    /// MNT-6: minimum number of connected, capability-matching, reputable
+    /// Minimum number of connected, capability-matching, reputable
     /// peers required before a chain-summary reconciliation result (see
     /// `reconcile_beacon_summaries`/`reconcile_shard_summaries`) is trusted
     /// enough to report as "synced". Below this floor,
     /// `get_trusted_sync_status` reports `ChainSyncStatus::InsufficientPeers`
-    /// instead of silently falling back to single-peer trust. See
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-6.
+    /// instead of silently falling back to single-peer trust.
     pub min_peers_for_trust: usize,
 
-    /// MNT-4: height spread (in blocks) tolerated between independently-
+    /// Height spread (in blocks) tolerated between independently-
     /// verified peer chain-summary responses before they're flagged as
     /// disagreeing. A small tolerance absorbs ordinary network propagation
     /// lag between honest peers; anything wider than this is a possible
@@ -349,7 +348,7 @@ pub enum ChainSyncStatus {
     /// Syncing paused
     Paused,
 
-    /// MNT-6: the underlying chain state may be current, but fewer than
+    /// The underlying chain state may be current, but fewer than
     /// `SyncConfiguration::min_peers_for_trust` reputable peers are
     /// connected — not enough independent sources to trust a chain-summary
     /// result the way `reconcile_beacon_summaries`/`reconcile_shard_summaries`
@@ -478,7 +477,7 @@ pub enum ClientEvent {
         payload:   Vec<u8>,
     },
 
-    /// Transaction inclusion notification from the full node (G-3 / FUD-5).
+    /// Transaction inclusion notification from the full node.
     /// Emitted when a `ShishaMessage::TxInclusionNotif` arrives from a peer.
     TxInclusionReceived {
         shard_id:       u16,
@@ -489,7 +488,7 @@ pub enum ClientEvent {
         mmr_proof_bytes: Vec<u8>,
     },
 
-    /// FUD-5: watched UTXO spent in a later block.
+    /// Watched UTXO spent in a later block.
     TxSpentReceived {
         shard_id:       u16,
         spend_height:   u32,
@@ -497,14 +496,14 @@ pub enum ClientEvent {
         output_idx:     u16,
     },
 
-    /// FUD-5: prior inclusion reverted by chain reorg.
+    /// Prior inclusion reverted by chain reorg.
     TxRevertReceived {
         shard_id:   u16,
         height:     u32,
         output_idx: u16,
     },
 
-    /// MNT-4: two or more independently-verified peers disagree on chain
+    /// Two or more independently-verified peers disagree on chain
     /// state by more than `SyncConfiguration::disagreement_height_tolerance`
     /// during a multi-peer reconciliation round (see
     /// `reconcile_beacon_summaries`/`reconcile_shard_summaries`). A possible
@@ -789,7 +788,7 @@ impl MultiChainClient {
         self.shards.keys().copied().collect()
     }
 
-    // ── G-3: address watch ────────────────────────────────────────────────────
+    // ── Address watch ────────────────────────────────────────────────────
 
     /// Install the callback that physically sends `WatchAddress` over the
     /// ShishaNet / P2P transport.  Call this once the P2P layer is live.
@@ -812,7 +811,7 @@ impl MultiChainClient {
         if let Some(ref f) = self.send_watch_fn {
             f(address, shard_id);
         }
-        debug!("G-3: watching address {} on shard {}", hex::encode(address), shard_id);
+        debug!("watching address {} on shard {}", hex::encode(address), shard_id);
     }
 
     /// Snapshot of locally registered watches (for P2P reconnect replay).
@@ -855,7 +854,7 @@ impl MultiChainClient {
         }).await;
     }
 
-    /// FUD-5: `TxSpentNotif` from a full-node peer or HTTP poll.
+    /// `TxSpentNotif` from a full-node peer or HTTP poll.
     pub async fn handle_tx_spent_notif(
         &self,
         shard_id:       u16,
@@ -871,7 +870,7 @@ impl MultiChainClient {
         }).await;
     }
 
-    /// FUD-5: `TxRevertNotif` from a full-node peer or HTTP poll.
+    /// `TxRevertNotif` from a full-node peer or HTTP poll.
     pub async fn handle_tx_revert_notif(
         &self,
         shard_id:   u16,
@@ -972,14 +971,13 @@ impl MultiChainClient {
         candidates.last().map(|(peer_id, _)| (*peer_id).clone())
     }
 
-    /// MNT-2: select up to `k` connected, capability-matching peers for a
+    /// Select up to `k` connected, capability-matching peers for a
     /// chain-summary fan-out request, sorted by reputation (highest first).
     /// This is the multi-peer replacement for `get_best_peer`'s single-peer
     /// pick — callers fetch a `MMRChainSummary` from every returned peer
     /// (the actual network I/O is the caller's responsibility, same as
     /// `send_watch_fn`/`relay_send_fn` elsewhere in this type) and pass the
     /// responses to `reconcile_beacon_summaries`/`reconcile_shard_summaries`.
-    /// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-2.
     pub async fn get_top_peers(&self, chain_type: ChainType, k: usize) -> Vec<String> {
         let peers = self.peers.read().await;
 
@@ -1008,7 +1006,7 @@ impl MultiChainClient {
             .collect()
     }
 
-    /// MNT-6 (shard precision fix, Jul 14, 2026): like `get_top_peers`, but
+    /// Like `get_top_peers`, but
     /// for `ChainType::Shard` additionally requires the peer's own
     /// `capabilities.tracked_shards` to include `shard_id`. `get_top_peers`
     /// only checks the blanket `shard_proofs` flag, so a peer that has only
@@ -1044,7 +1042,7 @@ impl MultiChainClient {
             .collect()
     }
 
-    /// MNT-6 (shard precision fix): mark an already-registered peer as
+    /// Mark an already-registered peer as
     /// having proven capable of serving `shard_id` — call this only after a
     /// real, successful chain-summary fetch for that specific shard, not as
     /// a blanket assumption. Upgrades `capabilities.shard_proofs`/
@@ -1061,7 +1059,7 @@ impl MultiChainClient {
         }
     }
 
-    /// MNT-6: whether enough connected, capability-matching, reputable peers
+    /// Whether enough connected, capability-matching, reputable peers
     /// exist to trust a chain-summary reconciliation result for `chain_type`
     /// — i.e. at least `SyncConfiguration::min_peers_for_trust`. Callers
     /// should treat a "false" result as "insufficient peers for trust", not
@@ -1073,20 +1071,20 @@ impl MultiChainClient {
             >= self.sync_config.min_peers_for_trust
     }
 
-    /// MNT-5: the configured minimum peer count from
+    /// The configured minimum peer count from
     /// `SyncConfiguration::min_peers_for_trust`, for UI surfacing (e.g. "2 of
     /// 2 required peers connected").
     pub fn min_peers_for_trust(&self) -> usize {
         self.sync_config.min_peers_for_trust
     }
 
-    /// MNT-5: a connected peer's reputation score (0-100), or the neutral
+    /// A connected peer's reputation score (0-100), or the neutral
     /// default (50) if unknown. For UI surfacing alongside `get_top_peers`.
     pub fn peer_score(&self, peer_id: &str) -> u8 {
         self.peer_reputation.get(peer_id).map(|r| r.score).unwrap_or(50)
     }
 
-    /// MNT-6: sync status for `chain_id`, downgraded to
+    /// Sync status for `chain_id`, downgraded to
     /// `ChainSyncStatus::InsufficientPeers` when fewer than
     /// `SyncConfiguration::min_peers_for_trust` reputable peers are
     /// connected for `chain_type` — even if the underlying chain state
@@ -1102,7 +1100,7 @@ impl MultiChainClient {
     /// count toward shard 1's trust floor too. Use
     /// `get_trusted_sync_status_for_shard` for shard callers instead; kept
     /// here unchanged (rather than made shard-aware) so existing beacon call
-    /// sites and the MNT-9 tests referencing this exact signature don't need
+    /// sites and the tests referencing this exact signature don't need
     /// to change.
     pub async fn get_trusted_sync_status(
         &self,
@@ -1120,7 +1118,7 @@ impl MultiChainClient {
         status
     }
 
-    /// MNT-6 (shard precision fix, Jul 14, 2026): shard-aware counterpart to
+    /// Shard-aware counterpart to
     /// `get_trusted_sync_status` — counts only peers proven capable of
     /// *this* `shard_id` specifically (via `get_top_peers_for_shard`,
     /// checking `tracked_shards`), not any peer with the blanket
@@ -1383,10 +1381,10 @@ impl MultiChainClient {
     }
 
     // ========================================================================
-    // MULTI-PEER RECONCILIATION (MNT-2/3/4, MULTI_NODE_TRUST_PLAN.md)
+    // MULTI-PEER RECONCILIATION
     // ========================================================================
 
-    /// MNT-2/3/4: reconcile chain-summary responses fetched from multiple
+    /// Reconcile chain-summary responses fetched from multiple
     /// peers (see `get_top_peers`) for the beacon chain. Every response is
     /// verified independently — a response can't be trusted just because it
     /// answered first or claims a higher weight than another — and only the
@@ -1463,7 +1461,7 @@ impl MultiChainClient {
         Ok(outcome)
     }
 
-    /// MNT-2/3/4: same as `reconcile_beacon_summaries`, for a specific shard
+    /// Same as `reconcile_beacon_summaries`, for a specific shard
     /// chain. `ShardChainHandler::sync_from_summary` is synchronous (unlike
     /// the beacon handler's), so this doesn't `.await` the apply step.
     pub async fn reconcile_shard_summaries(
@@ -1532,7 +1530,7 @@ impl MultiChainClient {
     }
 }
 
-/// MNT-3/4: shared reconciliation math over already independently-verified
+/// Shared reconciliation math over already independently-verified
 /// candidates — picks the max-weight winner (by index into the input slice)
 /// and flags disagreement when verified peers' tip heights spread wider than
 /// `disagreement_height_tolerance`. Kept as a free function (not a method on
@@ -1563,7 +1561,7 @@ fn pick_reconciliation_winner(
 }
 
 /// One peer's chain-summary response, paired with the peer that sent it
-/// (MNT-2/3). Callers build these from `get_top_peers` + their own network
+///. Callers build these from `get_top_peers` + their own network
 /// fetch, then pass them to `reconcile_beacon_summaries`/
 /// `reconcile_shard_summaries`.
 #[derive(Debug, Clone)]
@@ -1573,7 +1571,7 @@ pub struct PeerChainSummaryResponse {
 }
 
 /// Outcome of reconciling chain-summary responses from multiple peers
-/// (MNT-3/4). See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+///.
 #[derive(Debug, Clone, Default)]
 pub struct ReconciliationOutcome {
     /// Peer whose independently-verified summary had the max chain weight
@@ -1645,8 +1643,7 @@ mod tests {
         assert_eq!(handler.state().height(), 0);
     }
 
-    // ── MNT-9: multi-node trust reconciliation tests ──────────────────────
-    // See filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
+    // ── multi-node trust reconciliation tests ──────────────────────
 
     fn test_peer(id: &str) -> PeerConnection {
         PeerConnection {
@@ -1743,7 +1740,7 @@ mod tests {
         client.init_beacon_chain(genesis).await.unwrap();
 
         // Chain state is "Synced", but zero peers connected — must not be
-        // reported as trustworthy synced (this is the exact gap MNT-6
+        // reported as trustworthy synced (this is the exact gap
         // closes: a lone connected peer, or none at all, was previously
         // indistinguishable from a properly cross-checked sync).
         let status = client.get_trusted_sync_status(ChainType::Beacon, 0).await;

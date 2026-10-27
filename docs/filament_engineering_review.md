@@ -1,7 +1,7 @@
 # Filament-Test engineering review (public packaging)
 
 **Date:** 2026-08-25  
-**Scope:** Current `mmr-light-client` workspace (Filament-Test packaging of filament + common-types + p2p-proto)  
+**Scope:** Current `mmr-light-client` workspace (Filament-Test packaging: `filament`, `filament-types`, `filament-p2p`)  
 **Network name (public):** Heaviest Chain Rule Test Network  
 **Synced from:** see [`VERSION`](../VERSION)  
 **Supersedes:** February 2026 classic-MMR review (local archive / git tag `archive/sha256-2026-04` only)
@@ -27,10 +27,10 @@
 
 ```text
 mmr-light-client/
-  crates/common-types/   # WeightedHash, proofs, genesis, verification
+  crates/filament-types/ # WeightedHash, proofs, genesis, verification (clean-room)
   crates/filament/       # library + `filament` binary (feature full-node/server)
-  crates/p2p-proto/      # PeerManager / ShishaNet codecs (Path-2)
-  scripts/sync_from_shisha.sh
+  crates/filament-p2p/   # PeerManager / ShishaNet codec (Path-2, clean-room)
+  scripts/sync_filament_public.sh
   archive/2026-04-sha256/  # frozen classic SHA-256 source only
 ```
 
@@ -45,11 +45,11 @@ Binary: `cargo build -p filament --features full-node --bin filament`
 
 ## What is solid
 
-1. **Proof verification** — Weighted batch/range/fork/chain-weight paths live in `common-types`; Filament’s `verification` module is a thin re-export.
+1. **Proof verification** — Weighted batch/range/fork/chain-weight paths live in `filament-types`; Filament’s `verification` module is a thin re-export.
 2. **`WeightedMMRLight`** — production light-MMR cache used by chain handlers (peaks + recent leaves with rBits).
 3. **`MultiChainClient`** — beacon + N shards, summaries, peer bookkeeping, sync status / trust floor helpers.
-4. **Crate boundary** — Filament does not depend on the full-node/mining monolith at runtime; public tree can build without Keystone/Kameniar.
-5. **Unit test density in crates** — large number of inline unit tests in `common-types` / `filament` / `p2p-proto` (synced from monorepo). Not a substitute for live Keystone E2E.
+4. **Crate boundary** — Filament does not depend on a full node or mining pool at runtime; the public tree builds on its own.
+5. **Unit test density in crates** — large number of inline unit tests across `filament-types` / `filament` / `filament-p2p`. Not a substitute for live Keystone E2E.
 
 ---
 
@@ -67,12 +67,9 @@ Binary: `cargo build -p filament --features full-node --bin filament`
 
 ## Packaging patches (must stay intentional)
 
-`scripts/sync_from_shisha.sh` applies two patches after rsync:
+`scripts/sync_filament_public.sh` remaps the synced `crates/filament/Cargo.toml` onto the public `filament-types` / `filament-p2p` crates and fails if any forbidden dependency token survives. The older `scripts/sync_from_shisha.sh` is disabled.
 
-1. **`common-types`:** remove `rustmmrdb` path dependency (Cargo resolves optional path deps even when unused).
-2. **`p2p-proto`:** `full-node = []` instead of enabling `common-types/full-node` (avoids rustmmrdb for Path-2).
-
-**Risk:** monorepo `Cargo.toml` format drift can break the next sync. Treat the script as part of the public product contract.
+**Risk:** upstream `Cargo.toml` format drift can break the next sync. Treat the script as part of the public product contract.
 
 ---
 

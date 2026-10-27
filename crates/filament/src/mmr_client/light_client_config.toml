@@ -125,9 +125,9 @@ bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block (2
 network_id = "testnet-stress"
 
 # Real genesis, mined Aug 26, 2026 against a real Bitcoin anchor (block 964050) —
-# NOT a placeholder like the sections above. Source of truth:
-# shisha/config/genesis_testnet_stress.toml + genesis_config.rs::BeaconGenesisConfig::testnet_stress()
-# (the private monorepo). Keep these two in sync if the network is ever re-genesised.
+# NOT a placeholder like the sections above. The node's
+# genesis configuration is the source of truth; update this section if the
+# network is ever re-genesised.
 genesis_hash = "00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040"
 genesis_height = 0
 genesis_timestamp = 1787689496

@@ -63,12 +63,12 @@ impl BeaconChainHandler {
         self.current_epoch
     }
     
-    /// MNT-3: verify a peer-supplied chain summary's proof and shard-id
+    /// Verify a peer-supplied chain summary's proof and shard-id
     /// validity WITHOUT applying it — passthrough to
     /// `ChainHandler::verify_chain_summary`. Used by multi-peer
     /// reconciliation (`MultiChainClient::reconcile_beacon_summaries`) to
     /// independently check each candidate response before picking the
-    /// max-weight winner. See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+    /// max-weight winner.
     pub fn verify_chain_summary(&self, summary: &MMRChainSummary) -> Result<(), String> {
         self.handler.verify_chain_summary(summary)
     }
