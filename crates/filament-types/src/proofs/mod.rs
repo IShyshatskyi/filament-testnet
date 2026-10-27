@@ -3,6 +3,7 @@
 pub mod types;
 pub use types::*;
 
+pub(crate) mod mmr_peaks;
 pub mod weighted_mmr_batch_proof;
 pub mod weighted_mmr_range_proof;
 pub mod weighted_fork_proof;

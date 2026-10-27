@@ -15,8 +15,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Mutex, Notify, RwLock};
 
-use crate::framing::{frame, try_decode};
-use crate::messages::{NetAddr, ShishaMessage, VersionMessage, WIRE_VERSION};
+use crate::framing::{frame, magic_for_network, try_decode};
+use crate::messages::{
+    NetAddr, ShishaMessage, VersionMessage, GENESIS_HASH_LEN, MIN_ACCEPTED_VERSION, UNKNOWN_GENESIS_HASH,
+    WIRE_VERSION,
+};
 
 pub const NODE_NETWORK: u64 = 1 << 0;
 pub const NODE_LIGHT: u64 = 1 << 1;
@@ -52,16 +55,39 @@ struct PeerHandle {
     tx: mpsc::UnboundedSender<ShishaMessage>,
 }
 
-/// Handshake + framing wired to a fixed network — every outbound connection
-/// speaks the current wire version, no historical-version negotiation.
+/// Handshake and framing for one network: the network name fixes the frame
+/// magic, and an optional genesis hash fixes the chain.
+///
+/// Every outbound connection advertises the current wire version; a peer on
+/// an older one is refused (see `check_peer_version`).
 #[derive(Clone)]
 pub struct ShishaProtocol {
     pub network: String,
+    magic: u32,
+    genesis_hash: [u8; GENESIS_HASH_LEN],
 }
 
 impl ShishaProtocol {
     pub fn new(network: String) -> Self {
-        Self { network }
+        let magic = magic_for_network(&network);
+        Self { network, magic, genesis_hash: UNKNOWN_GENESIS_HASH }
+    }
+
+    /// Pin the chain this client belongs to. A peer that advertises a
+    /// different, non-zero genesis hash is refused at the handshake. Without
+    /// this the client advertises "unknown" and accepts any chain on its
+    /// network.
+    pub fn with_genesis_hash(mut self, genesis_hash: [u8; GENESIS_HASH_LEN]) -> Self {
+        self.genesis_hash = genesis_hash;
+        self
+    }
+
+    pub fn magic(&self) -> u32 {
+        self.magic
+    }
+
+    pub fn genesis_hash(&self) -> [u8; GENESIS_HASH_LEN] {
+        self.genesis_hash
     }
 
     /// Build the `WatchAddress` message a light client sends to register
@@ -69,6 +95,35 @@ impl ShishaProtocol {
     pub fn build_watch_address(&self, address: [u8; 32], shard_id: u16) -> ShishaMessage {
         ShishaMessage::WatchAddress { address, shard_id }
     }
+
+    /// Decide whether to keep talking to a peer from its `version` message.
+    /// Returns the wire version both sides will use (`min(ours, theirs)`).
+    ///
+    /// Refused: a peer older than `MIN_ACCEPTED_VERSION`, and a peer whose
+    /// non-zero genesis hash differs from ours. All-zero on either side means
+    /// "unknown" and is never compared.
+    pub fn check_peer_version(&self, theirs: &VersionMessage) -> Result<u32, String> {
+        if theirs.version < MIN_ACCEPTED_VERSION {
+            return Err(format!(
+                "peer wire version {} is older than the minimum {}",
+                theirs.version, MIN_ACCEPTED_VERSION
+            ));
+        }
+        let ours = self.genesis_hash;
+        let other = theirs.genesis_hash;
+        if ours != UNKNOWN_GENESIS_HASH && other != UNKNOWN_GENESIS_HASH && ours != other {
+            return Err(format!(
+                "genesis mismatch: peer is on a different chain (ours {}, theirs {})",
+                hex8(&ours),
+                hex8(&other)
+            ));
+        }
+        Ok(theirs.version.min(WIRE_VERSION))
+    }
+}
+
+fn hex8(bytes: &[u8; GENESIS_HASH_LEN]) -> String {
+    bytes[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub struct PeerManager {
@@ -174,7 +229,9 @@ impl PeerManager {
                                 }
                                 let this = Arc::clone(&self);
                                 tokio::spawn(async move {
-                                    let _ = this.handle_connection(stream, addr, true).await;
+                                    if let Err(e) = this.handle_connection(stream, addr, true).await {
+                                        log::warn!("filament-p2p: connection from {addr} closed: {e}");
+                                    }
                                 });
                             }
                         }
@@ -196,7 +253,9 @@ impl PeerManager {
             Ok(stream) => {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
-                    let _ = this.handle_connection(stream, addr, false).await;
+                    if let Err(e) = this.handle_connection(stream, addr, false).await {
+                        log::warn!("filament-p2p: connection to {addr} closed: {e}");
+                    }
                 });
             }
             Err(e) => log::warn!("filament-p2p: connect to {addr} failed: {e}"),
@@ -220,6 +279,7 @@ impl PeerManager {
         inbound: bool,
     ) -> Result<(), String> {
         let our_nonce = self.caps.nonce;
+        let magic = self.protocol.magic();
 
         // Outbound: send Version first. Inbound: wait for theirs first.
         if !inbound {
@@ -243,7 +303,7 @@ impl PeerManager {
             }
             buf.extend_from_slice(&read_buf[..n]);
 
-            while let Some((raw, consumed)) = try_decode(&buf).map_err(|e| format!("handshake decode: {e}"))? {
+            while let Some((raw, consumed)) = try_decode(magic, &buf).map_err(|e| format!("handshake decode: {e}"))? {
                 let msg = ShishaMessage::decode(&raw.command, &raw.payload).map_err(|e| format!("handshake parse: {e}"))?;
                 buf.drain(..consumed);
 
@@ -252,6 +312,7 @@ impl PeerManager {
                         if v.nonce == our_nonce {
                             return Err("self-connection".into());
                         }
+                        self.protocol.check_peer_version(&v)?;
                         got_version = true;
                         if inbound {
                             let ours = self.build_version_msg(addr);
@@ -284,7 +345,7 @@ impl PeerManager {
 
         let write_task = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                let bytes = frame(msg.command(), &msg.encode());
+                let bytes = frame(magic, msg.command(), &msg.encode());
                 if write_half.write_all(&bytes).await.is_err() {
                     break;
                 }
@@ -301,7 +362,7 @@ impl PeerManager {
                     return Ok(());
                 }
                 leftover.extend_from_slice(&rb[..n]);
-                while let Some((raw, consumed)) = try_decode(&leftover)? {
+                while let Some((raw, consumed)) = try_decode(magic, &leftover)? {
                     let msg = ShishaMessage::decode(&raw.command, &raw.payload)?;
                     leftover.drain(..consumed);
                     this.dispatch_inbound(peer_id, msg).await;
@@ -348,24 +409,26 @@ impl PeerManager {
     }
 
     fn build_version_msg(&self, their_addr: SocketAddr) -> ShishaMessage {
-        ShishaMessage::Version(VersionMessage {
-            version: WIRE_VERSION,
-            services: self.caps.services,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            addr_recv: NetAddr::from_socket_addr(their_addr, 0),
-            addr_from: NetAddr::from_socket_addr(self.caps.listen_addr, self.caps.services),
-            nonce: self.caps.nonce,
-            user_agent: self.caps.user_agent.clone(),
-            beacon_height: self.caps.beacon_height,
-            shard_heights: self.caps.shard_heights.clone(),
-        })
+        let mut v = VersionMessage::new(
+            WIRE_VERSION,
+            self.caps.services,
+            self.caps.nonce,
+            NetAddr::from_socket_addr(their_addr, 0),
+            NetAddr::from_socket_addr(self.caps.listen_addr, self.caps.services),
+        );
+        v.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        v.user_agent = self.caps.user_agent.clone();
+        v.beacon_height = self.caps.beacon_height;
+        v.shard_heights = self.caps.shard_heights.clone();
+        v.genesis_hash = self.protocol.genesis_hash();
+        ShishaMessage::Version(v)
     }
 
     async fn write_frame(&self, stream: &mut TcpStream, msg: &ShishaMessage) -> Result<(), String> {
-        let bytes = frame(msg.command(), &msg.encode());
+        let bytes = frame(self.protocol.magic(), msg.command(), &msg.encode());
         stream.write_all(&bytes).await.map_err(|e| e.to_string())
     }
 }

@@ -46,8 +46,6 @@ pub struct ShardChainHandler {
     /// Current epoch (synced from beacon)
     current_epoch: u32,
     
-    /// Blocks per epoch
-    blocks_per_epoch: u32,
     
     /// Cross-shard transaction cache
     cross_shard_tx_cache: HashMap<[u8; 32], CrossShardTxInfo>,
@@ -82,7 +80,6 @@ impl ShardChainHandler {
             handler,
             shard_id,
             current_epoch: 0,
-            blocks_per_epoch: 1008,
             cross_shard_tx_cache: HashMap::new(),
         }
     }
@@ -177,7 +174,15 @@ impl ShardChainHandler {
     /// Update epoch based on height
     fn update_epoch(&mut self) {
         let height = self.handler.state().height();
-        let new_epoch = height / self.blocks_per_epoch;
+        // A shard height maps to the beacon governance epoch through the
+        // genesis-fixed calibration (one shard block = 1/16 beacon block), so
+        // one governance epoch spans `epoch_length() * calibration` shard
+        // heights. `update_from_beacon` is the authoritative path; this is the
+        // fallback when no beacon epoch is pushed.
+        let span = (common_types::common::expand_voting::epoch_length().max(1) as u64)
+            .saturating_mul(common_types::common::genesis::genesis_config::SHARD_CALIBRATION_CONSTANT)
+            .min(u32::MAX as u64) as u32;
+        let new_epoch = height / span.max(1);
         
         if new_epoch != self.current_epoch {
             info!(

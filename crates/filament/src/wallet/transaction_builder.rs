@@ -34,7 +34,7 @@ impl SchnorrSigner {
     pub fn sign_transaction(
         tx: &Transaction,
         keys: &[SecretKey],
-        chain_id: u8,
+        chain_id: u16,
         prevouts: &[(u64, [u8; 32])],
     ) -> Result<Vec<WitnessEntry>, String> {
         if prevouts.len() != tx.inputs.len() {
@@ -54,7 +54,7 @@ impl SchnorrSigner {
     pub fn sighash(
         tx: &Transaction,
         input_index: usize,
-        chain_id: u8,
+        chain_id: u16,
         prevouts: &[(u64, [u8; 32])],
     ) -> [u8; 32] {
         common_types::common::crypto::sighash_v2(
@@ -113,6 +113,7 @@ mod tests {
             locktime: 0,
             expiration_height: 0,
             witnesses: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 
@@ -155,7 +156,7 @@ mod tests {
         let key = SecretKey::new(&mut TestOsRng);
         let pk: XOnlyPublicKey = Keypair::from_secret_key(&secp, &key).x_only_public_key().0;
         let mut tx = make_tx(2, 1);
-        tx.version = 2;
+        tx.version = 1;
         let prevouts = [(1000u64, pk.serialize()), (500u64, pk.serialize())];
         let w = SchnorrSigner::sign_transaction(&tx, &[key, key], 1, &prevouts).unwrap();
         let txid = tx.txid(1).0;

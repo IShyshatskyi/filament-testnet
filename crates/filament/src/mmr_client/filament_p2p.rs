@@ -61,6 +61,28 @@ impl FilamentP2p {
     }
 }
 
+/// Build the light-client protocol for `network`, attaching the embedded
+/// genesis hash when the bootstrap config has a real (non-zero) one.
+pub fn protocol_for_network(network: &str) -> ShishaProtocol {
+    let mut protocol = ShishaProtocol::new(network.to_string());
+    if let Some(hash) = genesis_hash_for_network(network) {
+        protocol = protocol.with_genesis_hash(hash);
+    }
+    protocol
+}
+
+fn genesis_hash_for_network(network: &str) -> Option<[u8; 32]> {
+    use crate::mmr_client::light_client_config::FilamentBootstrapConfig;
+    let cfg = FilamentBootstrapConfig::from_embedded();
+    let info = cfg.get_network(network)?;
+    let hash = info.genesis_hash_bytes().ok()?;
+    if hash.iter().all(|&b| b == 0) {
+        None
+    } else {
+        Some(hash)
+    }
+}
+
 /// Resolve a single host:port to a [`SocketAddr`] (first result wins).
 pub fn resolve_dial_addr(host: &str, port: u16) -> Option<SocketAddr> {
     if let Ok(addr) = format!("{host}:{port}").parse::<SocketAddr>() {
@@ -148,7 +170,10 @@ pub async fn start_filament_p2p(
         listen_addr,
     };
 
-    let protocol = ShishaProtocol::new(network.to_string());
+    // Pin chain identity when the bootstrap config knows a non-zero genesis
+    // hash for this network (testnet-stress today; others stay "unknown" until
+    // mined). Unknown (= all-zero) is never compared by either side.
+    let protocol = protocol_for_network(network);
     let mgr = PeerManager::new(protocol, caps, listen_addr, 32, shutdown_rx);
 
     let client_for_handler = Arc::clone(&client);

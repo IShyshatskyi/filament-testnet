@@ -9,7 +9,10 @@ pub mod framing;
 pub mod messages;
 pub mod peer_manager;
 
-pub use messages::ShishaMessage;
+pub use framing::{magic_bytes_for_network, magic_for_network};
+pub use messages::{
+    NetAddr, ShishaMessage, VersionMessage, GENESIS_HASH_LEN, MIN_ACCEPTED_VERSION, UNKNOWN_GENESIS_HASH, WIRE_VERSION,
+};
 pub use peer_manager::{
     Capabilities, LightClientInboundNotif, PeerManager, ShishaProtocol, NODE_LIGHT, NODE_NETWORK,
 };

@@ -560,12 +560,13 @@ impl FilamentWallet {
         }
 
         let tx = Transaction {
-            version: 2, // TX-11: every spend is version 2 (sighash v2)
+            version: 1, // every spend is version 1 (one transaction version)
             inputs,
             outputs,
             locktime: current_height,
             expiration_height: current_height.saturating_add(144),
             witnesses: Vec::new(),
+            extensions: Vec::new(),
         };
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)

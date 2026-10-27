@@ -23,8 +23,6 @@ pub struct BeaconChainHandler {
     /// Current epoch (for DAA and other periodic updates)
     current_epoch: u64,
     
-    /// Blocks per epoch (typically 1008 for ~2 weeks)
-    blocks_per_epoch: u32,
 }
 
 
@@ -52,7 +50,6 @@ impl BeaconChainHandler {
         Self {
             handler,
             current_epoch: 0,
-            blocks_per_epoch: 1008,
         }
     }
     
@@ -111,7 +108,13 @@ impl BeaconChainHandler {
     /// Update epoch based on current height
     fn update_epoch(&mut self) {
         let height = self.handler.state().height();
-        let new_epoch = (height as u64) / (self.blocks_per_epoch as u64);
+        // The governance epoch length is the chain's `epoch_length()` (genesis
+        // parameter, shared by k-voting and expand-voting), NOT a Filament
+        // constant. The old hard-coded 1008 matched no network. A client on a
+        // non-default network must call `init_epoch_length` from its network
+        // profile at startup; otherwise the default (4096) applies.
+        let epoch_len = common_types::common::expand_voting::epoch_length().max(1) as u64;
+        let new_epoch = (height as u64) / epoch_len;
         
         if new_epoch != self.current_epoch {
             info!("Beacon: Epoch transition {} -> {}", self.current_epoch, new_epoch);

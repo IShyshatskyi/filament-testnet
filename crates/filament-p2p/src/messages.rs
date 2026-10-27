@@ -11,11 +11,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 pub const NET_ADDR_SIZE: usize = 26;
 const MAX_SHARDS: usize = 1024;
 
-/// Protocol wire version this client advertises. Matches the real
-/// ShishaProtocol's `version()` (4 — S3 header-cache advertisement); we
-/// never populate the v4 cache-height trailer fields (always empty/0,
-/// which is valid and self-describing on the wire).
-pub const WIRE_VERSION: u32 = 4;
+/// Wire version this client advertises. Both sides then speak
+/// `min(ours, theirs)`.
+pub const WIRE_VERSION: u32 = 15;
+
+/// Oldest peer wire version this client talks to. Nodes refuse anything older
+/// than this themselves, so a lower number here would only delay the failure.
+pub const MIN_ACCEPTED_VERSION: u32 = 15;
+
+/// Size of the genesis-hash trailer (wire version 11 and later).
+pub const GENESIS_HASH_LEN: usize = 32;
+
+/// Size of the shard-subscription bitmask (wire version 8 and later).
+pub const SUBSCRIPTION_MASK_LEN: usize = 128;
+
+/// "Unknown / not checked" chain identity. A light client that does not know
+/// its network's genesis hash sends this; it is never compared against.
+pub const UNKNOWN_GENESIS_HASH: [u8; GENESIS_HASH_LEN] = [0u8; GENESIS_HASH_LEN];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetAddr {
@@ -77,14 +89,52 @@ pub struct VersionMessage {
     pub user_agent: String,
     pub beacon_height: u32,
     pub shard_heights: Vec<(u16, u64)>,
+    /// v4+: highest beacon header the sender has cached (0 = none).
+    pub beacon_cache_height: u32,
+    /// v4+: per-shard header cache heights.
+    pub shard_cache_heights: Vec<(u16, u32)>,
+    /// v4+: lowest beacon height the sender serves from warm storage (0 = all).
+    pub beacon_serve_from: u32,
+    /// v4+: per-shard warm-storage floors.
+    pub shard_serve_from: Vec<(u16, u32)>,
+    /// v8+: bitset of shard ids the sender tracks. All-zero = "accepts all".
+    pub subscription_mask: [u8; SUBSCRIPTION_MASK_LEN],
+    /// v11+: the sender's beacon genesis block hash, or all-zero when unknown.
+    pub genesis_hash: [u8; GENESIS_HASH_LEN],
 }
 
 impl VersionMessage {
+    /// A message with every optional field empty. Tests and callers fill in
+    /// what they know.
+    pub fn new(version: u32, services: u64, nonce: u64, addr_recv: NetAddr, addr_from: NetAddr) -> Self {
+        Self {
+            version,
+            services,
+            timestamp: 0,
+            addr_recv,
+            addr_from,
+            nonce,
+            user_agent: String::new(),
+            beacon_height: 0,
+            shard_heights: Vec::new(),
+            beacon_cache_height: 0,
+            shard_cache_heights: Vec::new(),
+            beacon_serve_from: 0,
+            shard_serve_from: Vec::new(),
+            subscription_mask: [0u8; SUBSCRIPTION_MASK_LEN],
+            genesis_hash: UNKNOWN_GENESIS_HASH,
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let ua = self.user_agent.as_bytes();
-        let n_shards = self.shard_heights.len();
+        let v4 = self.version >= 4;
         let mut buf = Vec::with_capacity(
-            4 + 8 + 8 + NET_ADDR_SIZE * 2 + 8 + varint_len(ua.len() as u64) + ua.len() + 4 + 2 + n_shards * 10,
+            4 + 8 + 8 + NET_ADDR_SIZE * 2 + 8 + varint_len(ua.len() as u64) + ua.len() + 4 + 2
+                + self.shard_heights.len() * 10
+                + if v4 { 12 + (self.shard_cache_heights.len() + self.shard_serve_from.len()) * 6 } else { 0 }
+                + if self.version >= 8 { SUBSCRIPTION_MASK_LEN } else { 0 }
+                + if self.version >= 11 { GENESIS_HASH_LEN } else { 0 },
         );
         buf.extend_from_slice(&self.version.to_le_bytes());
         buf.extend_from_slice(&self.services.to_le_bytes());
@@ -95,10 +145,30 @@ impl VersionMessage {
         write_varint(&mut buf, ua.len() as u64);
         buf.extend_from_slice(ua);
         buf.extend_from_slice(&self.beacon_height.to_le_bytes());
-        buf.extend_from_slice(&(n_shards as u16).to_le_bytes());
+        buf.extend_from_slice(&(self.shard_heights.len() as u16).to_le_bytes());
         for &(id, h) in &self.shard_heights {
             buf.extend_from_slice(&id.to_le_bytes());
             buf.extend_from_slice(&h.to_le_bytes());
+        }
+        if v4 {
+            buf.extend_from_slice(&self.beacon_cache_height.to_le_bytes());
+            buf.extend_from_slice(&(self.shard_cache_heights.len() as u16).to_le_bytes());
+            for &(id, h) in &self.shard_cache_heights {
+                buf.extend_from_slice(&id.to_le_bytes());
+                buf.extend_from_slice(&h.to_le_bytes());
+            }
+            buf.extend_from_slice(&self.beacon_serve_from.to_le_bytes());
+            buf.extend_from_slice(&(self.shard_serve_from.len() as u16).to_le_bytes());
+            for &(id, h) in &self.shard_serve_from {
+                buf.extend_from_slice(&id.to_le_bytes());
+                buf.extend_from_slice(&h.to_le_bytes());
+            }
+        }
+        if self.version >= 8 {
+            buf.extend_from_slice(&self.subscription_mask);
+        }
+        if self.version >= 11 {
+            buf.extend_from_slice(&self.genesis_hash);
         }
         buf
     }
@@ -125,10 +195,40 @@ impl VersionMessage {
         for _ in 0..shard_count {
             shard_heights.push((read_u16(data, &mut pos)?, read_u64(data, &mut pos)?));
         }
-        // Any v4+ cache-height/serve-from/v8 subscription-mask trailer bytes
-        // are intentionally left unparsed and unread — we never send them
-        // ourselves, and ignoring a peer's trailer is the documented
-        // backward-compatible behavior real receivers already use.
+
+        // Each trailer is optional: an older sender simply stops early, and a
+        // receiver treats the missing part as empty / zero.
+        let (beacon_cache_height, shard_cache_heights) = if version >= 4 && pos < data.len() {
+            let height = read_u32(data, &mut pos)?;
+            (height, read_height_list(data, &mut pos, "shard_cache_heights")?)
+        } else {
+            (0, Vec::new())
+        };
+        let (beacon_serve_from, shard_serve_from) = if version >= 4 && pos < data.len() {
+            let floor = read_u32(data, &mut pos)?;
+            (floor, read_height_list(data, &mut pos, "shard_serve_from")?)
+        } else {
+            (0, Vec::new())
+        };
+        let subscription_mask = if version >= 8 && pos + SUBSCRIPTION_MASK_LEN <= data.len() {
+            let mut arr = [0u8; SUBSCRIPTION_MASK_LEN];
+            arr.copy_from_slice(&data[pos..pos + SUBSCRIPTION_MASK_LEN]);
+            pos += SUBSCRIPTION_MASK_LEN;
+            arr
+        } else {
+            [0u8; SUBSCRIPTION_MASK_LEN]
+        };
+        let genesis_hash = if version >= 11 && pos + GENESIS_HASH_LEN <= data.len() {
+            let mut arr = [0u8; GENESIS_HASH_LEN];
+            arr.copy_from_slice(&data[pos..pos + GENESIS_HASH_LEN]);
+            pos += GENESIS_HASH_LEN;
+            arr
+        } else {
+            UNKNOWN_GENESIS_HASH
+        };
+        // Bytes after the last known field belong to a later version; skip them.
+        let _ = pos;
+
         Ok(Self {
             version,
             services,
@@ -139,8 +239,30 @@ impl VersionMessage {
             user_agent,
             beacon_height,
             shard_heights,
+            beacon_cache_height,
+            shard_cache_heights,
+            beacon_serve_from,
+            shard_serve_from,
+            subscription_mask,
+            genesis_hash,
         })
     }
+}
+
+/// `count(u16 LE)` then `count` entries of `(id: u16 LE, height: u32 LE)`.
+fn read_height_list(data: &[u8], pos: &mut usize, what: &str) -> Result<Vec<(u16, u32)>, String> {
+    let count = read_u16(data, pos)? as usize;
+    if count > MAX_SHARDS {
+        return Err(format!("{what} count {count} exceeds MAX_SHARDS"));
+    }
+    if data.len() < *pos + count * 6 {
+        return Err(format!("truncated {what}"));
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push((read_u16(data, pos)?, read_u32(data, pos)?));
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -375,22 +497,69 @@ fn varint_len(v: u64) -> usize {
 mod tests {
     use super::*;
 
+    fn sample(version: u32) -> VersionMessage {
+        let mut v = VersionMessage::new(
+            version,
+            2,
+            999,
+            NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+            NetAddr::from_socket_addr("127.0.0.1:2".parse().unwrap(), 2),
+        );
+        v.timestamp = 123;
+        v.user_agent = "/Filament:0.1.0/".into();
+        v.beacon_height = 5;
+        v.shard_heights = vec![(0, 10), (1, 20)];
+        v.beacon_cache_height = 7;
+        v.shard_cache_heights = vec![(0, 3), (1, 4)];
+        v.beacon_serve_from = 2;
+        v.shard_serve_from = vec![(1, 9)];
+        v.subscription_mask[0] = 0b0000_0011;
+        v.subscription_mask[127] = 0x80;
+        v.genesis_hash = [0xAB; GENESIS_HASH_LEN];
+        v
+    }
+
     #[test]
-    fn version_message_roundtrips() {
-        let v = VersionMessage {
-            version: WIRE_VERSION,
-            services: 2,
-            timestamp: 123,
-            addr_recv: NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
-            addr_from: NetAddr::from_socket_addr("127.0.0.1:2".parse().unwrap(), 2),
-            nonce: 999,
-            user_agent: "/Filament:0.1.0/".into(),
-            beacon_height: 5,
-            shard_heights: vec![(0, 10), (1, 20)],
-        };
-        let bytes = v.encode();
-        let decoded = VersionMessage::decode(&bytes).unwrap();
-        assert_eq!(decoded, v);
+    fn current_version_roundtrips_with_every_trailer() {
+        let v = sample(WIRE_VERSION);
+        assert_eq!(VersionMessage::decode(&v.encode()).unwrap(), v);
+    }
+
+    #[test]
+    fn older_versions_omit_the_trailers_they_do_not_have() {
+        // v3: nothing after the shard list. v7: no mask or genesis hash.
+        // v10: no genesis hash.
+        let full = sample(WIRE_VERSION).encode();
+        let v3 = sample(3).encode();
+        let v7 = sample(7).encode();
+        let v10 = sample(10).encode();
+        let shard_list_end = 4 + 8 + 8 + 2 * NET_ADDR_SIZE + 8 + 1 + 16 + 4 + 2 + 2 * 10;
+        assert_eq!(v3.len(), shard_list_end);
+        assert_eq!(v7.len(), shard_list_end + (4 + 2 + 2 * 6) + (4 + 2 + 6));
+        assert_eq!(v10.len(), v7.len() + SUBSCRIPTION_MASK_LEN);
+        assert_eq!(full.len(), v10.len() + GENESIS_HASH_LEN);
+
+        let d3 = VersionMessage::decode(&v3).unwrap();
+        assert!(d3.shard_cache_heights.is_empty() && d3.genesis_hash == UNKNOWN_GENESIS_HASH);
+        let d10 = VersionMessage::decode(&v10).unwrap();
+        assert_eq!(d10.subscription_mask[127], 0x80);
+        assert_eq!(d10.genesis_hash, UNKNOWN_GENESIS_HASH, "no genesis hash before v11");
+    }
+
+    #[test]
+    fn trailing_bytes_of_a_later_version_are_ignored() {
+        let v = sample(WIRE_VERSION);
+        let mut bytes = v.encode();
+        bytes.extend_from_slice(&[1, 2, 3, 4, 5]);
+        assert_eq!(VersionMessage::decode(&bytes).unwrap(), v);
+    }
+
+    #[test]
+    fn truncated_trailers_are_errors_not_panics() {
+        let bytes = sample(WIRE_VERSION).encode();
+        // Cut inside the cache list: a count that promises more than remains.
+        let cut = 4 + 8 + 8 + 2 * NET_ADDR_SIZE + 8 + 1 + 16 + 4 + 2 + 2 * 10 + 4 + 2 + 3;
+        assert!(VersionMessage::decode(&bytes[..cut]).is_err());
     }
 
     #[test]
@@ -431,34 +600,5 @@ mod tests {
     fn unknown_command_does_not_error() {
         let m = ShishaMessage::decode("someothertype", &[1, 2, 3]).unwrap();
         assert_eq!(m.command(), "someothertype");
-    }
-}
-
-#[cfg(test)]
-mod xcheck {
-    use super::*;
-
-    #[test]
-    fn xcheck_against_real_shisha_prefix() {
-        let v = VersionMessage {
-            version: 4,
-            services: 2,
-            timestamp: 123,
-            addr_recv: NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
-            addr_from: NetAddr::from_socket_addr("127.0.0.1:2".parse().unwrap(), 2),
-            nonce: 999,
-            user_agent: "/Filament:0.1.0/".into(),
-            beacon_height: 5,
-            shard_heights: vec![(0, 10), (1, 20)],
-        };
-        let mine = v.encode();
-        let real_hex = "0400000002000000000000007b00000000000000000000000000000000000000000000000000ffff7f0000010001020000000000000000000000000000000000ffff7f0000010002e703000000000000102f46696c616d656e743a302e312e302f05000000020000000a0000000000000001001400000000000000000000000000000000000000";
-        let real: Vec<u8> = (0..real_hex.len()).step_by(2).map(|i| u8::from_str_radix(&real_hex[i..i+2], 16).unwrap()).collect();
-        // My encoding omits the v4 cache/serve-from trailer (always-empty in
-        // this client); the real decoder treats "no more bytes" as
-        // "trailer omitted, default 0/empty" (checked in messages.rs decode
-        // comment) so this is wire-compatible, not truncated data.
-        assert_eq!(mine.len(), 123, "shared-prefix length must match the real encoder before its v4 trailer");
-        assert_eq!(&mine[..], &real[..123], "shared prefix must be byte-identical to the real encoder");
     }
 }

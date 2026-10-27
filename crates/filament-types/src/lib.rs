@@ -15,6 +15,7 @@
 //! unchanged against this one. The real implementation lives in the
 //! top-level modules; `common`/`transaction` are thin `pub use` shims.
 
+pub mod expand_voting;
 pub mod weighted_hash;
 pub mod hash;
 pub mod hash_sorting;
@@ -41,11 +42,12 @@ pub mod common {
 
     pub mod genesis {
         pub mod genesis_config {
-            pub use crate::genesis::BeaconGenesisConfig;
+            pub use crate::genesis::{BeaconGenesisConfig, SHARD_CALIBRATION_CONSTANT};
         }
         pub use genesis_config::BeaconGenesisConfig;
     }
 
+    pub use crate::expand_voting;
     pub use crate::proofs;
     pub use crate::relay_hash;
     pub use crate::relay_hash::relay_id;

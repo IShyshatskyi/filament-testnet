@@ -1,20 +1,18 @@
-//! VF-3 Phase 1 — the one transaction id. Mirrors the private monorepo's
-//! `common-types/src/transaction/txid.rs` byte for byte.
+//! The one transaction id. Must match the node's txid byte for byte.
 //!
 //! ```text
 //! txid = BLAKE3( "shisha/txid/v1"
-//!              ‖ chain_id : u8      // beacon 0, shard N → N+1
-//!              ‖ version  : u8      // clamped to u8
+//!              ‖ chain_id : u16 LE  // beacon 0, shard N → N+1
+//!              ‖ version  : u8
 //!              ‖ locktime : u32 LE ‖ expiration_height : u32 LE
 //!              ‖ n_inputs  : u32 LE ‖ [prev_height u32 LE ‖ prev_output_idx u16 LE] × n
 //!              ‖ n_outputs : u32 LE ‖ [value u64 LE ‖ recipient [u8;32]] × m
 //!              ‖ n_ext     : u32 LE ‖ [type u16 LE ‖ version u16 LE ‖ len u32 LE ‖ payload] × k )
 //! ```
 //!
-//! Independent of witnesses and block position. Validity-window records are
-//! never hashed as records. This crate's `Transaction` carries no extensions,
-//! so `Transaction::txid` hashes `n_ext = 0`; `txid_from_parts` takes
-//! extensions for callers that have them.
+//! Independent of witnesses and block position. Validity-window records
+//! (extension type `0x0001`) are never hashed as records; every other
+//! extension record is.
 
 use crate::transaction_impl::{Transaction, Txid};
 
@@ -25,12 +23,14 @@ pub const TXID_DOMAIN_TAG: &[u8] = b"shisha/txid/v1";
 pub const CONSENSUS_EXT_VALIDITY_WINDOW: u16 = 0x0001;
 
 /// `chain_id` of the beacon chain.
-pub const BEACON_CHAIN_ID: u8 = 0;
+pub const BEACON_CHAIN_ID: u16 = 0;
 
 /// `chain_id` of shard `shard_id` (shard N → N+1), the same convention every
-/// signature preimage uses.
-pub fn shard_chain_id(shard_id: u16) -> u8 {
-    shard_id.wrapping_add(1) as u8
+/// signature preimage uses. A `u16`: with a `u8`, shard 255 collided with the
+/// beacon and shard 256 with shard 0, so a transaction signed for one chain
+/// could be valid on another.
+pub fn shard_chain_id(shard_id: u16) -> u16 {
+    shard_id.wrapping_add(1)
 }
 
 /// One extension record as hashed into the txid: `(type, version, payload)`.
@@ -38,7 +38,7 @@ pub type ExtensionParts<'a> = (u16, u16, &'a [u8]);
 
 /// Hash the canonical txid preimage.
 pub fn txid_from_parts(
-    chain_id: u8,
+    chain_id: u16,
     version: u8,
     locktime: u32,
     expiration_height: u32,
@@ -48,7 +48,8 @@ pub fn txid_from_parts(
 ) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(TXID_DOMAIN_TAG);
-    h.update(&[chain_id, version]);
+    h.update(&chain_id.to_le_bytes());
+    h.update(&[version]);
     h.update(&locktime.to_le_bytes());
     h.update(&expiration_height.to_le_bytes());
 
@@ -82,17 +83,22 @@ pub fn txid_from_parts(
 impl Transaction {
     /// The transaction id on chain `chain_id` (beacon [`BEACON_CHAIN_ID`],
     /// shard N [`shard_chain_id`]`(N)`).
-    pub fn txid(&self, chain_id: u8) -> Txid {
+    pub fn txid(&self, chain_id: u16) -> Txid {
         let inputs: Vec<_> = self.inputs.iter().map(|i| (i.prev_height, i.prev_output_idx)).collect();
         let outputs: Vec<_> = self.outputs.iter().map(|o| (o.value, o.recipient)).collect();
+        let exts: Vec<ExtensionParts<'_>> = self
+            .extensions
+            .iter()
+            .map(|e| (e.header.extension_type, e.header.version, e.payload.as_slice()))
+            .collect();
         Txid(txid_from_parts(
             chain_id,
-            self.version.min(u32::from(u8::MAX)) as u8,
+            self.version,
             self.locktime,
             self.expiration_height,
             &inputs,
             &outputs,
-            &[],
+            &exts,
         ))
     }
 }
@@ -110,21 +116,51 @@ mod tests {
             locktime: 0,
             expiration_height: 0,
             witnesses: vec![],
+            extensions: vec![],
         }
     }
 
-    /// Same values the monorepo's common-types and tools/tx-spammer pin.
+    /// The node pins the same two values.
     #[test]
     fn golden_vectors_beacon_and_shard0() {
         let tx = golden_tx();
         assert_eq!(
             hex::encode(tx.txid(BEACON_CHAIN_ID).0),
-            "33acdb7a33c59a15862014ba4eb895e77655470fb7d17127ce7b9ac5a60c2d25"
+            "1596d3459ed17dc2710eb58695fe617493ff0bd7c47e13f2d18fa9ef7673a4d4"
         );
         assert_eq!(
             hex::encode(tx.txid(shard_chain_id(0)).0),
-            "84a4d093da52d86c4b02b347127ea27dfa80366702b570664595d82a1de0b202"
+            "929cf0aa7ef34e3f9b5f5262b169d003c037933f1c24aec7aabf0f75d57c1247"
         );
+    }
+
+    /// Every shard id up to the largest the network can hold gets its own txid
+    /// domain (with a `u8` chain id, shard 255 collided with the beacon and
+    /// shard 256 with shard 0).
+    #[test]
+    fn every_shard_has_its_own_txid_domain() {
+        let tx = golden_tx();
+        let mut seen = std::collections::HashSet::new();
+        assert!(seen.insert(tx.txid(BEACON_CHAIN_ID).0));
+        for shard in 0u16..1024 {
+            assert!(seen.insert(tx.txid(shard_chain_id(shard)).0), "shard {shard} collides");
+        }
+    }
+
+    #[test]
+    fn extensions_other_than_the_validity_record_change_the_txid() {
+        use crate::transaction_impl::{ExtensionHeader, ExtensionRecord};
+        let rec = |t: u16| ExtensionRecord {
+            header: ExtensionHeader { extension_type: t, version: 1, payload_length: 1 },
+            payload: vec![1],
+        };
+        let base = golden_tx().txid(1);
+        let mut with_validity = golden_tx();
+        with_validity.extensions.push(rec(CONSENSUS_EXT_VALIDITY_WINDOW));
+        assert_eq!(with_validity.txid(1), base, "validity record is not hashed");
+        let mut with_app = golden_tx();
+        with_app.extensions.push(rec(0x1234));
+        assert_ne!(with_app.txid(1), base);
     }
 
     #[test]

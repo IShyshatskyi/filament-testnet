@@ -359,7 +359,7 @@ pub mod watch_notify;
 /// use mmr_client::{verify_fork_proof, MMRForkProof};
 ///
 /// if verify_fork_proof(&fork_proof) {
-///     println!("Valid fork detected at height {}", fork_proof.fork_height);
+///     println!("Valid fork detected at height {}", fork_proof.last_common_height);
 /// }
 /// ```
 pub use verification::verify_fork_proof;
