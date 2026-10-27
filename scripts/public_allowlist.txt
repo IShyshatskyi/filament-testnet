@@ -34,6 +34,8 @@ crates/filament-p2p/src/framing.rs
 crates/filament-p2p/src/messages.rs
 crates/filament-p2p/src/peer_manager.rs
 crates/filament-p2p/tests/loopback.rs
+crates/filament-p2p/examples/handshake_probe.rs
+scripts/p2p_handshake_probe.sh
 
 # ── Public meta ───────────────────────────────────────────────────────────────
 VERSION

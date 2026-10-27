@@ -40,7 +40,7 @@ that MMR light clients solve.
 Shard chains target a much faster ~37.5-second block interval than Bitcoin's 10 minutes —
 **16×** more blocks per day per chain (the calibration ratio between beacon and shard block
 cadence) — and each header carries more data than Bitcoin's 80 bytes (136 bytes per
-[`LightShardHeader`](crates/common-types/src/common/blocks/shard_block.rs)). For **N** shard
+`LightShardHeader`). For **N** shard
 chains, that's `144 × 16 × N` block headers a traditional SPV client would need daily, growing
 linearly with shard count — exactly the load MMR proofs are designed to collapse to a
 near-constant summary instead.
@@ -103,8 +103,8 @@ header forever.
 | Crate | Role |
 |-------|------|
 | `crates/filament` | Light client: `WeightedMMRLight`, `MultiChainClient`, HTTP API `:7380`, wallet/invoices, Path-2 P2P |
-| `crates/common-types` | `WeightedHash`, weighted proofs, verification |
-| `crates/p2p-proto` | Network codecs + `PeerManager` (Path-2) |
+| `crates/filament-types` | `WeightedHash`, weighted proofs, verification (clean-room) |
+| `crates/filament-p2p` | ShishaNet codec + `PeerManager` (Path-2, clean-room) |
 
 **Filament-Test verifies proofs. Full nodes (Keystone) serve them.**
 
@@ -232,7 +232,7 @@ shard following.
 MultiChainClient
   ├── BeaconChainHandler  (WeightedMMRLight + tip / weight)
   └── ShardChainHandlers  (per shard_id)
-        └── proofs verified via common-types
+        └── proofs verified via filament-types
 
 Wallet / HTTP / P2P  →  Filament-Test :7380  →  verifies Weighted MMR proofs
                               │

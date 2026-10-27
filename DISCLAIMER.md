@@ -38,9 +38,9 @@ While this library implements cryptographic primitives (Weighted MMR / WeightedH
 
 1. **Experimental product**: Filament-Test HTTP/P2P/wallet paths are under active testnet development and are not audited.
 2. **Storage**: Default in-memory / file-oriented persistence is for testnet convenience (not a hardened wallet vault).
-3. **Network / peers**: Outbound HTTPS and optional P2P expose your IP; prefer multiple Keystone endpoints (MNT) when available.
+3. **Network / peers**: Outbound HTTPS and optional P2P expose your IP; prefer multiple Keystone endpoints when available.
 4. **Consensus trust**: Assumes at least one honest proof-serving full node among those you query; colluding peers can still mislead a light client.
-5. **Protocol churn**: Wire formats and APIs can change between syncs from the private monorepo.
+5. **Protocol churn**: Wire formats and APIs can change between syncs from the upstream repository.
 
 
 ### Financial Risks

@@ -1,9 +1,8 @@
 // crates/filament/src/mmr_client/watch_notify.rs
 //
-// FUD-5 / LC-45..LC-47c — Filament-side processing of Keystone watch notifications
+// Filament-side processing of Keystone watch notifications
 // (TxInclusionNotif / TxSpentNotif / TxRevertNotif).
 //
-// Design reference: `docs/plan/P2P_Phase10_Plan.md` §6.2
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -29,7 +28,7 @@ pub struct WatchUtxo {
     pub address:     [u8; 32],
 }
 
-/// Cap on recorded `verify_with_anchor` samples (TS-F-3).
+/// Cap on recorded `verify_with_anchor` samples.
 const PROOF_LATENCY_CAP: usize = 64;
 
 /// Local UTXO set maintained from watch notifications (Path 2).
@@ -64,7 +63,7 @@ impl WatchNotifyState {
             .collect()
     }
 
-    /// TS-F-3: last N proof-verify samples (µs), oldest first.
+    /// Last N proof-verify samples (µs), oldest first.
     pub fn proof_verify_samples_us(&self) -> Vec<u64> {
         self.proof_verify_us.iter().copied().collect()
     }
@@ -76,7 +75,7 @@ impl WatchNotifyState {
         self.proof_verify_us.push_back(us);
     }
 
-    /// LC-45 / LC-47: verify proof, then insert UTXO on success.
+    /// Verify proof, then insert UTXO on success.
     pub fn apply_inclusion(
         &mut self,
         shard_id: u16,
@@ -106,7 +105,7 @@ impl WatchNotifyState {
         InclusionApplyResult::Accepted
     }
 
-    /// LC-46: remove a spent UTXO if we were tracking it.
+    /// Remove a spent UTXO if we were tracking it.
     pub fn apply_spent(
         &mut self,
         shard_id: u16,
@@ -188,7 +187,6 @@ mod tests {
         (dir, store)
     }
 
-    // LC-47
     #[test]
     fn lc47_invalid_proof_rejected() {
         let mut watch = WatchNotifyState::default();
@@ -198,7 +196,6 @@ mod tests {
         assert_eq!(watch.utxo_count(), 0);
     }
 
-    // LC-46
     #[test]
     fn lc46_spent_notif_removes_utxo() {
         let mut watch = WatchNotifyState::default();
@@ -216,7 +213,6 @@ mod tests {
         assert_eq!(watch.utxo_count(), 0);
     }
 
-    // LC-47b
     #[test]
     fn lc47b_pending_invoice_reorg_reverted() {
         let (_d, store) = temp_store();
@@ -232,7 +228,7 @@ mod tests {
         assert_eq!(inv.idx_hint, None);
     }
 
-    // LC-47c / P0-2: Confirmed invoices revert the same as Pending.
+    // Confirmed invoices revert the same as Pending.
     #[test]
     fn lc47c_confirmed_invoice_is_reverted() {
         let (_d, store) = temp_store();
@@ -251,7 +247,6 @@ mod tests {
         assert_eq!(inv.idx_hint, None);
     }
 
-    // LC-45
     #[test]
     fn lc45_pending_to_confirmed_at_depth_6() {
         let (_d, store) = temp_store();

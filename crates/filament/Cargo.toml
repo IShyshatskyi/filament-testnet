@@ -2,12 +2,12 @@
 name    = "filament"
 version = "0.1.0"
 edition = "2021"
-description = "Filament — Shisha Network MMR light-client library (Gap 8 Phase 2 — physical extraction)"
+description = "Filament — Shisha Network MMR light-client library"
 
 # ── Features ──────────────────────────────────────────────────────────────────
 # `full-node` / `server` — axum HTTP server (filament_server.rs, port 7380) +
 # Schnorr signing (filament_wallet.rs) + Path-2 P2P. Prefer `server` in public
-# docs; `full-node` remains for monolith feature-name parity.
+# docs; `full-node` is kept as the original feature name.
 [features]
 default   = []
 full-node = [
@@ -25,9 +25,7 @@ path              = "src/bin/filament.rs"
 required-features = ["full-node"]
 
 # ── Dependencies ───────────────────────────────────────────────────────────────
-# This crate has NO dependency on `shisha-core` — the physical move
-# (Gap 8 Phase 2) inverted the direction: `shisha-core` now depends on this
-# crate. See docs/plan/Crate_Split_Plan.md §Gap 8 for the extraction analysis.
+# Depends only on the public `filament-types` and `filament-p2p` crates.
 [dependencies]
 common_types = { package = "filament-types", path = "../filament-types" }
 

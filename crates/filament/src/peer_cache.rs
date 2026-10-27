@@ -1,12 +1,11 @@
 // crates/filament/src/peer_cache.rs
 //
-// PD-1 — Peer cache: `peers.json` atomic read/write; 7-day entry expiry.
+// Peer cache: `peers.json` atomic read/write; 7-day entry expiry.
 //
 // Layer 1 of Filament peer discovery (fastest path — previously-connected
 // nodes).  Entries that haven't been seen in 7 days are silently dropped
 // on the next load.
 //
-// Design reference: `filament_app/docs/PEER_DISCOVERY_PLAN.md` §2
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -127,7 +126,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-// ─── Tests (PD-T-1 / PD-T-2) ─────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -140,7 +139,6 @@ mod tests {
         (dir, cache)
     }
 
-    // PD-T-1
     #[test]
     fn peer_cache_add_and_retrieve() {
         let (_dir, cache) = tmp_cache();
@@ -153,7 +151,7 @@ mod tests {
         assert!(live.iter().any(|(h, p)| h == "192.0.2.1" && *p == 8334));
     }
 
-    // PD-T-2: stale entry (last_seen_ms set to > 7 days ago) is not returned
+    // Stale entry (last_seen_ms set to > 7 days ago) is not returned
     #[test]
     fn peer_cache_evicts_stale_entries() {
         let (_dir, cache) = tmp_cache();

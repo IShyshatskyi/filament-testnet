@@ -14,7 +14,6 @@
 //                 ↘                ↗                    ↘
 //               Expired                              ReorgReverted
 //
-// Design reference: `docs/plan/P2P_Phase10_Plan.md` §2
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -25,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// Filament HTTP handlers open a fresh `InvoiceStore` per request, so an
 /// in-process `Mutex` alone would not close the TOCTOU across concurrent
 /// `POST /invoice/create` calls — this blocking `flock` covers any opener
-/// of the same store directory (same pattern as rustmmrdb `DataDirLock`).
+/// of the same store directory.
 const CREATE_LOCK_FILE: &str = ".invoice_create.lock";
 
 /// RAII exclusive lock held for the duration of one `create` call.
@@ -82,7 +81,7 @@ pub enum InvoiceState {
     /// Inclusion verified via MMR proof; `depth` blocks of confirmations so far.
     Pending(u8),
     /// `MIN_CONFIRMATION_DEPTH` blocks confirmed. A matching `TxRevertNotif`
-    /// still reverts this to `ReorgReverted` (P0-2) — depth does not freeze
+    /// still reverts this to `ReorgReverted` — depth does not freeze
     /// the invoice against an outpoint orphan.
     Confirmed,
     /// `expiry_height` passed without reaching `PaymentSent`.
@@ -120,7 +119,7 @@ impl InvoiceState {
 
 /// A receiver-initiated payment request.
 ///
-/// See `docs/plan/P2P_Phase10_Plan.md` §2.1 for the full field descriptions.
+/// for the full field descriptions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invoice {
     /// 16-byte UUID v4 (random), unique per payment.
@@ -307,7 +306,7 @@ impl Invoice {
     }
 
     /// May claim a new `TxInclusionNotif`. `Pending` is excluded so a later
-    /// same-address payment cannot clobber an already-claimed invoice (NC-86).
+    /// same-address payment cannot clobber an already-claimed invoice.
     fn rematch_eligible(&self) -> bool {
         matches!(
             self.state,
@@ -344,7 +343,7 @@ pub enum InvoiceError {
     NotFound([u8; 16]),
     /// Another unhinted in-flight invoice already exists for this
     /// `(shard_id, recipient)` — Path-2 matching cannot disambiguate two
-    /// such invoices (P0-1 hybrid: one unhinted in-flight, or hinted by outpoint).
+    /// such invoices (hybrid: one unhinted in-flight, or hinted by outpoint).
     DuplicateUnhintedInFlight { shard_id: u16, recipient: [u8; 32] },
 }
 
@@ -530,7 +529,7 @@ impl InvoiceStore {
         Ok(result)
     }
 
-    /// FUD-5: addresses that should stay registered with Keystone (`WatchAddress`).
+    /// Addresses that should stay registered with Keystone (`WatchAddress`).
     pub fn watch_registration_targets(&self) -> Result<Vec<([u8; 32], u16)>, InvoiceError> {
         let mut out = Vec::new();
         for inv in self.list(None)? {
@@ -550,12 +549,12 @@ impl InvoiceStore {
         Ok(out)
     }
 
-    /// FUD-5 / P0-1: on verified inclusion, match an invoice and enter `Pending(0)`.
+    /// On verified inclusion, match an invoice and enter `Pending(0)`.
     ///
     /// Hybrid matching: a hinted rematch-eligible invoice claims only its
     /// own outpoint; otherwise the newest unhinted rematch-eligible invoice
     /// for `(shard_id, address)` claims the inclusion. `Pending` is never
-    /// rematched (NC-86 coinbase-reuse clobber).
+    /// rematched (coinbase-reuse clobber).
     pub fn on_watch_inclusion(
         &self,
         shard_id: u16,
@@ -603,7 +602,7 @@ impl InvoiceStore {
         Ok(Some(id))
     }
 
-    /// LC-47b / P0-2: revert a `Pending` or `Confirmed` payment at
+    /// Revert a `Pending` or `Confirmed` payment at
     /// `(shard_id, height, output_idx)`. Hints are cleared so rematch can
     /// take a new height after the reorg.
     pub fn on_watch_revert(
@@ -848,7 +847,6 @@ mod tests {
         }
     }
 
-    // LC-1
     #[test]
     fn invoice_codec_roundtrip_no_hints() {
         let inv = sample_invoice();
@@ -868,7 +866,6 @@ mod tests {
         assert_eq!(decoded.txid,          None);
     }
 
-    // LC-2
     #[test]
     fn invoice_codec_roundtrip_with_hints() {
         let mut inv = sample_invoice();
@@ -879,7 +876,6 @@ mod tests {
         assert_eq!(encoded.idx_hint,    Some(7));
     }
 
-    // LC-3
     #[test]
     fn invoice_codec_roundtrip_with_txid() {
         let mut inv = sample_invoice();
@@ -888,7 +884,6 @@ mod tests {
         assert_eq!(decoded.txid, Some([0xABu8; 32]));
     }
 
-    // LC-4
     #[test]
     fn invoice_codec_truncated_rejected() {
         let inv = sample_invoice();
@@ -900,7 +895,6 @@ mod tests {
         assert!(matches!(Invoice::decode(&enc), Err(InvoiceError::Truncated)));
     }
 
-    // LC-5
     #[test]
     fn invoice_codec_wrong_magic_rejected() {
         let inv = sample_invoice();
@@ -916,7 +910,6 @@ mod tests {
         (dir, store)
     }
 
-    // LC-6
     #[test]
     fn invoice_store_create_load_roundtrip() {
         let (_d, store) = temp_store();
@@ -929,7 +922,6 @@ mod tests {
         assert_eq!(loaded.state,        InvoiceState::Created);
     }
 
-    // LC-7
     #[test]
     fn invoice_store_apply_hints_transitions_to_payment_sent() {
         let (_d, store) = temp_store();
@@ -942,7 +934,6 @@ mod tests {
         assert_eq!(inv.txid,         Some([0xFFu8; 32]));
     }
 
-    // LC-8
     #[test]
     fn invoice_store_mark_confirmed() {
         let (_d, store) = temp_store();
@@ -953,7 +944,6 @@ mod tests {
         assert_eq!(inv.mmr_proof_bytes, Some(vec![1, 2, 3]));
     }
 
-    // LC-9
     #[test]
     fn invoice_store_prune_expired() {
         let (_d, store) = temp_store();
@@ -964,7 +954,6 @@ mod tests {
         assert_eq!(store.load(&id).unwrap().state, InvoiceState::Expired);
     }
 
-    // LC-10
     #[test]
     fn invoice_store_list_filter_by_state() {
         let (_d, store) = temp_store();

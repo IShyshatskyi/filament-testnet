@@ -14,7 +14,7 @@ use crate::wallet::transaction_builder::SchnorrSigner;
 
 pub const ATOMS_PER_COIN: f64 = 100_000_000.0;
 
-/// TS-PORTAL-2f — the Testnet Portal auth domain tag. These bytes MUST stay
+/// The Testnet Portal auth domain tag. These bytes MUST stay
 /// **byte-identical** to `tools/testnet-portal-api` `auth::AUTH_DOMAIN` /
 /// `auth::auth_digest`: the portal API verifies the returned signature against
 /// exactly `BLAKE3(this || x_only_pubkey(32) || nonce(32))`. The trailing
@@ -98,9 +98,9 @@ pub struct SendResponse {
 
 // ── FilamentWallet ────────────────────────────────────────────────────────────
 
-/// MNT-7: outcome of fanning a wallet-data refresh out to every configured
+/// Outcome of fanning a wallet-data refresh out to every configured
 /// Keystone endpoint, rather than trusting whichever single endpoint used to
-/// be the only option. See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// be the only option.
 #[derive(Debug, Clone, Default)]
 pub struct RefreshOutcome {
     /// Endpoints that returned a usable response.
@@ -119,7 +119,7 @@ pub struct FilamentWallet {
     address: String,
     utxos: Vec<UtxoEntry>,
     history: Vec<TxHistoryEntry>,
-    /// MNT-7: every Keystone REST endpoint this wallet fans wallet-data
+    /// Every Keystone REST endpoint this wallet fans wallet-data
     /// queries out to, rather than trusting a single configured node.
     /// Populated from `FilamentNodeConfig::all_keystone_endpoints()`.
     keystone_endpoints: Vec<String>,
@@ -130,7 +130,7 @@ pub struct FilamentWallet {
     /// encrypt messages addressed to this wallet.
     f2f_seckey: [u8; 32],
     f2f_pubkey: [u8; 33],
-    /// TS-PORTAL-2f: optional spending secret key. When set (via
+    /// Optional spending secret key. When set (via
     /// `--signing-key-file` / `FILAMENT_SIGNING_KEY`), the local HTTP API can
     /// sign a domain-separated Testnet Portal auth challenge without the key
     /// ever leaving this process. Watch-only when `None`.
@@ -199,12 +199,12 @@ impl FilamentWallet {
     /// Set a single Keystone endpoint, replacing the whole list. Kept for
     /// backward compatibility with callers that only know about one
     /// endpoint; prefer `set_keystone_endpoints` when multiple are
-    /// configured (MNT-7).
+    /// configured.
     pub fn set_keystone_endpoint(&mut self, ep: Option<String>) {
         self.keystone_endpoints = ep.into_iter().collect();
     }
 
-    /// MNT-7: set the full list of Keystone REST endpoints this wallet fans
+    /// Set the full list of Keystone REST endpoints this wallet fans
     /// queries out to. See `FilamentNodeConfig::all_keystone_endpoints()`.
     pub fn set_keystone_endpoints(&mut self, eps: Vec<String>) {
         self.keystone_endpoints = eps;
@@ -213,7 +213,7 @@ impl FilamentWallet {
     /// The configured Keystone REST endpoints, in priority order.
     pub fn keystone_endpoints(&self) -> &[String] { &self.keystone_endpoints }
 
-    /// TS-PORTAL-2f: attach the wallet's spending secret key so the local HTTP
+    /// Attach the wallet's spending secret key so the local HTTP
     /// API's `/wallet/sign-message` can sign a Testnet Portal auth challenge.
     /// The key is never returned by any route or accepted in any request body.
     #[cfg(feature = "full-node")]
@@ -227,10 +227,10 @@ impl FilamentWallet {
         self.signing_key.is_some()
     }
 
-    /// TS-PORTAL-2f: sign the Testnet Portal auth challenge for `nonce`.
+    /// Sign the Testnet Portal auth challenge for `nonce`.
     ///
     /// ```text
-    /// digest    = BLAKE3( PORTAL_AUTH_DOMAIN || x_only_pubkey(32) || nonce(32) )
+    /// digest    = BLAKE3(PORTAL_AUTH_DOMAIN || x_only_pubkey(32) || nonce(32) )
     /// signature = BIP-340 Schnorr(digest) with the wallet's spending key
     /// ```
     ///
@@ -264,11 +264,11 @@ impl FilamentWallet {
     }
 
     /// Refresh UTXOs + history via address-indexed **explorer** endpoints
-    /// (Eratosthenes Path 4: `GET /explorer/utxos?address=` /
-    /// `GET /explorer/history?address=` — Jul 21 rename; not Keystone
-    /// `/wallet/*`, which is local watch-wallet state without `?address=`).
+    /// (`GET /explorer/utxos?address=` / `GET /explorer/history?address=`;
+    /// not Keystone `/wallet/*`, which is local watch-wallet state without
+    /// `?address=`).
     ///
-    /// Queries every configured endpoint (MNT-7 fan-out) rather than trusting
+    /// Queries every configured endpoint (fan-out) rather than trusting
     /// a single one, and cross-check their responses. Adopts the response
     /// reporting the greatest max UTXO height (the freshest view); flags
     /// `RefreshOutcome::disagreement` when responding endpoints materially
@@ -452,7 +452,7 @@ impl FilamentWallet {
     }
 
     /// Submit a signed transaction to every configured Keystone endpoint
-    /// (MNT-7). This is a propagation-reliability improvement, not a trust
+    ///. This is a propagation-reliability improvement, not a trust
     /// check — one successful accept is sufficient to consider the tx
     /// submitted, so the first endpoint to accept wins and the rest aren't
     /// waited on.

@@ -1,6 +1,6 @@
 // crates/filament/src/peer_discovery.rs
 //
-// PD-3 — Four-layer peer discovery for the Filament light client.
+// Four-layer peer discovery for the Filament light client.
 //
 // Priority (highest → lowest):
 //   Layer 1  Cached peers     (live_peers from PeerCache)
@@ -12,7 +12,6 @@
 // DNS (Layer 3) is resolved asynchronously by the filament_server background
 // task, which writes results into PeerCache (Layer 1) via `mark_seen`.
 //
-// Design reference: `filament_app/docs/PEER_DISCOVERY_PLAN.md` §2
 
 use crate::peer_cache::PeerCache;
 use crate::seeds;
@@ -110,7 +109,7 @@ pub fn merge_discovery_keystone_endpoints(
     eps
 }
 
-// ─── Tests (PD-T-3 / PD-T-4) ─────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -122,7 +121,7 @@ mod tests {
         PeerCache::open(dir).unwrap()
     }
 
-    // PD-T-3: when manual peers are configured, they appear in the result
+    // When manual peers are configured, they appear in the result
     // (before hardcoded seeds, confirming they take priority over Layer 4).
     #[test]
     fn peer_discovery_manual_takes_priority() {
@@ -141,7 +140,7 @@ mod tests {
         assert!(!peers.iter().any(|(h, _)| h == hardcoded_host));
     }
 
-    // PD-T-4: empty cache + no manual peers → hardcoded seeds returned.
+    // Empty cache + no manual peers → hardcoded seeds returned.
     #[test]
     fn peer_discovery_falls_back_to_hardcoded() {
         let dir = TempDir::new().unwrap();
@@ -158,7 +157,7 @@ mod tests {
         assert!(peers.iter().any(|(h, _)| h == hardcoded_host));
     }
 
-    // PD-INT-1: empty explicit config → hardcoded seeds appear as REST URLs.
+    // Empty explicit config → hardcoded seeds appear as REST URLs.
     #[test]
     fn pd_int_1_empty_config_includes_hardcoded_seed_endpoints() {
         let dir = TempDir::new().unwrap();
