@@ -5,7 +5,6 @@
 // transactions. Pure data + serialization — no chain-application logic.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -15,6 +14,24 @@ pub enum DeserializeError {
     TooManyOutputs,
     InvalidScript,
     IoError(String),
+}
+
+/// Header of an extension record: a typed, versioned prefix.
+///
+/// Type ranges: `0x0001..=0x0FFF` consensus, `0x1000..=0x1FFF` application,
+/// `0x2000..` protocol / experimental.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionHeader {
+    pub extension_type: u16,
+    pub version: u16,
+    pub payload_length: u32,
+}
+
+/// A typed payload attached to a transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionRecord {
+    pub header: ExtensionHeader,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +126,8 @@ impl WitnessEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transaction {
-    pub version: u32,
+    /// There is one transaction version, `1`, for coinbases and spends alike.
+    pub version: u8,
     pub inputs: Vec<TxInput>,
     pub outputs: Vec<TxOutput>,
     pub locktime: u32,
@@ -117,10 +135,13 @@ pub struct Transaction {
     pub expiration_height: u32,
     #[serde(default)]
     pub witnesses: Vec<WitnessEntry>,
+    /// Extension records. Empty for a plain spend.
+    #[serde(default)]
+    pub extensions: Vec<ExtensionRecord>,
 }
 
 impl Transaction {
-    pub fn new(version: u32, locktime: u32) -> Self {
+    pub fn new(version: u8, locktime: u32) -> Self {
         Transaction {
             version,
             inputs: Vec::new(),
@@ -128,6 +149,7 @@ impl Transaction {
             locktime,
             expiration_height: 0,
             witnesses: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 
@@ -143,12 +165,12 @@ impl Transaction {
         self.outputs.push(output);
     }
 
-    /// Legacy wire format (no witnesses): used for txid and as the sighash
-    /// input basis. `version(4) | in_count(4) | inputs | out_count(4) |
-    /// outputs | locktime(4) | expiration_height(4)`.
+    /// Wire format without witnesses: `version(1) | in_count(4) | inputs |
+    /// out_count(4) | outputs | locktime(4) | expiration_height(4)`. Each input
+    /// is `prev_height(4) | prev_output_idx(2) | script_len(4) = 0`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&self.version.to_le_bytes());
+        bytes.push(self.version);
         bytes.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
         for input in &self.inputs {
             bytes.extend_from_slice(&input.prev_height.to_le_bytes());
@@ -171,7 +193,7 @@ impl Transaction {
 
     pub fn deserialize(data: &[u8]) -> Result<Self, DeserializeError> {
         let mut cursor = Cursor::new(data);
-        let version = read_u32(&mut cursor)?;
+        let version = read_u8(&mut cursor)?;
 
         let input_count = read_u32(&mut cursor)?;
         if input_count > 100_000 {
@@ -201,15 +223,28 @@ impl Transaction {
             locktime,
             expiration_height,
             witnesses: Vec::new(),
+            extensions: Vec::new(),
         })
     }
 
-    /// `serialize()` output followed by `witness_count(4) | [len(4)||data]*`.
+    /// `serialize()` output followed by `witness_count(4) | [len(4)||data]*`,
+    /// and, only when the transaction has extension records, an extension
+    /// section `ext_count(4) | [ext_type(2) | ext_version(2) | len(4) | payload]*`.
+    /// A plain transaction's bytes are therefore unchanged.
     pub fn serialize_with_witnesses(&self) -> Vec<u8> {
         let mut bytes = self.serialize();
         bytes.extend_from_slice(&(self.witnesses.len() as u32).to_le_bytes());
         for w in &self.witnesses {
             bytes.extend_from_slice(&w.to_length_prefixed_bytes());
+        }
+        if !self.extensions.is_empty() {
+            bytes.extend_from_slice(&(self.extensions.len() as u32).to_le_bytes());
+            for e in &self.extensions {
+                bytes.extend_from_slice(&e.header.extension_type.to_le_bytes());
+                bytes.extend_from_slice(&e.header.version.to_le_bytes());
+                bytes.extend_from_slice(&(e.payload.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&e.payload);
+            }
         }
         bytes
     }
@@ -235,19 +270,57 @@ impl Transaction {
             witnesses.push(entry);
         }
         tx.witnesses = witnesses;
+        let rest = &remaining[offset..];
+        if !rest.is_empty() {
+            tx.extensions = decode_extension_section(rest)?;
+        }
         Ok(tx)
     }
 
-    /// SHA256d of the witness-less wire serialization (BIP-141-style
-    /// malleability fix: witness data never affects txid).
-    pub fn txid(&self) -> Txid {
-        let serialized = self.serialize();
-        let first = Sha256::digest(&serialized);
-        let second = Sha256::digest(first);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&second);
-        Txid(out)
+    // The transaction id is `Transaction::txid(chain_id)` in `txid.rs`
+    // (VF-3: one id, BLAKE3, chain-separated). The old SHA256d id is gone.
+}
+
+fn read_u8<R: Read>(reader: &mut R) -> Result<u8, DeserializeError> {
+    let mut buf = [0u8; 1];
+    reader.read_exact(&mut buf).map_err(|_| DeserializeError::UnexpectedEof)?;
+    Ok(buf[0])
+}
+
+/// Decode the trailing extension section written by `serialize_with_witnesses`.
+/// Rejects trailing bytes and absurd counts or lengths.
+fn decode_extension_section(data: &[u8]) -> Result<Vec<ExtensionRecord>, DeserializeError> {
+    let bad = |m: &str| DeserializeError::IoError(format!("invalid extension section: {m}"));
+    if data.len() < 4 {
+        return Err(bad("truncated count"));
     }
+    let count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+    if count > 1_000 {
+        return Err(bad("too many records"));
+    }
+    let mut pos = 4usize;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        if data.len() < pos + 8 {
+            return Err(bad("truncated header"));
+        }
+        let extension_type = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
+        let version = u16::from_le_bytes(data[pos + 2..pos + 4].try_into().unwrap());
+        let len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        pos += 8;
+        if data.len() < pos + len {
+            return Err(bad("truncated payload"));
+        }
+        out.push(ExtensionRecord {
+            header: ExtensionHeader { extension_type, version, payload_length: len as u32 },
+            payload: data[pos..pos + len].to_vec(),
+        });
+        pos += len;
+    }
+    if pos != data.len() {
+        return Err(bad("trailing bytes"));
+    }
+    Ok(out)
 }
 
 fn read_u32<R: Read>(reader: &mut R) -> Result<u32, DeserializeError> {
@@ -317,9 +390,59 @@ mod tests {
     #[test]
     fn txid_ignores_witnesses() {
         let mut tx = sample_tx();
-        let txid_before = tx.txid();
+        let txid_before = tx.txid(1);
         tx.witnesses.push(WitnessEntry { witness_data: vec![9, 9] });
-        assert_eq!(tx.txid().0, txid_before.0);
+        assert_eq!(tx.txid(1), txid_before);
+    }
+
+    #[test]
+    fn version_is_one_byte_on_the_wire() {
+        let tx = sample_tx();
+        let b = tx.serialize();
+        assert_eq!(b[0], 1, "first byte is the version");
+        // version(1) in_count(4) input(10) out_count(4) output(40) locktime(4) expiration(4)
+        assert_eq!(b.len(), 1 + 4 + 10 + 4 + 40 + 4 + 4);
+    }
+
+    fn ext(t: u16, v: u16, payload: &[u8]) -> ExtensionRecord {
+        ExtensionRecord {
+            header: ExtensionHeader { extension_type: t, version: v, payload_length: payload.len() as u32 },
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[test]
+    fn plain_transaction_bytes_have_no_extension_section() {
+        let mut tx = sample_tx();
+        tx.witnesses.push(WitnessEntry { witness_data: vec![1, 2, 3] });
+        let plain = tx.serialize_with_witnesses();
+        tx.extensions.push(ext(0x1234, 1, &[9, 9]));
+        let with_ext = tx.serialize_with_witnesses();
+        assert!(with_ext.len() > plain.len());
+        assert_eq!(&with_ext[..plain.len()], &plain[..], "extension section is purely appended");
+    }
+
+    #[test]
+    fn extension_section_roundtrips() {
+        let mut tx = sample_tx();
+        tx.witnesses.push(WitnessEntry { witness_data: vec![5; 65] });
+        tx.extensions = vec![ext(0x1234, 1, &[1, 2, 3]), ext(0x0001, 1, &[0u8; 9])];
+        let back = Transaction::deserialize_with_witnesses(&tx.serialize_with_witnesses()).unwrap();
+        assert_eq!(back.extensions, tx.extensions);
+        assert_eq!(back.witnesses.len(), 1);
+    }
+
+    #[test]
+    fn malformed_extension_sections_are_rejected() {
+        let mut tx = sample_tx();
+        tx.witnesses.push(WitnessEntry { witness_data: vec![1] });
+        tx.extensions = vec![ext(0x1234, 1, &[1, 2, 3])];
+        let good = tx.serialize_with_witnesses();
+        assert!(Transaction::deserialize_with_witnesses(&good).is_ok());
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(Transaction::deserialize_with_witnesses(&trailing).is_err(), "trailing byte");
+        assert!(Transaction::deserialize_with_witnesses(&good[..good.len() - 1]).is_err(), "truncated payload");
     }
 
     #[test]

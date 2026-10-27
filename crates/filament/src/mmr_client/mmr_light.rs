@@ -285,6 +285,7 @@ impl MMRLight {
     /// # Arguments
     /// * `block_hash` - Hash of the block
     /// * `height` - Height of the block
+    #[cfg_attr(not(test), allow(dead_code))] // exercised by unit tests; production path TBD
     fn add_recent_block(&mut self, block_hash: [u8; 32], height: u32) {
         // O(1) insert
         self.recent_blocks.insert((block_hash, height));
@@ -299,6 +300,7 @@ impl MMRLight {
     /// 
     /// NOTE: Uses leaf_count which may be out of sync during add operations.
     /// Deprecated in favor of prune_by_height_from().
+    #[allow(dead_code)]
     fn prune_by_height(&mut self) {
         let current_height = self.leaf_count.saturating_sub(1);
         let cutoff = current_height.saturating_sub(self.max_recent_blocks as u32 - 1);
@@ -317,6 +319,7 @@ impl MMRLight {
     ///
     /// # Arguments
     /// * `current_height` - The height of the block being added
+    #[cfg_attr(not(test), allow(dead_code))]
     fn prune_by_height_from(&mut self, current_height: u32) {
         let cutoff = current_height.saturating_sub(self.max_recent_blocks as u32 - 1);
         

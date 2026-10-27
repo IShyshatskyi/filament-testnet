@@ -20,8 +20,6 @@
 //   magic(2) + msg_type(1) + msg_id(8) + payload_len(2) + payload(...)
 //   Total overhead: 13 bytes per F2F message wrapper.
 
-use crate::mmr_client::invoice::Invoice;
-
 /// F2F message magic bytes.
 pub const F2F_MAGIC: u16 = 0xF2F0; // "F2F"
 

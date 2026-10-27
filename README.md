@@ -132,41 +132,58 @@ Lean library only (verify + client, no HTTP/P2P):
 cargo check -p filament
 ```
 
-### Run (testnet)
+### Run (public AWS Keystones — soak / `devnet` genesis)
+
+`--network` must match the genesis the Keystone is serving. The live AWS mesh
+(`genesis_soak_aws_63` / Fast Start) uses the embedded **`devnet`** Bitcoin anchor
+(`4ae19982…`). Using `--network testnet-stress` against those IPs yields
+`Invalid chain summary proof` (different anchor `69742091…`).
 
 Replace the Keystone URL with a real endpoint (do **not** type the literal `<url>` —
 shells treat `<` as redirection).
 
 ```bash
 ./target/release/filament \
-  --network testnet1 \
-  --keystone 'https://rpc.testnet.shisha.network' \
+  --network devnet \
+  --keystone 'http://13.60.206.131:8080' \
+  --keystone-summary-port 8080 \
   --port 7380 \
   --disable-p2p
 ```
 
-Regional RPC examples (confirm live status before relying on them):
+Public Keystone **summary** API (AWS `eu-north-1`, plain HTTP `:8080`). Confirm instances are
+up before relying on them. After ~30s: `curl -s http://127.0.0.1:7380/sync/status`
+should show `phase: synced` and a non-zero `tip_height`.
 
 | Region | URL |
 |--------|-----|
-| EU | `https://rpc.testnet.shisha.network` |
-| US | `https://rpc-us.testnet.shisha.network` |
-| AP | `https://rpc-ap.testnet.shisha.network` |
+| EU (K1) | `http://13.60.206.131:8080` |
+| US-label (K2) | `http://13.60.241.210:8080` |
+
+**Do not** use `*.shisha.network` hostnames for this project — that domain is a **third-party**
+registration unrelated to this stack (see `website/content/hosting_plan.md` Track **E0**).
+Named URLs land only after we register a domain we control (Track E1). These listeners are
+`mmr_light_client.summary_port`, not TLS on 443. Wallet-ops (`:18180`) stay off the public Internet.
 
 Local API (loopback): `http://127.0.0.1:7380`
 
 ```bash
 curl -s http://127.0.0.1:7380/health
+curl -s http://127.0.0.1:7380/sync/status
 ```
 
 Multi-node trust (optional):
 
 ```bash
 ./target/release/filament \
-  --network testnet1 \
-  --keystone 'https://rpc.testnet.shisha.network' \
-  --keystone-extra 'https://rpc-us.testnet.shisha.network'
+  --network devnet \
+  --keystone 'http://13.60.206.131:8080' \
+  --keystone-summary-port 8080 \
+  --keystone-extra 'http://13.60.241.210:8080'
 ```
+
+For a dedicated **`testnet-stress`** fleet (different genesis), use `--network testnet-stress`
+and Keystones mined for that network — not the AWS soak IPs above.
 
 Path-2 P2P (Keystone ShishaNet port often **18334**):
 

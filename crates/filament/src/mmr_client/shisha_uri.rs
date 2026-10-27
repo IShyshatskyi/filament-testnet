@@ -19,8 +19,7 @@
 // Design reference: `docs/plan/P2P_Phase10_Plan.md` §3
 
 use crate::mmr_client::invoice::{
-    base64url_decode16, base64url_encode16, decode_hex32, encode_hex32, Invoice, InvoiceError,
-    InvoiceState,
+    base64url_decode16, base64url_encode16, decode_hex32, encode_hex32, Invoice, InvoiceState,
 };
 
 /// Parsed representation of a `shisha:` URI.

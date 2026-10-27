@@ -4,10 +4,7 @@
 // All returned data is independently verifiable against local MMR peaks.
 
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "full-node")]
-use log::warn;
 #[cfg(feature = "full-node")]
 use bitcoin::secp256k1::SecretKey;
 #[cfg(feature = "full-node")]
@@ -48,10 +45,6 @@ pub struct FeeEstimate {
     pub source: String,
     /// Estimated sat/vbyte equivalent (atoms per byte)
     pub atoms_per_byte: u64,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 // ── Wire types (match UI expectations exactly) ─────────────────────────────
@@ -485,21 +478,13 @@ impl FilamentWallet {
             }
         }
 
-        // Every configured endpoint failed or doesn't have this route yet —
-        // fall back to the pre-existing stub-txid behaviour so callers that
-        // relied on it (Keystone routes not deployed everywhere yet) keep
-        // working the same way they did with a single endpoint.
-        warn!(
-            "submit_transaction: all {} configured endpoint(s) failed ({}); using stub response",
-            self.keystone_endpoints.len(),
+        // Every configured endpoint failed. Report it rather than invent an id:
+        // a fabricated "txid" can never match what a node or the explorer
+        // reports, so `watch_tx` would wait on it forever (VF-3).
+        Err(format!(
+            "no Keystone endpoint accepted the transaction ({})",
             last_err.unwrap_or_default(),
-        );
-        Ok(SendResponse {
-            txid: hex::encode(blake3::hash(
-                &[req.to.as_bytes(), &req.amount_atoms.to_le_bytes()].concat()
-            ).as_bytes()),
-            status: "pending".to_string(),
-        })
+        ))
     }
 
     #[cfg(not(feature = "full-node"))]
@@ -545,8 +530,13 @@ impl FilamentWallet {
             prev_output_idx: u.output_idx,
         }).collect();
 
+        // Atoms per input. `UtxoEntry.value` is f64 coins: round, never
+        // truncate (0.29 * 1e8 = 28_999_999.99...). Sighash v2 commits each
+        // spent value exactly, so an off-by-one atom invalidates the signature.
+        let in_atoms: Vec<u64> = utxos.iter().map(|u| (u.value * ATOMS_PER_COIN).round() as u64).collect();
+
         // Compute total input value and change
-        let total_in: u64 = utxos.iter().map(|u| (u.value * ATOMS_PER_COIN) as u64).sum();
+        let total_in: u64 = in_atoms.iter().sum();
         let total_out = req.amount_atoms.checked_add(req.fee_atoms)
             .ok_or("amount + fee overflow")?;
         if total_in < total_out {
@@ -570,17 +560,25 @@ impl FilamentWallet {
         }
 
         let tx = Transaction {
-            version: 1,
+            version: 1, // every spend is version 1 (one transaction version)
             inputs,
             outputs,
             locktime: current_height,
             expiration_height: current_height.saturating_add(144),
             witnesses: Vec::new(),
+            extensions: Vec::new(),
         };
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)
         let keys: Vec<SecretKey> = (0..tx.inputs.len()).map(|_| secret_key).collect();
-        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, req.shard_id as u8)?;
+        // chain_id = shard_id + 1. This used to pass `req.shard_id as u8`, so
+        // every signature was for the wrong chain and failed TX-5 on a node.
+        let chain_id = common_types::transaction::shard_chain_id(req.shard_id);
+        // Sighash v2 commits the spent outputs: our own key received every one.
+        let own = bitcoin::secp256k1::Keypair::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &secret_key)
+            .x_only_public_key().0.serialize();
+        let prevouts: Vec<(u64, [u8; 32])> = in_atoms.iter().map(|&v| (v, own)).collect();
+        let witnesses = SchnorrSigner::sign_transaction(&tx, &keys, chain_id, &prevouts)?;
 
         Ok((tx, witnesses))
     }

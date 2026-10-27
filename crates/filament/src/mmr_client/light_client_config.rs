@@ -111,7 +111,7 @@ impl NetworkGenesisInfo {
         let bitcoin_anchor = self.bitcoin_anchor_hash_bytes()?;
 
         // TS-DELTA: Calculate delta as (timestamp - bitcoin_anchor_timestamp) * 256
-        let delta = (((self.genesis_timestamp as i64 - self.bitcoin_anchor_timestamp as i64) * 256) as i32);
+        let delta = ((self.genesis_timestamp as i64 - self.bitcoin_anchor_timestamp as i64) * 256) as i32;
 
         Ok(BlockData::Beacon(BeaconBlockData {
             height: self.genesis_height,

@@ -25,6 +25,11 @@ pub mod bitcoin_anchors {
     ];
 }
 
+/// Shard blocks per beacon block: the default shard calibration (a shard block takes
+/// 1/16 of a beacon block interval). A shard height maps to a beacon height offset of
+/// `shard_height / SHARD_CALIBRATION_CONSTANT`.
+pub const SHARD_CALIBRATION_CONSTANT: u64 = 16;
+
 #[derive(Clone, Debug)]
 pub struct BeaconGenesisConfig {
     pub bits: u32,

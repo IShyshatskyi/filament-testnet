@@ -18,7 +18,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json,
     },
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use futures_util::stream;
@@ -579,7 +579,7 @@ pub async fn load_config_from_disk(data_dir: &str) -> Option<FilamentNodeConfig>
 // ── Pending TX watch (FI-5) ───────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
-struct PendingTxMeta {
+pub struct PendingTxMeta {
     txid:         String,
     shard_id:     u16,
     amount_atoms: u64,
@@ -1666,20 +1666,10 @@ async fn wallet_sign(
 
     match wallet.build_signed_transaction(&send_req, &selected, &req.secret_key_hex, req.current_height) {
         Ok((tx, witnesses)) => {
-            // Compute txid as BLAKE3 of serialised inputs+outputs
-            let txid = {
-                let mut preimage = Vec::new();
-                preimage.extend_from_slice(&tx.version.to_le_bytes());
-                for inp in &tx.inputs {
-                    preimage.extend_from_slice(&inp.prev_height.to_le_bytes());
-                    preimage.extend_from_slice(&inp.prev_output_idx.to_le_bytes());
-                }
-                for out in &tx.outputs {
-                    preimage.extend_from_slice(&out.value.to_le_bytes());
-                    preimage.extend_from_slice(&out.recipient);
-                }
-                hex::encode(blake3::hash(&preimage).as_bytes())
-            };
+            // VF-3: the one transaction id, on the shard's chain (shard N → N+1).
+            let txid = hex::encode(
+                tx.txid(common_types::transaction::shard_chain_id(req.shard_id)).0,
+            );
             let witness_hex: Vec<String> = witnesses.iter()
                 .map(|w| hex::encode(&w.witness_data))
                 .collect();
@@ -2351,7 +2341,7 @@ async fn invoice_parse(_state: State<FilamentAppState>, Query(q): Query<ParseUri
 
 // ── Contact / address-book routes ─────────────────────────────────────────────
 
-use crate::mmr_client::contact_store::{Contact, ContactStore, ContactError};
+use crate::mmr_client::contact_store::{ContactStore, ContactError};
 
 fn contact_store_open(cfg: &FilamentNodeConfig) -> Result<ContactStore, ContactError> {
     let path = std::path::PathBuf::from(&cfg.data_dir);
@@ -2515,7 +2505,7 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
     match status {
         ChainSyncStatus::Synced =>
             ("synced".into(), tip, 1.0),
-        ChainSyncStatus::Syncing { current_height, target_height, progress_percent } =>
+        ChainSyncStatus::Syncing { current_height, target_height: _, progress_percent } =>
             ("syncing".into(), *current_height, *progress_percent as f64 / 100.0),
         ChainSyncStatus::NotStarted =>
             ("bootstrapping".into(), 0, 0.0),

@@ -15,11 +15,13 @@
 //! unchanged against this one. The real implementation lives in the
 //! top-level modules; `common`/`transaction` are thin `pub use` shims.
 
+pub mod expand_voting;
 pub mod weighted_hash;
 pub mod hash;
 pub mod hash_sorting;
 pub mod transaction_impl;
 pub mod tx_sighash;
+pub mod txid;
 pub mod relay_hash;
 pub mod types;
 pub mod genesis;
@@ -31,7 +33,7 @@ pub mod common {
         pub use crate::hash;
         pub use crate::hash::hash_pair;
         pub use crate::tx_sighash;
-        pub use crate::tx_sighash::flat_tx_sighash;
+        pub use crate::tx_sighash::{prevouts_hash, sighash_v2};
         pub use crate::weighted_hash;
         pub use crate::weighted_hash::{
             bag_peaks_weighted, hash_pair_weighted, rbits_add, rbits_to_u128_approx, WeightedHash,
@@ -40,11 +42,12 @@ pub mod common {
 
     pub mod genesis {
         pub mod genesis_config {
-            pub use crate::genesis::BeaconGenesisConfig;
+            pub use crate::genesis::{BeaconGenesisConfig, SHARD_CALIBRATION_CONSTANT};
         }
         pub use genesis_config::BeaconGenesisConfig;
     }
 
+    pub use crate::expand_voting;
     pub use crate::proofs;
     pub use crate::relay_hash;
     pub use crate::relay_hash::relay_id;
@@ -55,6 +58,7 @@ pub mod common {
 
 pub mod transaction {
     pub use crate::transaction_impl::*;
+    pub use crate::txid::{shard_chain_id, txid_from_parts, BEACON_CHAIN_ID, TXID_DOMAIN_TAG};
 
     pub mod types {
         pub use crate::transaction_impl::*;
@@ -63,6 +67,6 @@ pub mod transaction {
 
 pub use hash::hash_pair;
 pub use relay_hash::relay_id;
-pub use tx_sighash::flat_tx_sighash;
+pub use tx_sighash::{prevouts_hash, sighash_v2};
 pub use types::ChainType;
 pub use weighted_hash::{bag_peaks_weighted, rbits_to_u128_approx, WeightedHash};

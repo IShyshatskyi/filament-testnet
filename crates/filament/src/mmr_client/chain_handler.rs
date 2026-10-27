@@ -8,7 +8,7 @@
 //! in a light client. Both beacon and shard chains extend this.
 
 use std::collections::HashMap;
-use log::{info, debug, warn};
+use log::{info, debug};
 use serde::{Serialize, Deserialize};
 
 pub use common_types::common::types::ChainType;
@@ -718,7 +718,8 @@ impl ChainHandler {
             .collect()
     }
     
-    /// Revert chain to specific height
+    /// Revert chain to specific height (reorg / rollback scaffolding; not yet wired to callers).
+    #[allow(dead_code)]
     fn revert_to_height(&mut self, height: u32) -> Result<(), String> {
         info!("{}: Reverting chain to height {}", self.state, height);
 

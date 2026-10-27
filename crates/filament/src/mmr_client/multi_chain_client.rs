@@ -30,6 +30,7 @@ use crate::mmr_client::proof_selector::DEFAULT_DENSITY_THRESHOLD;
 use crate::mmr_client::protocol::LightClientRequest;
 
 /// Multi-chain light client coordinator
+#[allow(dead_code)] // several fields are written for future sync/peer paths; still wired in construction
 pub struct MultiChainClient {
     // ========================================================================
     // CORE CHAIN MANAGEMENT
@@ -1184,6 +1185,7 @@ impl MultiChainClient {
     }
     
     /// Update sync status
+    #[allow(dead_code)] // reserved for sync-loop status updates
     fn update_sync_status(&mut self, chain_id: u32, status: ChainSyncStatus) {
         self.sync_status.insert(chain_id, status);
     }
@@ -1338,11 +1340,13 @@ impl MultiChainClient {
     }
     
     /// Update beacon sync status
+    #[allow(dead_code)]
     fn update_beacon_sync_status(&mut self, status: ChainSyncStatus) {
         self.update_sync_status(0, status);
     }
     
     /// Update shard sync status
+    #[allow(dead_code)]
     fn update_shard_sync_status(&mut self, shard_id: u32, status: ChainSyncStatus) {
         self.update_sync_status(shard_id + 1, status);
     }

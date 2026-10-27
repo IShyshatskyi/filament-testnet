@@ -323,6 +323,7 @@ impl WeightedMMRLight {
     /// Add a single block to the recent-block cache (internal / test helper).
     ///
     /// Automatically prunes when the cache exceeds `max_recent_blocks`.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn add_recent_block(&mut self, wh: WeightedHash, height: u32) {
         self.recent_blocks.insert((wh, height));
         if self.recent_blocks.len() > self.max_recent_blocks {
@@ -350,6 +351,7 @@ impl WeightedMMRLight {
     }
 
     /// Prune entries below a height-based cutoff derived from `current_height`.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn prune_by_height_from(&mut self, current_height: u32) {
         let cutoff = current_height.saturating_sub(self.max_recent_blocks as u32 - 1);
         self.recent_blocks.retain(|(_, h)| *h >= cutoff);
