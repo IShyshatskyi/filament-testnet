@@ -281,3 +281,126 @@ async fn a_peer_on_another_network_never_gets_through_the_framing() {
     let _ = node.await;
     let _ = shutdown.send(());
 }
+
+/// A node that writes `version`, `verack` and a notification in ONE segment.
+/// Real nodes push right after the handshake, so the client's first read can
+/// contain more than the handshake.
+async fn node_that_pushes_behind_verack(network: &str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let magic = magic_for_network(network);
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "client closed before sending version");
+            buf.extend_from_slice(&chunk[..n]);
+            if try_decode(magic, &buf).expect("bad framing from client").is_some() {
+                break;
+            }
+        }
+        let ours = node_version(WIRE_VERSION, [0u8; GENESIS_HASH_LEN])(&VersionMessage::new(
+            WIRE_VERSION,
+            0,
+            0,
+            filament_p2p::NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+            filament_p2p::NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+        ));
+        let notif = ShishaMessage::TxInclusionNotif {
+            shard_id: 3,
+            height: 77,
+            output_idx: 1,
+            value_atoms: 5,
+            address: [9u8; 32],
+            mmr_proof_bytes: vec![],
+        };
+        let mut one_write = frame(magic, "version", &ours.encode());
+        one_write.extend(frame(magic, "verack", &[]));
+        one_write.extend(frame(magic, notif.command(), &notif.encode()));
+        stream.write_all(&one_write).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+    addr
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_sent_right_behind_verack_is_delivered() {
+    let addr = node_that_pushes_behind_verack("devnet").await;
+    let (mgr, _shutdown) = client("devnet", None);
+    let seen = Arc::new(AtomicBool::new(false));
+    let seen2 = Arc::clone(&seen);
+    mgr.set_light_client_notif_handler(Arc::new(move |n| {
+        if let LightClientInboundNotif::Inclusion { shard_id: 3, height: 77, .. } = n {
+            seen2.store(true, Ordering::SeqCst);
+        }
+    }));
+    mgr.connect(addr).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(mgr.peers().len(), 1);
+    assert!(seen.load(Ordering::SeqCst), "notification sent in the same segment as verack was dropped");
+}
+
+/// Accepts one connection, optionally answers with a bare `version`, then
+/// waits for the client to close the socket. Returns how long that took.
+async fn stalling_node(network: &str, send_version: bool) -> (SocketAddr, tokio::task::JoinHandle<Option<Duration>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let magic = magic_for_network(network);
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let started = std::time::Instant::now();
+        if send_version {
+            let v = node_version(WIRE_VERSION, [0u8; GENESIS_HASH_LEN])(&VersionMessage::new(
+                WIRE_VERSION,
+                0,
+                0,
+                filament_p2p::NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+                filament_p2p::NetAddr::from_socket_addr("127.0.0.1:1".parse().unwrap(), 0),
+            ));
+            stream.write_all(&frame(magic, "version", &v.encode())).await.unwrap();
+        }
+        // Drain whatever the client sends until it hangs up.
+        let mut chunk = [0u8; 4096];
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match stream.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        })
+        .await;
+        closed.ok().map(|_| started.elapsed())
+    });
+    (addr, handle)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_peer_is_dropped_after_the_handshake_timeout() {
+    let (addr, node) = stalling_node("devnet", false).await;
+    let (mgr, _shutdown) = client("devnet", None);
+    mgr.set_handshake_timeout(Duration::from_millis(400));
+    mgr.connect(addr).await;
+    let waited = node.await.unwrap().expect("client never closed the connection to a silent peer");
+    assert!(waited >= Duration::from_millis(300), "closed too early: {waited:?}");
+    assert!(waited < Duration::from_secs(3), "closed too late: {waited:?}");
+    assert_eq!(mgr.peers().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_never_sends_verack_is_dropped_too() {
+    let (addr, node) = stalling_node("devnet", true).await;
+    let (mgr, _shutdown) = client("devnet", None);
+    mgr.set_handshake_timeout(Duration::from_millis(400));
+    mgr.connect(addr).await;
+    let waited = node.await.unwrap().expect("client never closed the half-open handshake");
+    assert!(waited < Duration::from_secs(3), "closed too late: {waited:?}");
+    assert_eq!(mgr.peers().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_handshake_timeout_is_five_seconds() {
+    assert_eq!(filament_p2p::peer_manager::HANDSHAKE_TIMEOUT, Duration::from_secs(5));
+}

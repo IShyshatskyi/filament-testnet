@@ -2,6 +2,8 @@
 //!
 //! ```bash
 //! cargo run -p filament-p2p --example handshake_probe -- 127.0.0.1:18334 devnet
+//! # also pin the chain: a node on a different non-zero genesis is refused
+//! cargo run -p filament-p2p --example handshake_probe -- 127.0.0.1:18334 testnet-stress <64-hex genesis hash>
 //! ```
 
 use std::sync::Arc;
@@ -14,10 +16,11 @@ use tokio::sync::watch;
 async fn main() {
     let mut args = std::env::args().skip(1);
     let Some(target) = args.next() else {
-        eprintln!("usage: handshake_probe <host:port> [network]");
+        eprintln!("usage: handshake_probe <host:port> [network] [genesis-hash-hex]");
         std::process::exit(2);
     };
     let network = args.next().unwrap_or_else(|| "devnet".into());
+    let genesis = args.next().map(|h| parse_genesis(&h));
     let addr: std::net::SocketAddr = match target.parse() {
         Ok(a) => a,
         Err(e) => {
@@ -35,7 +38,10 @@ async fn main() {
         nonce: rand::random(),
         listen_addr: "127.0.0.1:0".parse().unwrap(),
     };
-    let protocol = ShishaProtocol::new(network.clone());
+    let mut protocol = ShishaProtocol::new(network.clone());
+    if let Some(g) = genesis {
+        protocol = protocol.with_genesis_hash(g);
+    }
     let mgr = PeerManager::new(
         protocol,
         caps,
@@ -49,11 +55,15 @@ async fn main() {
     });
     let _ = tokio::time::timeout(Duration::from_secs(2), mgr.listen_addr()).await;
 
-    eprintln!("dialing {addr} on network={network} (magic={:#010x}) …", mgr.protocol().magic());
+    eprintln!(
+        "dialing {addr} on network={network} (magic={:#010x}, genesis={}) …",
+        mgr.protocol().magic(),
+        if genesis.is_some() { "pinned" } else { "unknown" }
+    );
     mgr.connect(addr).await;
 
     for _ in 0..50 {
-        if mgr.peers().len() >= 1 {
+        if !mgr.peers().is_empty() {
             eprintln!("handshake OK");
             let _ = shutdown_tx.send(());
             std::process::exit(0);
@@ -63,4 +73,16 @@ async fn main() {
     eprintln!("handshake FAILED — refused, wrong magic/network, or port closed");
     let _ = shutdown_tx.send(());
     std::process::exit(1);
+}
+
+fn parse_genesis(hex: &str) -> [u8; 32] {
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        eprintln!("genesis hash must be 64 hex characters, got {hex:?}");
+        std::process::exit(2);
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    out
 }
