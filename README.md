@@ -132,38 +132,30 @@ Lean library only (verify + client, no HTTP/P2P):
 cargo check -p filament
 ```
 
-### Run (public AWS Keystones — soak / `devnet` genesis)
+### Run (against a Keystone you operate or have been given)
 
-`--network` must match the genesis the Keystone is serving. The live AWS mesh
-(`genesis_soak_aws_63` / Fast Start) uses the embedded **`devnet`** Bitcoin anchor
-(`4ae19982…`). Using `--network testnet-stress` against those IPs yields
-`Invalid chain summary proof` (different anchor `69742091…`).
+`--network` must match the genesis the Keystone is serving. A mismatch shows up as
+`Invalid chain summary proof` (the Bitcoin anchor in the genesis differs per network).
 
-Replace the Keystone URL with a real endpoint (do **not** type the literal `<url>` —
-shells treat `<` as redirection).
+There is **no always-on public Keystone** at the moment: earlier test endpoints were
+short-lived and are gone. Point the client at your own Keystone, or at one whose operator
+gave you its URL, and confirm it is up first (`curl -s http://<keystone-host>:8080/health`).
+Replace `<keystone-host>` with a real host name or IP (do **not** paste the literal
+`<keystone-host>`: shells treat `<` as redirection).
 
 ```bash
 ./target/release/filament \
   --network devnet \
-  --keystone 'http://13.60.206.131:8080' \
+  --keystone 'http://KEYSTONE_HOST:8080' \
   --keystone-summary-port 8080 \
   --port 7380 \
   --disable-p2p
 ```
 
-Public Keystone **summary** API (AWS `eu-north-1`, plain HTTP `:8080`). Confirm instances are
-up before relying on them. After ~30s: `curl -s http://127.0.0.1:7380/sync/status`
-should show `phase: synced` and a non-zero `tip_height`.
-
-| Region | URL |
-|--------|-----|
-| EU (K1) | `http://13.60.206.131:8080` |
-| US-label (K2) | `http://13.60.241.210:8080` |
-
-**Do not** use `*.shisha.network` hostnames for this project — that domain is a **third-party**
-registration unrelated to this stack (see `website/content/hosting_plan.md` Track **E0**).
-Named URLs land only after we register a domain we control (Track E1). These listeners are
-`mmr_light_client.summary_port`, not TLS on 443. Wallet-ops (`:18180`) stay off the public Internet.
+The Keystone **summary** API is plain HTTP on `mmr_light_client.summary_port` (no TLS).
+After ~30 s: `curl -s http://127.0.0.1:7380/sync/status` should show `phase: synced` and a
+non-zero `tip_height`. Wallet operations (a Keystone's `:18180`) should stay off the public
+Internet.
 
 Local API (loopback): `http://127.0.0.1:7380`
 
@@ -172,18 +164,18 @@ curl -s http://127.0.0.1:7380/health
 curl -s http://127.0.0.1:7380/sync/status
 ```
 
-Multi-node trust (optional):
+Multi-node trust (optional): pass several Keystones so one node cannot hide a heavier chain.
 
 ```bash
 ./target/release/filament \
   --network devnet \
-  --keystone 'http://13.60.206.131:8080' \
+  --keystone 'http://KEYSTONE_A:8080' \
   --keystone-summary-port 8080 \
-  --keystone-extra 'http://13.60.241.210:8080'
+  --keystone-extra 'http://KEYSTONE_B:8080'
 ```
 
 For a dedicated **`testnet-stress`** fleet (different genesis), use `--network testnet-stress`
-and Keystones mined for that network — not the AWS soak IPs above.
+and Keystones started for that network.
 
 Path-2 P2P (Keystone ShishaNet port often **18334**):
 
@@ -194,6 +186,32 @@ Path-2 P2P (Keystone ShishaNet port often **18334**):
   --keystone-p2p-port 18334 \
   --manual-peer '127.0.0.1:18334'
 ```
+
+### Checking a Keystone with the handshake probe
+
+`filament-p2p` ships a small probe that dials a ShishaNet peer and reports whether the
+light-client handshake completes:
+
+```bash
+./scripts/p2p_handshake_probe.sh KEYSTONE_HOST:18334 devnet
+# optionally pin the expected genesis hash (64 hex characters):
+./scripts/p2p_handshake_probe.sh KEYSTONE_HOST:18334 testnet-stress <genesis-hash-hex>
+```
+
+What the handshake checks:
+
+- **Network magic.** Each network has its own 4-byte magic (for example `SHDV` devnet,
+  `SHTS` testnet-stress). A peer on another network is refused at the first frame.
+- **Genesis pin.** The `version` message carries a 32-byte genesis hash. When both sides send a
+  non-zero hash and the hashes differ, the connection is refused. The client fills in its
+  hash from the embedded network config; networks whose genesis has not been mined yet send
+  zeros and are not pinned. For `testnet-stress` the pinned hash is
+  `00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040`.
+- **Timeouts.** A peer that never sends `version`/`verack` is dropped after 5 s; a dial that does
+  not connect within 10 s is abandoned.
+
+The public `filament-p2p` speaks ShishaNet wire **v15** and negotiates `min(ours, theirs)`,
+so it connects to nodes on newer versions but does not use features introduced after v15.
 
 ---
 

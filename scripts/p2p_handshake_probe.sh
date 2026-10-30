@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./scripts/p2p_handshake_probe.sh <host:port> [network] [genesis-hash-hex]
-#   ./scripts/p2p_handshake_probe.sh 13.60.206.131:18334 devnet
+#   ./scripts/p2p_handshake_probe.sh KEYSTONE_HOST:18334 devnet
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
