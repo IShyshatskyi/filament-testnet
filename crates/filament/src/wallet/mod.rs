@@ -7,5 +7,7 @@
 // remains.
 
 pub mod transaction_builder;
+pub mod escrow;
+pub mod hot_key;
 
 pub use transaction_builder::SchnorrSigner;

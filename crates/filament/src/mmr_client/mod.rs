@@ -324,6 +324,15 @@ pub mod f2f_crypto;
 pub mod contact_store;
 pub mod watch_notify;
 
+// Thin beacon sync (shard thin-sync stays excluded until FullShardHeader types-port).
+pub mod thin_chain;
+pub mod thin_sync;
+
+// Escrow HTTP/library surface + Keystone raw submit (needs signing key / HTTP).
+#[cfg(feature = "full-node")]
+pub mod escrow_api;
+pub mod keystone_submit;
+
 // ============================================================================
 // MMR EXPORTS
 // ============================================================================

@@ -227,6 +227,23 @@ impl FilamentWallet {
         self.signing_key.is_some()
     }
 
+    /// Drop the spending key from memory (lock). The address stays.
+    #[cfg(feature = "full-node")]
+    pub fn detach_signing_key(&mut self) {
+        self.signing_key = None;
+    }
+
+    /// Run `f` with the wallet's spending key (escrow signing / hot key).
+    /// The key stays inside the wallet; only `f`'s result leaves.
+    #[cfg(feature = "full-node")]
+    pub fn with_signing_key<R>(&self, f: impl FnOnce(&SecretKey) -> R) -> Result<R, String> {
+        let sk = self
+            .signing_key
+            .as_ref()
+            .ok_or("no signing key configured — start Filament with --signing-key-file")?;
+        Ok(f(sk))
+    }
+
     /// Sign the Testnet Portal auth challenge for `nonce`.
     ///
     /// ```text
