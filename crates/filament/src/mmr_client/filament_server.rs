@@ -136,11 +136,6 @@ pub struct FilamentNodeConfig {
     /// outputs are spent with consensus checks by Keystone either way.
     #[serde(default)]
     pub indexer_endpoints: Vec<String>,
-    /// Network genesis file (`genesis_<network>.toml`, the file the nodes load). Block 0 of the
-    /// beacon chain is generated from it at startup; without it there is no verified chain
-    /// (summary sync cannot apply). Mainnet / testnet files are published at launch.
-    #[serde(default)]
-    pub genesis_file: Option<String>,
 }
 
 fn default_dns_seeds() -> Vec<String> {
@@ -244,7 +239,6 @@ impl Default for FilamentNodeConfig {
             thin_shards: Vec::new(),
             signing_key_file: None,
             indexer_endpoints: Vec::new(),
-            genesis_file: None,
         }
     }
 }

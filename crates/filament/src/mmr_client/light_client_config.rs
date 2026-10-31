@@ -196,6 +196,17 @@ pub struct PeerList {
 pub type LightClientConfig = FilamentBootstrapConfig;
 
 impl FilamentBootstrapConfig {
+    /// Embedded example bootstrap config (`examples/light_client_config.example.toml`).
+    ///
+    /// Used when Filament needs network genesis placeholders at process start
+    /// without a path on disk (P2P handshake genesis-hash attachment). Placeholder
+    /// genesis hashes in the example are all-zero / invalid hex and are treated
+    /// as "unknown" by callers that check for a real hash.
+    pub fn from_embedded() -> Self {
+        toml::from_str(include_str!("../../examples/light_client_config.example.toml"))
+            .expect("embedded light_client_config.example.toml must parse")
+    }
+
     /// Load configuration from TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
