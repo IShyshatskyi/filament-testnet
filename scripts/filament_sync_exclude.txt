@@ -1,0 +1,11 @@
+# Removed after upstream rsync — not shippable without further types-port.
+src/mmr_client/thin_chain.rs
+src/mmr_client/thin_sync.rs
+src/mmr_client/thin_shard.rs
+src/mmr_client/escrow_api.rs
+src/mmr_client/keystone_submit.rs
+src/mmr_client/chain_views.rs
+src/wallet/escrow.rs
+src/wallet/hot_key.rs
+src/mmr_client/README.md
+examples/

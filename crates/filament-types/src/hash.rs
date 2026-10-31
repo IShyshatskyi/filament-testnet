@@ -1,9 +1,16 @@
-// filament-types/src/hash.rs — plain (non-weighted) BLAKE3 hashing.
+// filament-types/src/hash.rs — plain (non-weighted) BLAKE3 / SHA256d hashing.
 
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 
 thread_local! {
     static BLAKE3_PAIR: RefCell<blake3::Hasher> = RefCell::new(blake3::Hasher::new());
+}
+
+/// Double-SHA256 (Bitcoin-style).
+pub fn sha256d(data: &[u8]) -> [u8; 32] {
+    let first = Sha256::digest(data);
+    Sha256::digest(first).into()
 }
 
 /// BLAKE3(left || right) — used for structural (non-weight-carrying) hash

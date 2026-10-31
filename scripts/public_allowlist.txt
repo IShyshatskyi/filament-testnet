@@ -2,10 +2,10 @@
 # Paths relative to this repo root. Default policy: DENY for sync/ports.
 # Private→public source maps live only under gitignored scripts/local/.
 
-# ── Lane A ────────────────────────────────────────────────────────────────────
+# ── filament-sync ─────────────────────────────────────────────────────────────
 crates/filament/
 
-# ── Lane B (public filament-types files only) ─────────────────────────────────
+# ── types-port (public filament-types files only) ─────────────────────────────
 crates/filament-types/Cargo.toml
 crates/filament-types/src/lib.rs
 crates/filament-types/src/genesis.rs
@@ -26,12 +26,21 @@ crates/filament-types/src/proofs/fork_proof.rs
 crates/filament-types/src/proofs/weighted_fork_proof.rs
 crates/filament-types/src/proofs/weighted_mmr_batch_proof.rs
 crates/filament-types/src/proofs/weighted_mmr_range_proof.rs
+crates/filament-types/src/proofs/thin_sync.rs
+crates/filament-types/src/beacon_wire_header.rs
+crates/filament-types/src/weighted_mmr_peaks.rs
+crates/filament-types/src/crypto_escrow.rs
+crates/filament-types/src/ipp.rs
+crates/filament-types/src/genesis_network.rs
+scripts/filament_sync_exclude.txt
 
-# ── Lane C ────────────────────────────────────────────────────────────────────
+# ── p2p-port ──────────────────────────────────────────────────────────────────
 crates/filament-p2p/Cargo.toml
 crates/filament-p2p/src/lib.rs
 crates/filament-p2p/src/framing.rs
 crates/filament-p2p/src/messages.rs
+crates/filament-p2p/src/tip_identity.rs
+crates/filament-p2p/src/pow_validator.rs
 crates/filament-p2p/src/peer_manager.rs
 crates/filament-p2p/tests/loopback.rs
 crates/filament-p2p/examples/handshake_probe.rs
@@ -45,6 +54,7 @@ README.md
 DISCLAIMER.md
 scripts/public_allowlist.txt
 scripts/public_denylist.txt
-scripts/lane_a_keep_public.txt
+scripts/filament_sync_keep_public.txt
 scripts/check_public_boundary.sh
 scripts/sync_filament_public.sh
+.github/workflows/public-boundary.yml

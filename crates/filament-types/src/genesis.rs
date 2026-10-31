@@ -1,8 +1,4 @@
-// filament-types/src/genesis.rs — minimal genesis config: just the fields
-// Filament actually reads (anchor hash + genesis bits). Real production
-// genesis parameters are loaded from `light_client_config.toml`, not this
-// struct — these presets exist for fixture/test parity with known-good
-// devnet/testnet1/testnet2/mainnet anchor values.
+// filament-types/src/genesis.rs — minimal genesis config for the light client.
 
 pub const GENESIS_DEFAULT_BITS: u32 = 0x0300_0040;
 
@@ -25,31 +21,62 @@ pub mod bitcoin_anchors {
     ];
 }
 
-/// Shard blocks per beacon block: the default shard calibration (a shard block takes
-/// 1/16 of a beacon block interval). A shard height maps to a beacon height offset of
-/// `shard_height / SHARD_CALIBRATION_CONSTANT`.
 pub const SHARD_CALIBRATION_CONSTANT: u64 = 16;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct BeaconGenesisConfig {
     pub bits: u32,
+    #[serde(default, with = "anchor_hex")]
     pub bitcoin_anchor_hash: [u8; 32],
+    #[serde(default = "default_max_target")]
+    pub max_target: [u8; 32],
+    #[serde(default)]
+    pub asserted_s_bits: u32,
+}
+
+fn default_max_target() -> [u8; 32] {
+    [0xff; 32]
+}
+
+mod anchor_hex {
+    use serde::Deserialize;
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer).unwrap_or_default();
+        let bytes = hex::decode(s.trim()).unwrap_or_default();
+        let mut out = [0u8; 32];
+        if bytes.len() == 32 {
+            out.copy_from_slice(&bytes);
+        }
+        Ok(out)
+    }
 }
 
 impl BeaconGenesisConfig {
+    fn with_anchor(anchor: [u8; 32]) -> Self {
+        Self {
+            bits: GENESIS_DEFAULT_BITS,
+            bitcoin_anchor_hash: anchor,
+            max_target: [0xff; 32],
+            asserted_s_bits: 0,
+        }
+    }
+
     pub fn mainnet() -> Self {
-        Self { bits: GENESIS_DEFAULT_BITS, bitcoin_anchor_hash: bitcoin_anchors::MAINNET_ANCHOR_HASH }
+        Self::with_anchor(bitcoin_anchors::MAINNET_ANCHOR_HASH)
     }
-
     pub fn testnet1() -> Self {
-        Self { bits: GENESIS_DEFAULT_BITS, bitcoin_anchor_hash: bitcoin_anchors::TESTNET1_ANCHOR_HASH }
+        Self::with_anchor(bitcoin_anchors::TESTNET1_ANCHOR_HASH)
     }
-
     pub fn testnet2() -> Self {
-        Self { bits: GENESIS_DEFAULT_BITS, bitcoin_anchor_hash: bitcoin_anchors::TESTNET2_ANCHOR_HASH }
+        Self::with_anchor(bitcoin_anchors::TESTNET2_ANCHOR_HASH)
     }
-
     pub fn devnet() -> Self {
-        Self { bits: GENESIS_DEFAULT_BITS, bitcoin_anchor_hash: bitcoin_anchors::DEVNET_ANCHOR_HASH }
+        Self::with_anchor(bitcoin_anchors::DEVNET_ANCHOR_HASH)
+    }
+    pub fn testnet_stress() -> Self {
+        Self::testnet2()
     }
 }

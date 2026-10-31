@@ -14,3 +14,6 @@ pub use weighted_fork_proof::WeightedChainWeightProof;
 
 pub mod fork_proof;
 pub use fork_proof::{ForkProof, ForkProofError, ForkProofResult};
+
+pub mod thin_sync;
+pub use thin_sync::*;

@@ -101,6 +101,12 @@ impl From<[u8; 32]> for WeightedHash {
     }
 }
 
+impl From<WeightedHash> for [u8; 32] {
+    fn from(h: WeightedHash) -> Self {
+        h.0
+    }
+}
+
 thread_local! {
     static BLAKE3_WEIGHTED: std::cell::RefCell<blake3::Hasher> =
         std::cell::RefCell::new(blake3::Hasher::new());
@@ -139,6 +145,82 @@ pub fn bag_peaks_weighted(peaks: &[WeightedHash], anchor: WeightedHash) -> Weigh
         return anchor;
     }
     peaks.iter().fold(anchor, |acc, peak| hash_pair_weighted(&acc, peak))
+}
+
+/// Bag peaks and return the structural root with rBits rewritten from the
+/// exact u128 sum of peak difficulties (light-client authoritative weight).
+pub fn bag_peaks_weighted_u128(
+    peaks: &[WeightedHash],
+    anchor: WeightedHash,
+) -> (WeightedHash, u128) {
+    if peaks.is_empty() {
+        return (anchor, 0);
+    }
+    let structural_root = bag_peaks_weighted(peaks, anchor);
+    let canonical_u128: u128 = peaks
+        .iter()
+        .map(|p| rbits_to_u128_approx(p.rbits()))
+        .fold(0u128, |acc, d| acc.saturating_add(d));
+    let corrected_rbits = u128_to_rbits(canonical_u128);
+    let corrected_root = WeightedHash::from_parts(structural_root.hash_bytes(), corrected_rbits);
+    (corrected_root, canonical_u128)
+}
+
+/// Encode a u128 difficulty into compact rBits.
+pub fn u128_to_rbits(difficulty: u128) -> u32 {
+    if difficulty == 0 {
+        return 0;
+    }
+    let byte_len = if difficulty <= 0xFF {
+        1usize
+    } else if difficulty <= 0xFFFF {
+        2
+    } else if difficulty <= 0xFFFFFF {
+        3
+    } else if difficulty <= 0xFFFFFFFF {
+        4
+    } else if difficulty <= 0xFFFFFFFFFF {
+        5
+    } else if difficulty <= 0xFFFFFFFFFFFF {
+        6
+    } else if difficulty <= 0xFFFFFFFFFFFFFF {
+        7
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFF {
+        8
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFF {
+        9
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFF {
+        10
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFFFF {
+        11
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFFFFFF {
+        12
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFF {
+        13
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFF {
+        14
+    } else if difficulty <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF {
+        15
+    } else {
+        16
+    };
+    if byte_len > 32 {
+        return 0xFF7F_FFFF;
+    }
+    let (mut mantissa, mut size) = if byte_len < 3 {
+        (difficulty as u32 & 0x00FF_FFFF, 3i32)
+    } else {
+        let shift = (byte_len - 3) * 8;
+        ((difficulty >> shift) as u32 & 0x00FF_FFFF, byte_len as i32)
+    };
+    if mantissa & 0x0080_0000 != 0 {
+        mantissa >>= 8;
+        size += 1;
+    }
+    if size > 32 {
+        return 0xFF7F_FFFF;
+    }
+    ((size as u32) << 24) | (mantissa & 0x00FF_FFFF)
 }
 
 // ── rBits compact-float arithmetic ──────────────────────────────────────────

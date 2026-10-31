@@ -1,0 +1,14 @@
+# After filament-sync rsync, restore these public-path overlays (clean-room adaptations).
+# Paths relative to this repo root only — no upstream layout here.
+crates/filament/src/mmr_client/filament_p2p.rs
+# Integrated thin-sync / escrow surfaces stay on the last green public shapes
+# until types-port covers FullShardHeader / GenesisGenerator parity.
+crates/filament/src/mmr_client/multi_chain_client.rs
+crates/filament/src/mmr_client/filament_server.rs
+crates/filament/src/mmr_client/mod.rs
+crates/filament/src/mmr_client/filament_wallet.rs
+crates/filament/src/mmr_client/light_client_config.rs
+crates/filament/src/mmr_client/light_client_config.toml
+crates/filament/src/bin/filament.rs
+crates/filament/src/wallet/mod.rs
+crates/filament/src/lib.rs

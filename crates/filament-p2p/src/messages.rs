@@ -13,7 +13,7 @@ const MAX_SHARDS: usize = 1024;
 
 /// Wire version this client advertises. Both sides then speak
 /// `min(ours, theirs)`.
-pub const WIRE_VERSION: u32 = 15;
+pub const WIRE_VERSION: u32 = 17;
 
 /// Oldest peer wire version this client talks to. Nodes refuse anything older
 /// than this themselves, so a lower number here would only delay the failure.
@@ -101,6 +101,14 @@ pub struct VersionMessage {
     pub subscription_mask: [u8; SUBSCRIPTION_MASK_LEN],
     /// v11+: the sender's beacon genesis block hash, or all-zero when unknown.
     pub genesis_hash: [u8; GENESIS_HASH_LEN],
+    /// v16+: optional beacon tip identity (light clients usually leave None).
+    pub beacon_tip: Option<crate::tip_identity::ChainTipIdentity>,
+    /// v16+: per-shard tip identities.
+    pub shard_tips: Vec<(u16, crate::tip_identity::ChainTipIdentity)>,
+    /// v17+: optional packed WireBeaconHeader (150 B); light clients leave None.
+    pub beacon_tip_header: Option<Vec<u8>>,
+    /// v17+: per-shard packed LightShardHeader (136 B each).
+    pub shard_tip_headers: Vec<(u16, Vec<u8>)>,
 }
 
 impl VersionMessage {
@@ -123,6 +131,10 @@ impl VersionMessage {
             shard_serve_from: Vec::new(),
             subscription_mask: [0u8; SUBSCRIPTION_MASK_LEN],
             genesis_hash: UNKNOWN_GENESIS_HASH,
+            beacon_tip: None,
+            shard_tips: Vec::new(),
+            beacon_tip_header: None,
+            shard_tip_headers: Vec::new(),
         }
     }
 
@@ -169,6 +181,43 @@ impl VersionMessage {
         }
         if self.version >= 11 {
             buf.extend_from_slice(&self.genesis_hash);
+        }
+        if self.version >= 16 {
+            use crate::tip_identity::ChainTipIdentity;
+            let mut flags = 0u8;
+            if self.beacon_tip.is_some() {
+                flags |= 1;
+            }
+            buf.push(flags);
+            if let Some(tip) = &self.beacon_tip {
+                buf.extend_from_slice(&tip.encode());
+            }
+            buf.extend_from_slice(&(self.shard_tips.len() as u16).to_le_bytes());
+            for &(id, tip) in &self.shard_tips {
+                buf.extend_from_slice(&id.to_le_bytes());
+                buf.extend_from_slice(&tip.encode());
+                let _ = ChainTipIdentity::WIRE_LEN;
+            }
+        }
+        if self.version >= 17 {
+            const BEACON_HDR: usize = 150;
+            const SHARD_HDR: usize = 136;
+            let mut flags = 0u8;
+            if self.beacon_tip_header.as_ref().map(|h| h.len() == BEACON_HDR) == Some(true) {
+                flags |= 1;
+            }
+            buf.push(flags);
+            if flags & 1 != 0 {
+                buf.extend_from_slice(self.beacon_tip_header.as_ref().unwrap());
+            }
+            buf.extend_from_slice(&(self.shard_tip_headers.len() as u16).to_le_bytes());
+            for &(id, ref hdr) in &self.shard_tip_headers {
+                buf.extend_from_slice(&id.to_le_bytes());
+                let mut padded = vec![0u8; SHARD_HDR];
+                let n = hdr.len().min(SHARD_HDR);
+                padded[..n].copy_from_slice(&hdr[..n]);
+                buf.extend_from_slice(&padded);
+            }
         }
         buf
     }
@@ -226,7 +275,73 @@ impl VersionMessage {
         } else {
             UNKNOWN_GENESIS_HASH
         };
-        // Bytes after the last known field belong to a later version; skip them.
+
+        let (beacon_tip, shard_tips) = if version >= 16 && pos < data.len() {
+            use crate::tip_identity::ChainTipIdentity;
+            let flags = data[pos];
+            pos += 1;
+            let beacon_tip = if flags & 1 != 0 {
+                if pos + ChainTipIdentity::WIRE_LEN > data.len() {
+                    return Err("truncated beacon tip identity".into());
+                }
+                let tip = ChainTipIdentity::decode(&data[pos..pos + ChainTipIdentity::WIRE_LEN])?;
+                pos += ChainTipIdentity::WIRE_LEN;
+                Some(tip)
+            } else {
+                None
+            };
+            let n = read_u16(data, &mut pos)? as usize;
+            if n > MAX_SHARDS {
+                return Err("shard tip count too large".into());
+            }
+            let mut shard_tips = Vec::with_capacity(n);
+            for _ in 0..n {
+                let id = read_u16(data, &mut pos)?;
+                if pos + ChainTipIdentity::WIRE_LEN > data.len() {
+                    return Err("truncated shard tip identity".into());
+                }
+                let tip = ChainTipIdentity::decode(&data[pos..pos + ChainTipIdentity::WIRE_LEN])?;
+                pos += ChainTipIdentity::WIRE_LEN;
+                shard_tips.push((id, tip));
+            }
+            (beacon_tip, shard_tips)
+        } else {
+            (None, Vec::new())
+        };
+
+        let (beacon_tip_header, shard_tip_headers) = if version >= 17 && pos < data.len() {
+            const BEACON_HDR: usize = 150;
+            const SHARD_HDR: usize = 136;
+            let flags = data[pos];
+            pos += 1;
+            let beacon_tip_header = if flags & 1 != 0 {
+                if pos + BEACON_HDR > data.len() {
+                    return Err("truncated beacon tip header".into());
+                }
+                let hdr = data[pos..pos + BEACON_HDR].to_vec();
+                pos += BEACON_HDR;
+                Some(hdr)
+            } else {
+                None
+            };
+            let n = read_u16(data, &mut pos)? as usize;
+            if n > MAX_SHARDS {
+                return Err("shard tip header count too large".into());
+            }
+            let mut shard_tip_headers = Vec::with_capacity(n);
+            for _ in 0..n {
+                let id = read_u16(data, &mut pos)?;
+                if pos + SHARD_HDR > data.len() {
+                    return Err("truncated shard tip header".into());
+                }
+                let hdr = data[pos..pos + SHARD_HDR].to_vec();
+                pos += SHARD_HDR;
+                shard_tip_headers.push((id, hdr));
+            }
+            (beacon_tip_header, shard_tip_headers)
+        } else {
+            (None, Vec::new())
+        };
         let _ = pos;
 
         Ok(Self {
@@ -245,6 +360,10 @@ impl VersionMessage {
             shard_serve_from,
             subscription_mask,
             genesis_hash,
+            beacon_tip,
+            shard_tips,
+            beacon_tip_header,
+            shard_tip_headers,
         })
     }
 }
@@ -537,7 +656,8 @@ mod tests {
         assert_eq!(v3.len(), shard_list_end);
         assert_eq!(v7.len(), shard_list_end + (4 + 2 + 2 * 6) + (4 + 2 + 6));
         assert_eq!(v10.len(), v7.len() + SUBSCRIPTION_MASK_LEN);
-        assert_eq!(full.len(), v10.len() + GENESIS_HASH_LEN);
+        // v11 genesis + empty v16 tip trailer (1+2) + empty v17 header trailer (1+2)
+        assert_eq!(full.len(), v10.len() + GENESIS_HASH_LEN + 3 + 3);
 
         let d3 = VersionMessage::decode(&v3).unwrap();
         assert!(d3.shard_cache_heights.is_empty() && d3.genesis_hash == UNKNOWN_GENESIS_HASH);

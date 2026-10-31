@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Sync Filament public packaging from a local upstream checkout.
 #
-# Lane A (--apply): copy crates/filament only, remap Cargo deps to
-# filament-types / filament-p2p, restore clean-room overlays, boundary-check,
+# filament-sync (--apply): copy crates/filament only, remap Cargo deps to
+# filament-types / filament-p2p, restore clean-room overlays, scrub denylist
+# hits (e.g. WindowedWeightedMMR test helpers), boundary-check + cargo check,
 # then write VERSION. Does NOT touch filament-types / filament-p2p trees
-# (Lanes B/C remain manual / local-map driven).
+# (types-port / p2p-port remain manual).
 #
 # Usage:
 #   ./scripts/sync_filament_public.sh [--check-only]
@@ -20,11 +21,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ALLOW="$ROOT/scripts/public_allowlist.txt"
 DENY="$ROOT/scripts/public_denylist.txt"
 CHECK="$ROOT/scripts/check_public_boundary.sh"
-KEEP_PUBLIC="$ROOT/scripts/lane_a_keep_public.txt"
+KEEP_PUBLIC="$ROOT/scripts/filament_sync_keep_public.txt"
+EXCLUDE_LIST="$ROOT/scripts/filament_sync_exclude.txt"
 LOCAL_DIR="$ROOT/scripts/local"
 LOCAL_ENV="$LOCAL_DIR/upstream.env"
-LOCAL_B_MAP="$LOCAL_DIR/lane_b_map.txt"
-LOCAL_B_DENIED="$LOCAL_DIR/lane_b_denied_siblings.txt"
+LOCAL_TYPES_MAP="$LOCAL_DIR/types_port_map.txt"
+LOCAL_TYPES_DENIED="$LOCAL_DIR/types_port_denied_siblings.txt"
+# Backward-compatible gitignored names
+[[ -f "$LOCAL_DIR/lane_b_map.txt" && ! -f "$LOCAL_TYPES_MAP" ]] && LOCAL_TYPES_MAP="$LOCAL_DIR/lane_b_map.txt"
+[[ -f "$LOCAL_DIR/lane_b_denied_siblings.txt" && ! -f "$LOCAL_TYPES_DENIED" ]] && LOCAL_TYPES_DENIED="$LOCAL_DIR/lane_b_denied_siblings.txt"
 FILAMENT_DST="$ROOT/crates/filament"
 
 mode="status"
@@ -35,9 +40,7 @@ load_local_env() {
   if [[ ! -f "$LOCAL_ENV" ]]; then
     return 0
   fi
-  # shellcheck disable=SC1090
   set -a
-  # Only allow simple KEY=VALUE lines (no command substitution).
   while IFS= read -r line || [[ -n "${line:-}" ]]; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     if [[ "$line" =~ ^(SHISHA|UPSTREAM_TYPES_ROOT)= ]]; then
@@ -68,11 +71,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Resolve SHISHA relative to ROOT when not absolute.
 if [[ "$SHISHA" != /* ]]; then
   SHISHA="$ROOT/$SHISHA"
 fi
-# Normalize
 SHISHA="$(cd "$SHISHA" 2>/dev/null && pwd || echo "$SHISHA")"
 
 if [[ -n "${UPSTREAM_TYPES_ROOT:-}" && "$UPSTREAM_TYPES_ROOT" != /* ]]; then
@@ -83,9 +84,9 @@ if [[ ! -x "$CHECK" ]]; then
   chmod +x "$CHECK" 2>/dev/null || true
 fi
 
-report_lane_a_diff() {
+report_filament_sync_diff() {
   echo
-  echo "== Lane A (filament) — file diff vs upstream =="
+  echo "== filament-sync — file diff vs upstream =="
   if command -v diff >/dev/null; then
     diff -rq \
       --exclude .DS_Store \
@@ -100,12 +101,12 @@ report_lane_a_diff() {
   fi
 }
 
-report_lane_b() {
+report_types_port() {
   echo
-  echo "== Lane B (filament-types) =="
-  if [[ ! -f "$LOCAL_B_MAP" || -z "${UPSTREAM_TYPES_ROOT:-}" || ! -d "${UPSTREAM_TYPES_ROOT:-}" ]]; then
+  echo "== types-port (filament-types) =="
+  if [[ ! -f "$LOCAL_TYPES_MAP" || -z "${UPSTREAM_TYPES_ROOT:-}" || ! -d "${UPSTREAM_TYPES_ROOT:-}" ]]; then
     echo "  skipped detailed map (maintainer-only)."
-    echo "  see scripts/local/README.md to enable Lane B reporting."
+    echo "  see scripts/local/README.md to enable types-port reporting."
     return 0
   fi
 
@@ -128,9 +129,9 @@ report_lane_b() {
     else
       echo "  missing-public   $pub"
     fi
-  done < "$LOCAL_B_MAP"
+  done < "$LOCAL_TYPES_MAP"
 
-  if [[ -f "$LOCAL_B_DENIED" ]]; then
+  if [[ -f "$LOCAL_TYPES_DENIED" ]]; then
     echo
     local blocked_n=0
     local denied
@@ -142,14 +143,14 @@ report_lane_b() {
       if [[ -f "$UPSTREAM_TYPES_ROOT/$denied" ]]; then
         blocked_n=$((blocked_n + 1))
       fi
-    done < "$LOCAL_B_DENIED"
+    done < "$LOCAL_TYPES_DENIED"
     echo "  blocked upstream siblings present: $blocked_n (names not printed)"
   fi
 }
 
-report_lane_c() {
+report_p2p_port() {
   echo
-  echo "== Lane C (filament-p2p) =="
+  echo "== p2p-port (filament-p2p) =="
   echo "  clean-room only; no automatic upstream P2P mirror."
   echo "  public files:"
   find "$ROOT/crates/filament-p2p" -type f ! -name .DS_Store | sed "s|^$ROOT/|  |"
@@ -189,7 +190,6 @@ if text == orig:
     sys.exit(2)
 
 needles = ['../common-types', '../p2p-proto', 'p2p-proto/full-node']
-# Maintainer-only tokens live in the gitignored local denylist ([cargo] section).
 local = path.parents[2] / 'scripts' / 'local' / 'extra_denylist.txt'
 if local.exists():
     section = ''
@@ -234,12 +234,107 @@ restore_keep_public_overlays() {
   done < "$list"
 }
 
-apply_lane_a() {
+# Strip denylist source hits from crates/filament (typically cfg(test) WMMR helpers).
+# Strategy: delete entire #[cfg(test)] modules/blocks that reference WindowedWeightedMMR,
+# and fail if any remaining non-test hit survives.
+scrub_filament_denylist_hits() {
+  python3 - "$FILAMENT_DST" <<'PY'
+import pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1])
+needles = (
+    "WindowedWeightedMMR",
+    "windowed_weighted_mmr",
+    "common::windowed_weighted_mmr",
+    "kameniar_common",
+    "rustmmrdb::",
+)
+
+def scrub_file(path: pathlib.Path) -> bool:
+    text = path.read_text()
+    if not any(n in text for n in needles):
+        return False
+    # Remove cfg(test) modules that contain needles (mod name { ... } with brace match).
+    pattern = re.compile(
+        r"(?ms)^[ \t]*#\[cfg\(test\)\][ \t]*\n[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+\w+[ \t]*\{"
+    )
+    out = []
+    i = 0
+    changed = False
+    while True:
+        m = pattern.search(text, i)
+        if not m:
+            out.append(text[i:])
+            break
+        start = m.start()
+        # find matching brace from m.end()-1
+        brace_start = m.end() - 1
+        depth = 0
+        j = brace_start
+        while j < len(text):
+            c = text[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        block = text[start:j]
+        if any(n in block for n in needles):
+            out.append(text[i:start])
+            # drop trailing blank lines after removed block
+            while j < len(text) and text[j] in "\r\n":
+                j += 1
+            i = j
+            changed = True
+        else:
+            out.append(text[i:j])
+            i = j
+    new_text = "".join(out)
+    # Also strip standalone doc comments that mention WindowedWeightedMMR outside tests
+    # if they would trip the denylist as source hits — denylist scans .rs text.
+    if any(n in new_text for n in needles):
+        # Remove lines that are pure comments/docs mentioning needles when not in remaining code paths
+        lines = new_text.splitlines(keepends=True)
+        kept = []
+        for line in lines:
+            if any(n in line for n in needles) and line.lstrip().startswith(("///", "//!", "//")):
+                changed = True
+                continue
+            kept.append(line)
+        new_text = "".join(kept)
+    if any(n in new_text for n in ("WindowedWeightedMMR", "windowed_weighted_mmr", "kameniar_common", "rustmmrdb::")):
+        print(f"error: scrub left denylist hits in {path}", file=sys.stderr)
+        for n in needles:
+            if n in new_text:
+                for li, line in enumerate(new_text.splitlines(), 1):
+                    if n in line:
+                        print(f"  {path}:{li}: {line.strip()[:120]}", file=sys.stderr)
+                        break
+        sys.exit(1)
+    if changed or new_text != text:
+        path.write_text(new_text)
+        print(f"  scrubbed {path.relative_to(root.parent.parent)}")
+        return True
+    return False
+
+changed_any = False
+for path in sorted(root.rglob("*.rs")):
+    if scrub_file(path):
+        changed_any = True
+if not changed_any:
+    print("  scrub: no denylist hits in filament sources")
+PY
+}
+
+apply_filament_sync() {
   local sha="$1"
   local backup
   backup="$(mktemp -d "${TMPDIR:-/tmp}/filament-public-backup.XXXXXX")"
   echo
-  echo "== Lane A apply =="
+  echo "== filament-sync apply =="
   echo "  backup: $backup"
 
   mkdir -p "$backup/crates"
@@ -247,11 +342,17 @@ apply_lane_a() {
     "$FILAMENT_DST/" "$backup/crates/filament/"
 
   cleanup_on_fail() {
-    echo "error: Lane A apply failed — restoring filament from backup" >&2
+    echo "error: filament-sync apply failed — restoring filament from backup" >&2
     rsync -a --delete --exclude target --exclude .DS_Store \
       "$backup/crates/filament/" "$FILAMENT_DST/"
+    # restore VERSION if we wrote it
+    if [[ -f "$backup/VERSION" ]]; then
+      cp "$backup/VERSION" "$ROOT/VERSION"
+    fi
     rm -rf "$backup"
   }
+
+  cp "$ROOT/VERSION" "$backup/VERSION" 2>/dev/null || true
 
   if ! command -v rsync >/dev/null; then
     echo "error: rsync is required for --apply" >&2
@@ -277,8 +378,66 @@ apply_lane_a() {
     return 1
   fi
 
-  echo "  boundary check"
-  if ! "$CHECK"; then
+  echo "  apply filament_sync_exclude.txt"
+  if [[ -f "$EXCLUDE_LIST" ]]; then
+    while IFS= read -r rel || [[ -n "${rel:-}" ]]; do
+      [[ -z "$rel" || "$rel" =~ ^[[:space:]]*# ]] && continue
+      rel="${rel#"${rel%%[![:space:]]*}"}"
+      rel="${rel%"${rel##*[![:space:]]}"}"
+      [[ -z "$rel" ]] && continue
+      target="$FILAMENT_DST/$rel"
+      if [[ -e "$target" ]]; then
+        rm -rf "$target"
+        echo "  excluded: crates/filament/$rel"
+      fi
+    done < "$EXCLUDE_LIST"
+    # Drop mod declarations for excluded basenames from mod.rs files
+    python3 - "$FILAMENT_DST" <<'PY2'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+removed = {"thin_shard","escrow_api","chain_views","keystone_submit","escrow","hot_key"}
+for modrs in root.rglob("mod.rs"):
+    text = modrs.read_text()
+    lines = []
+    changed = False
+    for line in text.splitlines(True):
+        m = re.search(r'\bmod\s+(\w+)\s*;', line)
+        if m and m.group(1) in removed:
+            changed = True
+            continue
+        lines.append(line)
+    if changed:
+        modrs.write_text(''.join(lines))
+        print(f"  scrubbed mods in {modrs.relative_to(root)}")
+PY2
+  fi
+
+  echo "  scrub denylist hits (WMMR test helpers, etc.)"
+  if ! scrub_filament_denylist_hits; then
+    cleanup_on_fail
+    return 1
+  fi
+
+  echo "  boundary check --strict"
+  if ! "$CHECK" --strict; then
+    cleanup_on_fail
+    return 1
+  fi
+
+  echo "  cargo check -p filament-types"
+  if ! (
+    cd "$ROOT"
+    RUSTFLAGS="${RUSTFLAGS:--Awarnings}" cargo check -p filament-types
+  ); then
+    cleanup_on_fail
+    return 1
+  fi
+
+  echo "  cargo check -p filament --features full-node"
+  if ! (
+    cd "$ROOT"
+    RUSTFLAGS="${RUSTFLAGS:--Awarnings}" cargo check -p filament --features full-node
+  ); then
     cleanup_on_fail
     return 1
   fi
@@ -286,25 +445,14 @@ apply_lane_a() {
   echo "SYNCED_FROM_SHISHA=$sha" > "$ROOT/VERSION"
   echo "  wrote VERSION → SYNCED_FROM_SHISHA=$sha"
 
-  echo "  cargo check -p filament (advisory)"
-  if (
-    cd "$ROOT"
-    RUSTFLAGS="${RUSTFLAGS:--Awarnings}" cargo check -p filament --features full-node
-  ); then
-    echo "  cargo check OK"
-  else
-    echo "  warning: cargo check failed — Lane A sources applied; types/p2p"
-    echo "           APIs may need further ports before the public build is green."
-  fi
-
   rm -rf "$backup"
-  echo "Lane A apply complete."
+  echo "filament-sync apply complete."
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 echo "== public boundary =="
-"$CHECK"
+"$CHECK" --strict
 
 if [[ "$mode" == "check-only" ]]; then
   exit 0
@@ -343,22 +491,22 @@ echo "== upstream =="
 echo "  path: $SHISHA"
 echo "  HEAD: $sha"
 
-report_lane_a_diff
-report_lane_b
-report_lane_c
+report_filament_sync_diff
+report_types_port
+report_p2p_port
 
 if [[ "$mode" == "dry-run" || "$mode" == "status" ]]; then
   echo
   echo "== status =="
-  echo "  No files modified. Pass --apply to copy Lane A (filament) only."
+  echo "  No files modified. Pass --apply to run filament-sync (crates/filament) only."
   exit 0
 fi
 
 if [[ "$mode" == "apply" ]]; then
-  apply_lane_a "$sha"
+  apply_filament_sync "$sha"
   echo
-  echo "== post-apply Lane A diff (should be overlays + remaps only) =="
-  report_lane_a_diff
+  echo "== post-apply filament-sync diff (overlays + remaps + scrub) =="
+  report_filament_sync_diff
   exit 0
 fi
 

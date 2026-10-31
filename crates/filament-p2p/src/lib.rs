@@ -7,6 +7,8 @@
 
 pub mod framing;
 pub mod messages;
+pub mod tip_identity;
+pub mod pow_validator;
 pub mod peer_manager;
 
 pub use framing::{magic_bytes_for_network, magic_for_network};
@@ -22,6 +24,9 @@ pub use peer_manager::{
 /// source imports, so it compiles unchanged against this one.
 pub mod p2p {
     pub mod common {
+        pub mod pow_validator {
+            pub use crate::pow_validator::*;
+        }
         pub mod manager {
             pub use crate::peer_manager::PeerManager;
         }
