@@ -1,10 +1,11 @@
 // src/mmr_client/contact_store.rs
 //
-// Local address book: `Contact` data model + `ContactStore` atomic JSON store.
+// AB-1 — Local address book: `Contact` data model + `ContactStore` atomic JSON store.
 //
 // Storage: `contacts.json` in the app's data directory.  Writes are atomic
 // (write to `.contacts.json.tmp`, then `rename`).  Same pattern as `InvoiceStore`.
 //
+// Design reference: `filament_app/docs/ADDRESS_BOOK_PLAN.md`
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -226,7 +227,7 @@ impl ContactStore {
     }
 }
 
-// ─── Tests ──────────────────────────────────────────────────
+// ─── Tests (AB-T-1..AB-T-8) ──────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -243,6 +244,7 @@ mod tests {
         format!("{:064x}", n as u128)
     }
 
+    // AB-T-1
     #[test]
     fn add_and_list_contact() {
         let (_dir, store) = tmp_store();
@@ -254,6 +256,7 @@ mod tests {
         assert_eq!(all[1].name, "Bob");
     }
 
+    // AB-T-2
     #[test]
     fn delete_removes_contact() {
         let (_dir, store) = tmp_store();
@@ -262,6 +265,7 @@ mod tests {
         assert!(store.list().unwrap().is_empty());
     }
 
+    // AB-T-3
     #[test]
     fn update_contact_name() {
         let (_dir, store) = tmp_store();
@@ -272,6 +276,7 @@ mod tests {
         assert_eq!(updated.address_hex, addr);
     }
 
+    // AB-T-4
     #[test]
     fn find_by_address_returns_match() {
         let (_dir, store) = tmp_store();
@@ -282,6 +287,7 @@ mod tests {
         assert_eq!(found.unwrap().name, "Eve");
     }
 
+    // AB-T-5
     #[test]
     fn find_by_address_returns_none_when_absent() {
         let (_dir, store) = tmp_store();
@@ -289,7 +295,7 @@ mod tests {
         assert!(found.is_none());
     }
 
-    // Import from QR URI (tested via AddressCard::parse → store.add)
+    // AB-T-6: import from QR URI (tested via AddressCard::parse → store.add)
     #[test]
     fn import_from_qr_uri_creates_contact() {
         use crate::mmr_client::shisha_uri::AddressCard;
@@ -304,6 +310,7 @@ mod tests {
         assert_eq!(c.name, "Alice Smith");
     }
 
+    // AB-T-7
     #[test]
     fn export_as_qr_round_trips() {
         use crate::mmr_client::shisha_uri::AddressCard;
@@ -319,7 +326,7 @@ mod tests {
         assert_eq!(parsed.shard_id, 2);
     }
 
-    // Atomic write survives concurrent reads
+    // AB-T-8: atomic write survives concurrent reads
     #[test]
     fn atomic_write_survives_concurrent_reads() {
         let dir = TempDir::new().unwrap();

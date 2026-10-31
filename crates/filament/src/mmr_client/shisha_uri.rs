@@ -16,6 +16,7 @@
 //   relay=<pct-encoded>  preferred relay node e.g. "127.0.0.1:8334"
 //   invoice_id=<b64url22> stable 16-byte invoice id (base64url, no padding)
 //
+// Design reference: `docs/plan/P2P_Phase10_Plan.md` §3
 
 use crate::mmr_client::invoice::{
     base64url_decode16, base64url_encode16, decode_hex32, encode_hex32, Invoice, InvoiceState,
@@ -183,6 +184,7 @@ impl ShishaUri {
             txid:            self.txid,
             relay_node:      self.relay_node.clone(),
             mmr_proof_bytes: None,
+            assurance: None,
         }
     }
 
@@ -203,7 +205,7 @@ impl ShishaUri {
     }
 }
 
-// ─── Contact address-card URI ──────────────────────────────────────────
+// ─── AB-6: Contact address-card URI ──────────────────────────────────────────
 
 /// A contact-card URI — `shisha:?addr=<64hex>[&shard=<u16>][&name=<pct-encoded>]`.
 ///
@@ -271,7 +273,7 @@ impl AddressCard {
     }
 }
 
-// ─── Node address URI ──────────────────────────────────────────────────
+// ─── PD-6: Node address URI ──────────────────────────────────────────────────
 
 /// A full-node address URI — `shishanet://host:port[?pk=<64hex>]`.
 ///
@@ -436,6 +438,7 @@ mod tests {
         decode_hex32(&addr_hex()).unwrap()
     }
 
+    // LC-11
     #[test]
     fn uri_roundtrip_minimal() {
         let uri = ShishaUri {
@@ -458,6 +461,7 @@ mod tests {
         assert_eq!(parsed.shard_id, 0);
     }
 
+    // LC-12
     #[test]
     fn uri_roundtrip_all_fields() {
         let uri = ShishaUri {
@@ -486,6 +490,7 @@ mod tests {
         assert_eq!(parsed.invoice_id,    Some([0x42u8; 16]));
     }
 
+    // LC-13
     #[test]
     fn uri_wrong_scheme_rejected() {
         assert!(matches!(
@@ -494,6 +499,7 @@ mod tests {
         ));
     }
 
+    // LC-14
     #[test]
     fn uri_invalid_recipient_rejected() {
         assert!(matches!(
@@ -502,6 +508,7 @@ mod tests {
         ));
     }
 
+    // LC-15
     #[test]
     fn uri_memo_too_long_rejected() {
         let long_memo = "A".repeat(129);
@@ -509,6 +516,7 @@ mod tests {
         assert!(matches!(ShishaUri::parse(&uri), Err(ShishaUriError::MemoTooLong)));
     }
 
+    // LC-16
     #[test]
     fn uri_unknown_params_ignored() {
         let uri = format!("shisha:{}?amount=42&future_param=xyz", addr_hex());
@@ -516,6 +524,7 @@ mod tests {
         assert_eq!(parsed.amount_atoms, 42);
     }
 
+    // LC-17
     #[test]
     fn uri_to_invoice_roundtrip() {
         let uri = ShishaUri {
@@ -546,7 +555,7 @@ mod tests {
         assert_eq!(pct_decode(&pct_encode(s)), s);
     }
 
-    // AddressCard tests
+    // AB-6 — AddressCard tests
     #[test]
     fn address_card_parse_minimal() {
         let addr = "a".repeat(64);
@@ -589,7 +598,7 @@ mod tests {
         assert_eq!(err, ShishaUriError::MissingRecipient);
     }
 
-    // ── get_invoice_qr encodes shisha URI ───────────────────────────
+    // ── PD-T-6: get_invoice_qr encodes shisha URI ───────────────────────────
 
     /// Simulates the `get_invoice_qr` Tauri command: Invoice → URI → parse →
     /// same invoice_id.  Verifies the full encode/decode round-trip used by the
@@ -622,7 +631,7 @@ mod tests {
             "invoice_id must survive URI encode → decode round-trip");
     }
 
-    // ── NodeAddr roundtrip ───────────────────────────────────────────
+    // ── PD-T-5: NodeAddr roundtrip ───────────────────────────────────────────
 
     #[test]
     fn node_addr_parse_minimal() {

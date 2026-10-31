@@ -3,16 +3,25 @@
 // Starts the Filament HTTP server (port 7380) backed by MultiChainClient
 // MMR proof verifier and a watch-only wallet delegate.
 //
-// The desktop app builds on the same `filament` library crate.
+// Moved here from `shisha-core` `src/bin/filament.rs` once Gap 9 made a
+// sole `filament` + `common-types` dependency feasible (no monolith).
+// The Tauri desktop binary uses this crate via `filament_app/`.
 //
 // Usage:
 //   filament [--network <testnet1|testnet2|mainnet|devnet|testnet-stress>]
 //             [--port <port>] [--keystone <http://host:port>]
 //             [--keystone-extra <http://host:port>]...
 //             [--manual-peer <host:port>]... [--keystone-p2p-port <port>]
-//             [--keystone-summary-port <port>]
-//             [--signing-key-file <path>]
+//             [--keystone-summary-port <port>] [--genesis-file <path>]
 //             [--data-dir <path>] [--p2p-listen <host:port>] [--disable-p2p]
+//             [--indexer <http://host:port>]... [--genesis <genesis_<network>.toml>]
+//
+// --genesis: the network genesis file the nodes load; block 0 of the beacon chain is
+// generated from it (same GenesisGenerator as Keystone). Without it Filament has no
+// verified chain. A file that does not load stops startup.
+//
+// --indexer (repeatable): Eratosthenes endpoints; the escrow funding watch reads
+// /explorer/utxos?address=<P> there (IPP D14).
 //
 // --keystone-summary-port overrides light_client_summary_port (default 8080)
 // — the port sync_peer_chain_summaries() swaps onto each configured Keystone
@@ -20,12 +29,14 @@
 // that on a separate port from the main wallet-ops REST API; a single-port
 // Keystone build (e.g. a local soak) needs this set to match.
 //
-// --keystone-extra may be passed multiple times to configure additional
-// Keystone endpoints alongside --keystone; wallet ops fan out to all of them
-// rather than trusting a single node.
+// MNT-1: --keystone-extra may be passed multiple times to configure
+// additional Keystone endpoints alongside --keystone; wallet ops fan out to
+// all of them rather than trusting a single node. See
+// filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
 //
 // Path-2 P2P dial sources:
-//   • --keystone / REST endpoints → host + --keystone-p2p-port (default 18334)
+//   • --keystone / REST endpoints → host + --keystone-p2p-port (default 18334;
+//     0 skips this dial when the HTTP host is not the ShishaNet host)
 //   • --manual-peer / manual_peers → explicit ShishaNet host:port
 //   • peer cache; live POST /peers also dials after startup
 
@@ -34,7 +45,6 @@ use log::info;
 
 use filament::mmr_client::filament_server::{FilamentNodeConfig, load_config_from_disk, start_server};
 use filament::mmr_client::filament_wallet::FilamentWallet;
-use filament::mmr_client::light_client_config::FilamentBootstrapConfig;
 use filament::mmr_client::multi_chain_client::MultiChainClient;
 use filament::mmr_client::storage::InMemoryStorage;
 
@@ -68,6 +78,14 @@ fn parse_args() -> (FilamentNodeConfig, String) {
             "--keystone" => {
                 i += 1;
                 if i < args.len() { cfg.keystone_endpoint = Some(args[i].clone()); }
+            }
+            "--genesis" => {
+                i += 1;
+                if i < args.len() { cfg.genesis_file = Some(args[i].clone()); }
+            }
+            "--indexer" => {
+                i += 1;
+                if i < args.len() { cfg.indexer_endpoints.push(args[i].clone()); }
             }
             "--keystone-extra" => {
                 i += 1;
@@ -124,6 +142,26 @@ fn parse_args() -> (FilamentNodeConfig, String) {
                     if let Ok(d) = args[i].parse::<u32>() {
                         cfg.confirmation_depth = d;
                     }
+                }
+            }
+            "--allow-single-keystone" => {
+                cfg.allow_single_keystone = true;
+            }
+            "--thin-sync" => {
+                cfg.thin_sync = true;
+            }
+            "--thin-shard" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(id) = args[i].parse::<u16>() {
+                        cfg.thin_shards.push(id);
+                    }
+                }
+            }
+            "--genesis-file" => {
+                i += 1;
+                if i < args.len() {
+                    cfg.genesis_file = Some(args[i].clone());
                 }
             }
             "--bitcoin-anchor-hex" => {
@@ -183,11 +221,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if cli_config.bitcoin_anchor_hex.is_some() {
             persisted.bitcoin_anchor_hex = cli_config.bitcoin_anchor_hex;
         }
-        if cli_config.signing_key_file.is_some() {
-            persisted.signing_key_file = cli_config.signing_key_file;
+        if cli_config.genesis_file.is_some() {
+            persisted.genesis_file = cli_config.genesis_file;
         }
-        if cli_config.light_client_summary_port != FilamentNodeConfig::default().light_client_summary_port {
-            persisted.light_client_summary_port = cli_config.light_client_summary_port;
+        if cli_config.thin_sync {
+            persisted.thin_sync = true;
+        }
+        for id in &cli_config.thin_shards {
+            if !persisted.thin_shards.contains(id) {
+                persisted.thin_shards.push(*id);
+            }
+        }
+        if cli_config.allow_single_keystone {
+            persisted.allow_single_keystone = true;
         }
         persisted.data_dir = cli_config.data_dir;
         persisted
@@ -197,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Filament starting — network: {}, port: {}", config.network, config.port);
 
-    // Optional spending-key custody for `/wallet/sign-message`.
+    // TS-PORTAL-2f: optional spending-key custody for `/wallet/sign-message`.
     // Precedence: FILAMENT_SIGNING_KEY (raw hex) > config.signing_key_file.
     let signing_key: Option<bitcoin::secp256k1::SecretKey> = {
         let raw = env::var("FILAMENT_SIGNING_KEY").ok().or_else(|| {
@@ -228,33 +274,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // + wallet endpoints include discovery merge at startup;
+    // MNT-1/7 + PD-INT-1: wallet endpoints include discovery merge at startup;
     // `start_server` runs `apply_startup_peer_discovery` before serving.
     let mut wallet = FilamentWallet::new(address, config.keystone_endpoint.clone());
     wallet.set_keystone_endpoints(config.all_keystone_endpoints());
+    wallet.set_indexer_endpoints(config.indexer_endpoints.clone());
     if let Some(sk) = signing_key {
         wallet.set_signing_key(sk);
     }
     let storage = Box::new(InMemoryStorage::new());
-
-    // Bootstrap the beacon chain's genesis so sync/proof verification actually has
-    // something to verify against. Previously this binary never called
-    // init_from_network/init_beacon_chain at all — every sync attempt failed
-    // silently with "Beacon chain not initialized," regardless of --network.
-    let bootstrap = FilamentBootstrapConfig::from_embedded();
-    let mut client = match MultiChainClient::from_config(bootstrap, storage) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("filament: warning: bootstrap config error: {e} — starting without local genesis config");
-            MultiChainClient::new(Box::new(InMemoryStorage::new()))
-        }
-    };
-    if let Err(e) = client.init_from_network(&config.network).await {
-        eprintln!(
-            "filament: warning: could not initialize network '{}': {e} — this network has no genesis \
-             configured in light_client_config.toml, so sync against a Keystone will fail until fixed",
-            config.network
-        );
+    let mut client = MultiChainClient::new(storage);
+    // FIL-GENESIS-1: block 0 from the network genesis file, or no verified chain at all.
+    match &config.genesis_file {
+        Some(path) => match client.init_from_genesis_file(std::path::Path::new(path)).await {
+            Ok(hash) => info!("Filament: beacon genesis from {path} — chain identity {}", hex::encode(hash)),
+            Err(e) => {
+                eprintln!("filament: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => log::warn!(
+            "Filament: no --genesis file — the beacon chain is not initialised, so chain summaries \
+             cannot be verified and heights stay unknown"
+        ),
     }
 
     start_server(client, wallet, config).await

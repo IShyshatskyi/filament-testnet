@@ -15,10 +15,7 @@ pub struct FilamentBootstrapConfig {
     pub testnet1: NetworkGenesisInfo,
     pub testnet2: NetworkGenesisInfo,
     pub devnet: NetworkGenesisInfo,
-    /// Real, mined genesis for the Heaviest Chain Rule test network.
-    #[serde(rename = "testnet-stress")]
-    pub testnet_stress: NetworkGenesisInfo,
-
+    
     /// Sync settings
     pub sync: SyncSettings,
     
@@ -66,17 +63,17 @@ pub struct NetworkGenesisInfo {
 impl NetworkGenesisInfo {
     /// Parse genesis hash from hex string to bytes
     pub fn genesis_hash_bytes(&self) -> Result<[u8; 32], String> {
-        hex_to_bytes32(&self.genesis_hash)
+        hex_to_bytes32(&self.genesis_hash).map_err(|e| format!("[{}] genesis_hash: {e}", self.network_id))
     }
     
     /// Parse genesis MMR root from hex string to bytes
     pub fn genesis_mmr_root_bytes(&self) -> Result<[u8; 32], String> {
-        hex_to_bytes32(&self.genesis_mmr_root)
+        hex_to_bytes32(&self.genesis_mmr_root).map_err(|e| format!("[{}] genesis_mmr_root: {e}", self.network_id))
     }
     
     /// Parse Bitcoin anchor hash from hex string to bytes
     pub fn bitcoin_anchor_hash_bytes(&self) -> Result<[u8; 32], String> {
-        hex_to_bytes32(&self.bitcoin_anchor_hash)
+        hex_to_bytes32(&self.bitcoin_anchor_hash).map_err(|e| format!("[{}] bitcoin_anchor_hash: {e}", self.network_id))
     }
     
     /// Create CompleteBatchBlock for genesis
@@ -195,7 +192,7 @@ pub struct PeerList {
 }
 
 /// Deprecated alias — use [`FilamentBootstrapConfig`].
-#[deprecated(since = "0.5.0", note = "renamed to FilamentBootstrapConfig (naming collision fix)")]
+#[deprecated(since = "0.5.0", note = "renamed to FilamentBootstrapConfig (RF-11 naming collision fix)")]
 pub type LightClientConfig = FilamentBootstrapConfig;
 
 impl FilamentBootstrapConfig {
@@ -207,19 +204,6 @@ impl FilamentBootstrapConfig {
         toml::from_str(&content)
             .map_err(|e| format!("Failed to parse config: {}", e))
     }
-
-    /// Load the bootstrap config embedded in the binary at compile time.
-    ///
-    /// The standalone `filament` binary has no guaranteed working directory
-    /// containing `light_client_config.toml`, so it embeds this crate's own
-    /// copy via `include_str!` rather than reading a runtime path. Panics on
-    /// parse failure — a malformed embedded file is a build-time bug, not a
-    /// runtime condition callers can recover from.
-    pub fn from_embedded() -> Self {
-        const EMBEDDED: &str = include_str!("light_client_config.toml");
-        toml::from_str(EMBEDDED)
-            .expect("embedded light_client_config.toml must parse — this is a build-time invariant")
-    }
     
     /// Get network genesis info by network ID
     pub fn get_network(&self, network_id: &str) -> Option<&NetworkGenesisInfo> {
@@ -228,7 +212,6 @@ impl FilamentBootstrapConfig {
             "testnet1" => Some(&self.testnet1),
             "testnet2" => Some(&self.testnet2),
             "devnet" => Some(&self.devnet),
-            "testnet-stress" | "testnet_stress" => Some(&self.testnet_stress),
             _ => None,
         }
     }
@@ -287,6 +270,19 @@ mod tests {
         assert_eq!(bytes[30], 0);
     }
     
+    /// The example config shipped with `examples/quickstart.rs` (and quoted on the website's
+    /// Filament page) must keep parsing as the schema changes.
+    #[test]
+    fn example_config_parses() {
+        let cfg: FilamentBootstrapConfig =
+            toml::from_str(include_str!("../../examples/light_client_config.example.toml")).unwrap();
+        assert_eq!(cfg.devnet.network_id, "devnet");
+        assert_eq!(cfg.devnet.genesis_bits, 0x0300_0040);
+        assert!(cfg.devnet.bitcoin_anchor_hash_bytes().is_ok());
+        assert!(cfg.devnet.genesis_hash_bytes().is_err(), "placeholder must be replaced by the user");
+        assert_eq!(cfg.peers.devnet.peers, vec!["localhost:8334".to_string()]);
+    }
+
     #[test]
     fn test_network_genesis_info() {
         let info = NetworkGenesisInfo {

@@ -14,6 +14,7 @@
 //                 ↘                ↗                    ↘
 //               Expired                              ReorgReverted
 //
+// Design reference: `docs/plan/P2P_Phase10_Plan.md` §2
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// Filament HTTP handlers open a fresh `InvoiceStore` per request, so an
 /// in-process `Mutex` alone would not close the TOCTOU across concurrent
 /// `POST /invoice/create` calls — this blocking `flock` covers any opener
-/// of the same store directory.
+/// of the same store directory (same pattern as rustmmrdb `DataDirLock`).
 const CREATE_LOCK_FILE: &str = ".invoice_create.lock";
 
 /// RAII exclusive lock held for the duration of one `create` call.
@@ -81,7 +82,7 @@ pub enum InvoiceState {
     /// Inclusion verified via MMR proof; `depth` blocks of confirmations so far.
     Pending(u8),
     /// `MIN_CONFIRMATION_DEPTH` blocks confirmed. A matching `TxRevertNotif`
-    /// still reverts this to `ReorgReverted` — depth does not freeze
+    /// still reverts this to `ReorgReverted` (P0-2) — depth does not freeze
     /// the invoice against an outpoint orphan.
     Confirmed,
     /// `expiry_height` passed without reaching `PaymentSent`.
@@ -119,7 +120,7 @@ impl InvoiceState {
 
 /// A receiver-initiated payment request.
 ///
-/// for the full field descriptions.
+/// See `docs/plan/P2P_Phase10_Plan.md` §2.1 for the full field descriptions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invoice {
     /// 16-byte UUID v4 (random), unique per payment.
@@ -151,7 +152,22 @@ pub struct Invoice {
     /// Serialised `WeightedMMRBatchProof` bytes (set when `Confirmed`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mmr_proof_bytes: Option<Vec<u8>>,
+    /// How strongly the confirmation was checked, set when `Confirmed`:
+    /// [`ASSURANCE_VERIFIED_CHAIN`] (the paying output was proved inside a block of the shard chain
+    /// Filament verified itself), [`ASSURANCE_KEYSTONE_QUORUM`] (the output was proved inside a
+    /// block record that at least the required number of Keystones agree on; no chain of Filament's
+    /// own behind it) or [`ASSURANCE_KEYSTONE_TIP`] (older path: depth counted from Keystone-reported
+    /// tips, payment not proved). Not part of the wire codec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assurance: Option<String>,
 }
+
+/// Confirmed against Filament's own verified shard chain (strongest).
+pub const ASSURANCE_VERIFIED_CHAIN: &str = "verified_chain";
+/// Confirmed by a quorum of Keystones; Filament has no verified chain for this shard (lower).
+pub const ASSURANCE_KEYSTONE_QUORUM: &str = "keystone_quorum";
+/// Confirmed from Keystone-reported tips without a payment proof (weakest; `thin_sync` off).
+pub const ASSURANCE_KEYSTONE_TIP: &str = "keystone_tip";
 
 impl Invoice {
     /// Magic bytes for the binary wire format.
@@ -285,6 +301,7 @@ impl Invoice {
             txid,
             relay_node: None,
             mmr_proof_bytes: None,
+            assurance: None,
         })
     }
 
@@ -306,7 +323,7 @@ impl Invoice {
     }
 
     /// May claim a new `TxInclusionNotif`. `Pending` is excluded so a later
-    /// same-address payment cannot clobber an already-claimed invoice.
+    /// same-address payment cannot clobber an already-claimed invoice (NC-86).
     fn rematch_eligible(&self) -> bool {
         matches!(
             self.state,
@@ -343,7 +360,7 @@ pub enum InvoiceError {
     NotFound([u8; 16]),
     /// Another unhinted in-flight invoice already exists for this
     /// `(shard_id, recipient)` — Path-2 matching cannot disambiguate two
-    /// such invoices (hybrid: one unhinted in-flight, or hinted by outpoint).
+    /// such invoices (P0-1 hybrid: one unhinted in-flight, or hinted by outpoint).
     DuplicateUnhintedInFlight { shard_id: u16, recipient: [u8; 32] },
 }
 
@@ -451,6 +468,7 @@ impl InvoiceStore {
             txid: None,
             relay_node: None,
             mmr_proof_bytes: None,
+            assurance: None,
         };
         self.write(&inv)?;
         Ok(invoice_id)
@@ -504,6 +522,13 @@ impl InvoiceStore {
         self.write(&inv)
     }
 
+    /// Record how strongly a confirmed invoice was checked (see [`Invoice::assurance`]).
+    pub fn set_assurance(&self, invoice_id: &[u8; 16], assurance: &str) -> Result<(), InvoiceError> {
+        let mut inv = self.load(invoice_id)?;
+        inv.assurance = Some(assurance.to_string());
+        self.write(&inv)
+    }
+
     /// Return all invoices matching `filter`, sorted by `created_at_ms` descending.
     pub fn list(&self, filter: Option<&InvoiceState>) -> Result<Vec<Invoice>, InvoiceError> {
         let mut result = Vec::new();
@@ -529,7 +554,7 @@ impl InvoiceStore {
         Ok(result)
     }
 
-    /// Addresses that should stay registered with Keystone (`WatchAddress`).
+    /// FUD-5: addresses that should stay registered with Keystone (`WatchAddress`).
     pub fn watch_registration_targets(&self) -> Result<Vec<([u8; 32], u16)>, InvoiceError> {
         let mut out = Vec::new();
         for inv in self.list(None)? {
@@ -549,12 +574,12 @@ impl InvoiceStore {
         Ok(out)
     }
 
-    /// On verified inclusion, match an invoice and enter `Pending(0)`.
+    /// FUD-5 / P0-1: on verified inclusion, match an invoice and enter `Pending(0)`.
     ///
     /// Hybrid matching: a hinted rematch-eligible invoice claims only its
     /// own outpoint; otherwise the newest unhinted rematch-eligible invoice
     /// for `(shard_id, address)` claims the inclusion. `Pending` is never
-    /// rematched (coinbase-reuse clobber).
+    /// rematched (NC-86 coinbase-reuse clobber).
     pub fn on_watch_inclusion(
         &self,
         shard_id: u16,
@@ -602,7 +627,7 @@ impl InvoiceStore {
         Ok(Some(id))
     }
 
-    /// Revert a `Pending` or `Confirmed` payment at
+    /// LC-47b / P0-2: revert a `Pending` or `Confirmed` payment at
     /// `(shard_id, height, output_idx)`. Hints are cleared so rematch can
     /// take a new height after the reorg.
     pub fn on_watch_revert(
@@ -644,6 +669,20 @@ impl InvoiceStore {
         tip_height: u32,
         min_depth: u32,
     ) -> Result<Vec<[u8; 16]>, InvoiceError> {
+        self.advance_pending_confirmations_gated(shard_id, tip_height, min_depth, None)
+    }
+
+    /// Like [`Self::advance_pending_confirmations`], but with `allowed = Some(ids)` only those
+    /// invoices may become `Confirmed`; the others keep counting depth (saturating at 255) and stay
+    /// `Pending`. Used when confirmation needs more than depth (design §6: the paying block must be
+    /// bound to Filament's own verified chain).
+    pub fn advance_pending_confirmations_gated(
+        &self,
+        shard_id: u16,
+        tip_height: u32,
+        min_depth: u32,
+        allowed: Option<&std::collections::HashSet<[u8; 16]>>,
+    ) -> Result<Vec<[u8; 16]>, InvoiceError> {
         let mut confirmed = Vec::new();
         for inv in self.list(None)? {
             if inv.shard_id != shard_id {
@@ -656,14 +695,13 @@ impl InvoiceStore {
                 continue;
             };
             let confirmations = tip_height.saturating_sub(payment_height);
-            if confirmations >= min_depth {
-                let id = inv.invoice_id;
+            let id = inv.invoice_id;
+            if confirmations >= min_depth && allowed.map_or(true, |a| a.contains(&id)) {
                 let proof = inv.mmr_proof_bytes.clone().unwrap_or_default();
                 self.mark_confirmed(&id, proof)?;
                 confirmed.push(id);
             } else {
-                let id = inv.invoice_id;
-                self.update_state(&id, InvoiceState::Pending(confirmations as u8))?;
+                self.update_state(&id, InvoiceState::Pending(confirmations.min(u32::from(u8::MAX)) as u8))?;
             }
         }
         Ok(confirmed)
@@ -844,9 +882,11 @@ mod tests {
             txid:           None,
             relay_node:     None,
             mmr_proof_bytes: None,
+            assurance: None,
         }
     }
 
+    // LC-1
     #[test]
     fn invoice_codec_roundtrip_no_hints() {
         let inv = sample_invoice();
@@ -866,6 +906,7 @@ mod tests {
         assert_eq!(decoded.txid,          None);
     }
 
+    // LC-2
     #[test]
     fn invoice_codec_roundtrip_with_hints() {
         let mut inv = sample_invoice();
@@ -876,6 +917,7 @@ mod tests {
         assert_eq!(encoded.idx_hint,    Some(7));
     }
 
+    // LC-3
     #[test]
     fn invoice_codec_roundtrip_with_txid() {
         let mut inv = sample_invoice();
@@ -884,6 +926,7 @@ mod tests {
         assert_eq!(decoded.txid, Some([0xABu8; 32]));
     }
 
+    // LC-4
     #[test]
     fn invoice_codec_truncated_rejected() {
         let inv = sample_invoice();
@@ -895,6 +938,7 @@ mod tests {
         assert!(matches!(Invoice::decode(&enc), Err(InvoiceError::Truncated)));
     }
 
+    // LC-5
     #[test]
     fn invoice_codec_wrong_magic_rejected() {
         let inv = sample_invoice();
@@ -910,6 +954,7 @@ mod tests {
         (dir, store)
     }
 
+    // LC-6
     #[test]
     fn invoice_store_create_load_roundtrip() {
         let (_d, store) = temp_store();
@@ -922,6 +967,7 @@ mod tests {
         assert_eq!(loaded.state,        InvoiceState::Created);
     }
 
+    // LC-7
     #[test]
     fn invoice_store_apply_hints_transitions_to_payment_sent() {
         let (_d, store) = temp_store();
@@ -934,6 +980,7 @@ mod tests {
         assert_eq!(inv.txid,         Some([0xFFu8; 32]));
     }
 
+    // LC-8
     #[test]
     fn invoice_store_mark_confirmed() {
         let (_d, store) = temp_store();
@@ -944,6 +991,7 @@ mod tests {
         assert_eq!(inv.mmr_proof_bytes, Some(vec![1, 2, 3]));
     }
 
+    // LC-9
     #[test]
     fn invoice_store_prune_expired() {
         let (_d, store) = temp_store();
@@ -954,6 +1002,7 @@ mod tests {
         assert_eq!(store.load(&id).unwrap().state, InvoiceState::Expired);
     }
 
+    // LC-10
     #[test]
     fn invoice_store_list_filter_by_state() {
         let (_d, store) = temp_store();
