@@ -2,11 +2,14 @@
 # Fail if the public repo violates the packaging boundary.
 #
 # Usage:
-#   ./scripts/check_public_boundary.sh           # paths+cargo hard; sources warn
-#   ./scripts/check_public_boundary.sh --strict  # sources warnings become failures
+#   ./scripts/check_public_boundary.sh           # public denylist hard-fail
+#   ./scripts/check_public_boundary.sh --strict  # also hard-fail local extra denylist sources
 #
 # Reads scripts/public_denylist.txt. If present, also merges gitignored
 # scripts/local/extra_denylist.txt (maintainer-only patterns).
+#
+# Public denylist [sources] always hard-fail (sensitive module leak).
+# Local extra denylist [sources] warn unless --strict.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,6 +20,8 @@ STRICT=0
 if [[ "${1:-}" == "--strict" ]]; then
   STRICT=1
 fi
+# Which denylist file is being scanned (public → hard source fails).
+CURRENT_DENY_KIND=public
 
 if [[ ! -f "$DENY_PUBLIC" ]]; then
   echo "error: missing $DENY_PUBLIC" >&2
@@ -71,6 +76,12 @@ scan_denylist_file() {
   local file="$1"
   local section=""
   local line pattern matches
+  local source_hard=0
+  if [[ "$CURRENT_DENY_KIND" == "public" ]]; then
+    source_hard=1
+  elif (( STRICT )); then
+    source_hard=1
+  fi
 
   while IFS= read -r line || [[ -n "${line:-}" ]]; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
@@ -100,8 +111,8 @@ scan_denylist_file() {
         ;;
       sources)
         if grep -R --include='*.rs' --fixed-strings -n -- "$pattern" "$CRATES" 2>/dev/null | head -20 | grep -q .; then
-          if (( STRICT )); then
-            echo "error: denylist source hit (--strict): ${pattern}" >&2
+          if (( source_hard )); then
+            echo "error: denylist source hit: ${pattern}" >&2
             fail=1
           else
             echo "warn: denylist source hit: ${pattern}" >&2
@@ -114,9 +125,11 @@ scan_denylist_file() {
   done < "$file"
 }
 
+CURRENT_DENY_KIND=public
 scan_denylist_file "$DENY_PUBLIC"
 if [[ -f "$DENY_LOCAL" ]]; then
   echo "note: merging maintainer denylist $DENY_LOCAL"
+  CURRENT_DENY_KIND=local
   scan_denylist_file "$DENY_LOCAL"
 fi
 
@@ -141,7 +154,7 @@ if (( fail != 0 )); then
 fi
 
 if (( warn != 0 )); then
-  echo "public boundary check OK (with source warnings — use --strict to fail)"
+  echo "public boundary check OK (with local source warnings — use --strict to fail)"
   exit 0
 fi
 

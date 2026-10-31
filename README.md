@@ -10,11 +10,11 @@ It is **not** the production Filament product line. Use it to verify beacon and 
 chain weight with Merkle Mountain Range (MMR) proofs on testnet — without a full UTXO
 set or every historical header.
 
-GitHub repo name: `mmr-light-client`. Cargo package / binary name: **`filament`**
-(synced from upstream; CLI unchanged).
+GitHub repo name: `filament-testnet` (legacy local clone folder may still be
+`mmr-light-client`). Cargo package / binary name: **`filament`**.
 
-> Protocol source of truth remains a private monorepo; re-sync with
-> [`scripts/sync_from_shisha.sh`](scripts/sync_from_shisha.sh). Pin in [`VERSION`](VERSION).
+Pin / provenance: [`VERSION`](VERSION). Public packaging is the three crates under
+`crates/` only (`filament`, `filament-types`, `filament-p2p`).
 
 ---
 
@@ -312,31 +312,19 @@ the April README). Obsolete classic-MMR **source** is not published in this bran
 
 ---
 
-## Sync from private monorepo
+## Public packaging boundary
 
-Public packaging is **allowlist-only** (`filament` + clean-room
-`filament-types` / `filament-p2p`). Do **not** use the legacy
-`sync_from_shisha.sh` (disabled — it would reintroduce stripped crates).
+This repo must stay thin: only `filament`, `filament-types`, and `filament-p2p`.
+Private full-node engines (including `WindowedWeightedMMR` / `weighted_mmr_core`
+layout) must never appear under `crates/`.
 
 ```bash
-# Boundary check (enforces public packaging constraints)
+# Hard-fail on denylist hits (also runs in GitHub Actions on main)
 ./scripts/check_public_boundary.sh --strict
-
-# Dry-run / status vs a local upstream checkout (copies nothing)
-./scripts/sync_filament_public.sh --dry-run /path/to/private-monorepo
-
-# Lane A only: copy crates/filament, remap deps, restore clean-room overlays,
-# boundary-check, write VERSION. Does not port filament-types / filament-p2p.
-./scripts/sync_filament_public.sh --apply /path/to/private-monorepo
-
-cat VERSION   # SYNCED_FROM_SHISHA=<git-sha>
 ```
 
-Published policy (no private path inventory):
-`scripts/public_allowlist.txt`, `scripts/public_denylist.txt`,
-`scripts/lane_a_keep_public.txt`.
-
-Maintainer-only upstream maps (gitignored): see `scripts/local/README.md`.
+Policy files: `scripts/public_allowlist.txt`, `scripts/public_denylist.txt`.
+Maintainer-only maps (gitignored): `scripts/local/README.md`.
 
 ---
 

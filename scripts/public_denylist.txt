@@ -1,22 +1,42 @@
 # Public packaging denylist (safe to publish).
 # Used by check_public_boundary.sh.
 #
-# Intentionally does NOT inventory private crates, engines or layouts.
-# Maintainer-only extra patterns live in the gitignored scripts/local/
-# extra_denylist.txt, which this check merges when present.
+# Maintainer-only extra patterns may still live in gitignored
+# scripts/local/extra_denylist.txt (merged when present).
 #
 # Sections:
 #   [paths]   — forbidden path substrings under crates/ (hard fail)
 #   [cargo]   — forbidden substrings in **/Cargo.toml (hard fail)
-#   [sources] — forbidden substrings in **/*.rs (warn; --strict fails)
+#   [sources] — forbidden substrings in **/*.rs (hard fail in public denylist)
 
 [paths]
 # Historical packaging that must not reappear in this public tree.
 crates/common-types
 crates/p2p-proto
+# Full-node / private MMR engines — never publish.
+windowed_weighted_mmr.rs
+weighted_mmr_core.rs
+# Other private-layout basenames that must not land via bulk-port.
+notification_ring.rs
+epoch_history_fast_start.rs
+kameniar_common
 
 [cargo]
 path = "../common-types"
 path = "../p2p-proto"
 package = "common-types"
 package = "p2p-proto"
+rustmmrdb
+path = "../../rustmmrdb"
+path = "../rustmmrdb"
+dep:rustmmrdb
+
+[sources]
+# Module paths / types that belong to private full-node packaging only.
+common::windowed_weighted_mmr
+windowed_weighted_mmr::
+WindowedWeightedMMR
+weighted_mmr_core.rs
+common::epoch_history_fast_start
+kameniar_common
+rustmmrdb::
