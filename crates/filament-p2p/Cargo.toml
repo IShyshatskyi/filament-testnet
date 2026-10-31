@@ -6,6 +6,7 @@ description = "Minimal ShishaNet P2P client for the Filament light client (clean
 license     = "MIT"
 
 [dependencies]
+common_types = { package = "filament-types", path = "../filament-types" }
 tokio  = { version = "1", features = ["net", "io-util", "rt", "sync", "time", "macros"] }
 blake3 = "1.6.1"
 log    = "0.4"

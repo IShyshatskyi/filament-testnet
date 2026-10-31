@@ -5,36 +5,12 @@
 # ── Lane A ────────────────────────────────────────────────────────────────────
 crates/filament/
 
-# ── Lane B (public filament-types files only) ─────────────────────────────────
-crates/filament-types/Cargo.toml
-crates/filament-types/src/lib.rs
-crates/filament-types/src/genesis.rs
-crates/filament-types/src/hash.rs
-crates/filament-types/src/hash_sorting.rs
-crates/filament-types/src/relay_hash.rs
-crates/filament-types/src/transaction_impl.rs
-crates/filament-types/src/tx_sighash.rs
-crates/filament-types/src/txid.rs
-crates/filament-types/src/expand_voting.rs
-crates/filament-types/src/types.rs
-crates/filament-types/src/verification.rs
-crates/filament-types/src/weighted_hash.rs
-crates/filament-types/src/proofs/mod.rs
-crates/filament-types/src/proofs/mmr_peaks.rs
-crates/filament-types/src/proofs/types.rs
-crates/filament-types/src/proofs/fork_proof.rs
-crates/filament-types/src/proofs/weighted_fork_proof.rs
-crates/filament-types/src/proofs/weighted_mmr_batch_proof.rs
-crates/filament-types/src/proofs/weighted_mmr_range_proof.rs
+# ── Lane B (filament-types grown from private filament_common) ─────
+crates/filament-types/
+
 
 # ── Lane C ────────────────────────────────────────────────────────────────────
-crates/filament-p2p/Cargo.toml
-crates/filament-p2p/src/lib.rs
-crates/filament-p2p/src/framing.rs
-crates/filament-p2p/src/messages.rs
-crates/filament-p2p/src/peer_manager.rs
-crates/filament-p2p/tests/loopback.rs
-crates/filament-p2p/examples/handshake_probe.rs
+crates/filament-p2p/
 scripts/p2p_handshake_probe.sh
 
 # ── Public meta ───────────────────────────────────────────────────────────────

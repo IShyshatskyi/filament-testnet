@@ -8,6 +8,7 @@
 pub mod framing;
 pub mod messages;
 pub mod peer_manager;
+pub mod pow_validator;
 
 pub use framing::{magic_bytes_for_network, magic_for_network};
 pub use messages::{
@@ -27,6 +28,9 @@ pub mod p2p {
         }
         pub mod traits {
             pub use crate::peer_manager::{Capabilities, LightClientInboundNotif, NODE_LIGHT, NODE_NETWORK};
+        }
+        pub mod pow_validator {
+            pub use crate::pow_validator::*;
         }
     }
     pub mod shishanet {

@@ -1,10 +1,12 @@
 // src/wallet/transaction_builder.rs
 //
-// Trimmed: this file used to also hold
+// Trimmed 2026-07-04 (RF-20 follow-up): this file used to also hold
 // `TransactionBuilder`/`TransactionSigner`/`TransactionHelper`, built on top
-// of an earlier wallet subsystem that predated the flat-vector transaction
-// format. Those types had no callers outside their own tests and were
-// removed along with that subsystem.
+// of the dead `MultiShardWallet`/`WalletManager`/`AddressConfig` subsystem
+// (see docs/reports/RF-19_RF-20_Completion_Report.md §3 for the full history
+// — that subsystem predates the FV-3 flat-vector migration and was never
+// updated to match it). Those three types had zero callers outside their own
+// tests and were deleted along with the rest of that subsystem.
 // `SchnorrSigner` is the one real, load-bearing piece of this file — it's
 // used directly by `mmr_client::filament_wallet`, which builds its own
 // transactions against the current flat-vector `Transaction`/`WitnessEntry`
@@ -101,7 +103,7 @@ mod tests {
 
     fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         Transaction {
-            version: 2,
+            version: 1,
             inputs: (0..n_inputs)
                 .map(|i| TxInput { prev_height: 1, prev_output_idx: i as u16 })
                 .collect(),
@@ -145,25 +147,39 @@ mod tests {
         assert_ne!(h0, h1, "chain_id must provide cross-shard replay protection");
     }
 
-    /// VF-3 Phase 2: each v2 witness verifies against sighash v2 for its own
-    /// input, and a wrong prevout count is refused.
+    /// A signature from this signer passes the node's own CV-70 admission
+    /// (sighash v2), and one signed over wrong spent values is refused.
     #[test]
-    fn sign_transaction_v2_verifies_per_input() {
-        use bitcoin::secp256k1::{schnorr::Signature, XOnlyPublicKey};
-        let secp = TestSecp256k1::new();
-        let key = SecretKey::new(&mut TestOsRng);
-        let pk: XOnlyPublicKey = Keypair::from_secret_key(&secp, &key).x_only_public_key().0;
-        let mut tx = make_tx(2, 1);
+    fn v2_signature_verifies_on_node_validator() {
+        use common_types::common::utxo::ForkUtxoOverlay;
+        use common_types::common::validation::transactions::{
+            validate_transaction_for_mempool, MempoolAdmissionParams,
+        };
+        use common_types::common::validation::BlockValidationUtxo;
+        use common_types::transaction::{shard_chain_id, FlatOutput};
+
+        let secp = Secp256k1::new();
+        let key = SecretKey::from_slice(&[0x44u8; 32]).unwrap();
+        let recipient = Keypair::from_secret_key(&secp, &key).x_only_public_key().0.serialize();
+        let mut utxo = ForkUtxoOverlay::new();
+        utxo.add(0, 0, FlatOutput { value: 10_000, recipient });
+
+        let mut tx = make_tx(1, 1);
         tx.version = 1;
-        let prevouts = [(1000u64, pk.serialize()), (500u64, pk.serialize())];
-        let w = SchnorrSigner::sign_transaction(&tx, &[key, key], 1, &prevouts).unwrap();
-        let txid = tx.txid(1).0;
-        let prev = common_types::common::crypto::prevouts_hash(&prevouts);
-        for (i, wit) in w.iter().enumerate() {
-            let msg = Message::from_digest(common_types::common::crypto::sighash_v2(&txid, &prev, i as u32));
-            let sig = Signature::from_slice(&wit.witness_data[1..]).unwrap();
-            secp.verify_schnorr(&sig, &msg, &pk).expect("v2 witness verifies");
-        }
-        assert!(SchnorrSigner::sign_transaction(&tx, &[key, key], 1, &prevouts[..1]).is_err());
+        tx.inputs[0] = TxInput { prev_height: 0, prev_output_idx: 0 };
+        tx.outputs[0] = TxOutput { value: 9_000, recipient };
+        let chain_id = shard_chain_id(0);
+        tx.witnesses = SchnorrSigner::sign_transaction(&tx, &[key], chain_id, &[(10_000, recipient)]).unwrap();
+
+        let params = MempoolAdmissionParams::production(1, 0, 1024, chain_id);
+        validate_transaction_for_mempool(&tx, BlockValidationUtxo::ReorgBuffer(&utxo), params)
+            .expect("signature must verify on the node");
+        // A signature made for different spent values must not verify (prevouts are committed).
+        let mut bad = tx.clone();
+        bad.witnesses = SchnorrSigner::sign_transaction(&bad, &[key], chain_id, &[(9_999, recipient)]).unwrap();
+        assert!(validate_transaction_for_mempool(&bad, BlockValidationUtxo::ReorgBuffer(&utxo), params).is_err());
+
+        let err = SchnorrSigner::sign_transaction(&tx, &[key], chain_id, &[]).unwrap_err();
+        assert!(err.contains("prevout count"));
     }
 }

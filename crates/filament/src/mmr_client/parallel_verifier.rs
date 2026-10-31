@@ -11,7 +11,7 @@
 //
 // # Design mirrors S5 (parallel PoW validation in P2P)
 //
-// The full node's parallel PoW validator established the pattern:
+// The S5 module (`src/p2p/common/pow_validator.rs`) established the pattern:
 //   - A single `OnceLock<rayon::ThreadPool>` shared across all callers.
 //   - An adaptive threshold: below it, fall back to sequential verification
 //     on the caller's thread to avoid rayon scheduling overhead.
@@ -198,25 +198,25 @@ pub fn verify_range_proofs_parallel(
 mod tests {
     use super::*;
     use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
-    use common_types::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
-    use common_types::common::crypto::weighted_hash::{
-        bag_peaks_weighted, hash_pair_weighted, WeightedHash,
-    };
+    use common_types::common::proofs::WeightedMMRBatchProof;
+    use common_types::common::crypto::weighted_hash::{WeightedHash, bag_peaks_weighted, BLOCK_HASH_W_BITS};
+    use common_types::common::weighted_mmr_core::WeightedMMR;
 
-    // Build a single-leaf valid WeightedMMRBatchProof with the public
-    // hash helpers only (this crate does not construct MMRs).
+    // Build a single-leaf valid WeightedMMRBatchProof.
     //
     // A 1-leaf MMR has one peak (the leaf itself), no sibling path, and a
-    // root equal to bag_peaks_weighted([leaf], anchor).
+    // root equal to bag_peaks_weighted([leaf], anchor).  Verification passes
+    // when leaf_idx=0, siblings=[], peaks=[leaf_wh], root=bagged.
     fn make_valid_batch_proof(
         block_seed: u8,
         config: &BeaconGenesisConfig,
     ) -> (WeightedMMRBatchProof, [u8; 32]) {
         let anchor = config.bitcoin_anchor_hash;
-        let anchor_wh = WeightedHash::from_anchor(&anchor);
-        let leaf_wh = WeightedHash::from_leaf_rbits(&[block_seed; 32], 0x0300_0001);
-        let peaks = vec![leaf_wh];
-        let root = bag_peaks_weighted(&peaks, anchor_wh);
+        let mut mmr = WeightedMMR::new_with_config(config);
+        let block_hash = [block_seed; 32];
+        let (root, _) = mmr.append(WeightedHash::from_leaf_rbits(&block_hash, 0x0300_0001));
+        let leaf_wh = mmr.get_leaf(0).expect("leaf 0 must exist after one append");
+        let peaks = mmr.get_peaks();
 
         let proof = WeightedMMRBatchProof {
             leaf_indices: vec![0],
@@ -427,37 +427,29 @@ mod tests {
 
     // ── PPV-12: WeightedMMRRangeProof sequential path ────────────────────────
     //
-    // Build a 2-leaf range covering [0, 2) with public hash helpers only.
+    // Range proofs require a contiguous run of leaves.  We build a 3-leaf MMR
+    // via WindowedWeightedMMR (available in all test configurations because
+    // tests are compiled with full-node features in the workspace).
+    //
+    // If the feature is unavailable, this test is excluded at compile time.
 
     #[test]
     fn ppv12_range_proof_sequential_path() {
+        use common_types::common::crypto::weighted_hash::WeightedHash;
+        use common_types::common::windowed_weighted_mmr::WindowedWeightedMMR;
+
         let config = BeaconGenesisConfig::devnet();
         let anchor = config.bitcoin_anchor_hash;
-        let anchor_wh = WeightedHash::from_anchor(&anchor);
 
-        let l0 = WeightedHash::from_leaf_rbits(&[1u8; 32], 0x0300_0001);
-        let l1 = WeightedHash::from_leaf_rbits(&[2u8; 32], 0x0300_0001);
-        let parent = hash_pair_weighted(&l0, &l1);
-        let peaks = vec![parent];
-        let root = bag_peaks_weighted(&peaks, anchor_wh);
-        let range_rbits = {
-            use common_types::common::crypto::weighted_hash::rbits_add;
-            rbits_add(l0.rbits(), l1.rbits())
-        };
+        let mut wmmr = WindowedWeightedMMR::new(&config);
+        for seed in 1u8..=3 {
+            wmmr.append(WeightedHash::from_leaf_rbits(&[seed; 32], 0x0300_0001))
+                .expect("append must succeed");
+        }
 
-        let proof = WeightedMMRRangeProof {
-            start: 0,
-            end: 2,
-            leaves: vec![l0, l1],
-            siblings: vec![],
-            siblings_per_peak: vec![0],
-            peaks,
-            leaf_count: 2,
-            root,
-            range_rbits,
-        };
-
-        let results = verify_range_proofs_parallel(&[(&proof, anchor)]);
+        let proof = wmmr.prove_range(1, 3).expect("prove_range(1,3) must succeed on a 3-leaf MMR");
+        let items: Vec<_> = vec![(&proof, anchor)];
+        let results = verify_range_proofs_parallel(&items);
         assert_eq!(results, vec![true], "single range proof must pass");
     }
 }

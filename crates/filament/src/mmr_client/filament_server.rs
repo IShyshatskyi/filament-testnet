@@ -1,6 +1,6 @@
 // src/mmr_client/filament_server.rs — Filament HTTP API server (port 7380)
 //
-// HTTP API endpoints for the Filament light client.
+// All 14+ endpoints described in docs/plan/Filament_App_Plan.md.
 // Only compiled when the `full-node` feature is active (axum, tower-http).
 
 #![cfg(feature = "full-node")]
@@ -40,11 +40,12 @@ pub struct FilamentNodeConfig {
     pub port: u16,
     pub node_endpoint: Option<String>,
     pub keystone_endpoint: Option<String>,
-    /// Additional Keystone REST endpoints to fan wallet-ops queries
+    /// MNT-1: additional Keystone REST endpoints to fan wallet-ops queries
     /// out to, alongside `keystone_endpoint`/`node_endpoint` (kept for
     /// backward compatibility with existing config files — see
     /// `all_keystone_endpoints()` for the merged, de-duplicated list
-    /// actually used by the wallet).
+    /// actually used by the wallet). See
+    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` Track B.
     #[serde(default)]
     pub keystone_rest_endpoints: Vec<String>,
     pub data_dir: String,
@@ -57,16 +58,17 @@ pub struct FilamentNodeConfig {
     /// DNS seed hostnames for Layer 3 peer discovery.
     #[serde(default = "default_dns_seeds")]
     pub dns_seeds: Vec<String>,
-    /// Live sync loop (wired to real peers): port each configured
+    /// Live sync loop (MNT-2/3/4 wired to real peers): port each configured
     /// Keystone's light-client `GET /chain/summary` API listens on —
     /// same host as each `keystone_rest_endpoints`/`keystone_endpoint` entry,
     /// different port (Keystone's `mmr_light_client.port`, default 8080 on
     /// the Keystone side; matches `default_light_client_summary_port` here).
-    /// See `light_client_summary_url`.
+    /// See `light_client_summary_url` and
+    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
     #[serde(default = "default_light_client_summary_port")]
     pub light_client_summary_port: u16,
     /// Keystone wallet REST port used when converting discovery `(host, port)`
-    /// tuples into `http://host:port` endpoint URLs. Discovery
+    /// tuples into `http://host:port` endpoint URLs (PD-INT-1). Discovery
     /// seeds advertise ShishaNet P2P ports; wallet ops use this port instead.
     #[serde(default = "default_keystone_rest_port")]
     pub keystone_rest_port: u16,
@@ -74,6 +76,8 @@ pub struct FilamentNodeConfig {
     /// `all_keystone_endpoints()` (same host, this port). Default matches
     /// Keystone's common ShishaNet listen (`18334`). Override when the node
     /// uses a non-default P2P port (e.g. local smoke / testnet-stress).
+    /// `0` skips those REST-host dials; pass `--manual-peer host:port` for
+    /// a ShishaNet listen that is not the HTTP host (SC-4 fleet).
     #[serde(default = "default_keystone_p2p_port")]
     pub keystone_p2p_port: u16,
     /// When true (default), start a ShishaNet PeerManager, dial
@@ -96,7 +100,30 @@ pub struct FilamentNodeConfig {
     /// the proofs were built against.
     #[serde(default)]
     pub bitcoin_anchor_hex: Option<String>,
-    /// Optional path to a file holding this wallet's 32-byte
+    /// Optional path to a `NetworkGenesisConfig` TOML. When set, the beacon
+    /// genesis Filament trusts is built from this file instead of the compiled-in
+    /// preset for `network` — required for soak/devnet chains whose genesis
+    /// time was patched at launch (the Keystones' own genesis file).
+    #[serde(default)]
+    pub genesis_file: Option<String>,
+    /// Insecure development mode: accept a single Keystone's word for the
+    /// shard tip used to confirm invoices. Off by default — confirmation then
+    /// needs two distinct Keystones to agree on the tip.
+    #[serde(default)]
+    pub allow_single_keystone: bool,
+    /// Thin beacon sync (`docs/plan/Filament_Thin_Sync_Design.md`): follow the
+    /// beacon chain with a tip poll, one 16-header session summary and
+    /// incremental headers instead of the 30 s full `GET /chain/summary`.
+    /// Default off until it has run on a fleet.
+    #[serde(default)]
+    pub thin_sync: bool,
+    /// Shards to follow with thin sync (needs `thin_sync`), in addition to the
+    /// shards of invoices that are still open. Only shards listed in the
+    /// network's genesis are supported; dynamically activated ones are reported
+    /// as `unsupported`.
+    #[serde(default)]
+    pub thin_shards: Vec<u16>,
+    /// TS-PORTAL-2f: optional path to a file holding this wallet's 32-byte
     /// spending secret key, hex-encoded (same shape as `faucet-server`'s
     /// `secret_key_file`). When set, the wallet address is derived from this
     /// key and `POST /wallet/sign-message` can sign a Testnet Portal auth
@@ -104,6 +131,11 @@ pub struct FilamentNodeConfig {
     /// (raw hex) takes precedence over the file.
     #[serde(default)]
     pub signing_key_file: Option<String>,
+    /// Eratosthenes indexer REST endpoints (e.g. `http://127.0.0.1:8380`). Used to find the
+    /// funding outputs of escrows (`/explorer/utxos?address=<P>`). Indexer-reported; the
+    /// outputs are spent with consensus checks by Keystone either way.
+    #[serde(default)]
+    pub indexer_endpoints: Vec<String>,
 }
 
 fn default_dns_seeds() -> Vec<String> {
@@ -111,6 +143,67 @@ fn default_dns_seeds() -> Vec<String> {
 }
 
 fn default_light_client_summary_port() -> u16 { 8080 }
+
+#[cfg(test)]
+mod quorum_tip_tests {
+    use super::quorum_tip;
+    #[test]
+    fn one_liar_cannot_raise_the_tip() {
+        assert_eq!(quorum_tip(&[100, 50], 2), Some(50));
+        assert_eq!(quorum_tip(&[1_000_000, 50, 52], 2), Some(52));
+    }
+    #[test]
+    fn too_few_reports_gives_none() {
+        assert_eq!(quorum_tip(&[100], 2), None);
+        assert_eq!(quorum_tip(&[], 1), None);
+    }
+    #[test]
+    fn single_keystone_mode_takes_the_highest() {
+        assert_eq!(quorum_tip(&[70], 1), Some(70));
+        assert_eq!(quorum_tip(&[70, 10], 1), Some(70));
+    }
+}
+
+#[cfg(test)]
+mod beacon_genesis_init_tests {
+    use super::*;
+    use crate::mmr_client::multi_chain_client::MultiChainClient;
+    use crate::mmr_client::storage::InMemoryStorage;
+
+    #[test]
+    fn known_networks_have_a_trusted_genesis_and_unknown_fails() {
+        for n in ["mainnet", "testnet1", "testnet2", "devnet", "testnet-stress"] {
+            let g = beacon_genesis_block_data(n, None).unwrap_or_else(|e| panic!("{n}: {e}"));
+            assert_eq!(g.height(), 0, "{n}");
+        }
+        assert!(beacon_genesis_block_data("nope", None).is_err());
+        assert!(beacon_genesis_block_data("testnet-stress", Some("/no/such/file.toml")).is_err());
+    }
+
+    #[tokio::test]
+    async fn init_creates_the_beacon_handler_once() {
+        let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
+        assert!(!client.has_beacon_chain());
+        let cfg = FilamentNodeConfig { network: "testnet-stress".into(), ..FilamentNodeConfig::default() };
+        init_beacon_for_config(&mut client, &cfg).await.unwrap();
+        assert!(client.has_beacon_chain());
+        init_beacon_for_config(&mut client, &cfg).await.unwrap(); // idempotent
+        let bad = FilamentNodeConfig { network: "nope".into(), ..FilamentNodeConfig::default() };
+        let mut c2 = MultiChainClient::new(Box::new(InMemoryStorage::new()));
+        assert!(init_beacon_for_config(&mut c2, &bad).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod summary_url_port_zero_tests {
+    use super::light_client_summary_url;
+    #[test]
+    fn port_zero_keeps_endpoint_port_and_nonzero_swaps() {
+        assert_eq!(light_client_summary_url("http://127.0.0.1:18082", 0).as_deref(), Some("http://127.0.0.1:18082"));
+        assert_eq!(light_client_summary_url("http://127.0.0.1:18082", 8080).as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(light_client_summary_url("http://host", 0), None);
+    }
+}
 
 fn default_keystone_rest_port() -> u16 { 7379 }
 
@@ -140,12 +233,87 @@ impl Default for FilamentNodeConfig {
             p2p_listen: default_p2p_listen(),
             confirmation_depth: default_confirmation_depth(),
             bitcoin_anchor_hex: None,
+            genesis_file: None,
+            allow_single_keystone: false,
+            thin_sync: false,
+            thin_shards: Vec::new(),
             signing_key_file: None,
+            indexer_endpoints: Vec::new(),
         }
     }
 }
 
+/// Beacon genesis block Filament trusts as its verification anchor, derived
+/// from a genesis config it already knows (the file, else the compiled-in
+/// preset for `network`) — never from a Keystone's answer.
+pub fn beacon_genesis_block_data(
+    network: &str,
+    genesis_file: Option<&str>,
+) -> Result<common_types::common::proofs::BlockData, String> {
+    use common_types::common::genesis::GenesisGenerator;
+    let beacon = beacon_genesis_config(network, genesis_file)?;
+    let block = GenesisGenerator::generate_beacon_genesis(&beacon)?;
+    Ok(common_types::common::proofs::BlockData::from(&block))
+}
+
+/// The beacon genesis config Filament trusts (file, else the preset for `network`).
+fn beacon_genesis_config(
+    network: &str,
+    genesis_file: Option<&str>,
+) -> Result<common_types::common::genesis::genesis_config::BeaconGenesisConfig, String> {
+    use common_types::common::genesis::genesis_config::{BeaconGenesisConfig, NetworkGenesisConfig};
+    Ok(if let Some(path) = genesis_file {
+        NetworkGenesisConfig::from_file(std::path::Path::new(path))?.beacon
+    } else {
+        match network {
+            "mainnet" => BeaconGenesisConfig::mainnet(),
+            "testnet1" => BeaconGenesisConfig::testnet1(),
+            "testnet2" => BeaconGenesisConfig::testnet2(),
+            "devnet" => BeaconGenesisConfig::devnet(),
+            "testnet-stress" => BeaconGenesisConfig::testnet_stress(),
+            other => {
+                return Err(format!(
+                    "unknown network '{other}': no trusted beacon genesis (pass --genesis-file)"
+                ))
+            }
+        }
+    })
+}
+
+/// What the thin beacon sync checks headers against, from the same trusted
+/// genesis source as [`beacon_genesis_block_data`] (never from a Keystone).
+pub fn thin_sync_params(
+    network: &str,
+    genesis_file: Option<&str>,
+) -> Result<crate::mmr_client::thin_sync::ThinSyncParams, String> {
+    let g = beacon_genesis_config(network, genesis_file)?;
+    Ok(crate::mmr_client::thin_sync::ThinSyncParams {
+        bitcoin_anchor_hash: g.bitcoin_anchor_hash,
+        initial_target: g.max_target,
+        genesis_asserted_s_bits: g.asserted_s_bits,
+    })
+}
+
+/// Create the beacon chain handler from the trusted genesis (idempotent).
+/// Without it no peer chain summary can be verified, so startup must fail
+/// loudly rather than sit at "bootstrapping" forever.
+pub async fn init_beacon_for_config(
+    client: &mut MultiChainClient,
+    config: &FilamentNodeConfig,
+) -> Result<(), String> {
+    if client.has_beacon_chain() {
+        return Ok(());
+    }
+    let genesis = beacon_genesis_block_data(&config.network, config.genesis_file.as_deref())?;
+    client.init_beacon_chain(genesis).await
+}
+
 impl FilamentNodeConfig {
+    /// Keystones that must agree on a shard tip before it can confirm an invoice.
+    pub fn required_keystones(&self) -> usize {
+        if self.allow_single_keystone { 1 } else { 2 }
+    }
+
     /// Anchor used for Path-2 MMR proof verification: configured hex override,
     /// else zeros (caller should prefer live beacon state when available).
     pub fn configured_bitcoin_anchor(&self) -> Option<[u8; 32]> {
@@ -167,7 +335,7 @@ impl FilamentNodeConfig {
 }
 
 impl FilamentNodeConfig {
-    /// The full, de-duplicated list of Keystone REST endpoints this
+    /// MNT-1: the full, de-duplicated list of Keystone REST endpoints this
     /// wallet should query — `keystone_rest_endpoints` plus the legacy
     /// single-URL `keystone_endpoint`/`node_endpoint` fields, so existing
     /// config files keep working unedited. `keystone_rest_endpoints` comes
@@ -182,7 +350,7 @@ impl FilamentNodeConfig {
         eps
     }
 
-    /// Configured Keystone REST endpoints plus any peers returned
+    /// PD-INT-1: configured Keystone REST endpoints plus any peers returned
     /// by `PeerDiscovery::resolve()` (cache → manual → hardcoded seeds).
     pub fn effective_keystone_endpoints(
         &self,
@@ -226,7 +394,7 @@ impl FilamentNodeConfig {
             .collect()
     }
 
-    /// Light-client summary URLs derived from discovery-aware endpoints.
+    /// PD-INT-1: light-client summary URLs derived from discovery-aware endpoints.
     pub fn effective_light_client_summary_urls(
         &self,
         cache: Option<&crate::peer_cache::PeerCache>,
@@ -237,7 +405,7 @@ impl FilamentNodeConfig {
             .collect()
     }
 
-    /// Record a user-added peer in `manual_peers` (idempotent).
+    /// PD-UI-4: record a user-added peer in `manual_peers` (idempotent).
     pub fn upsert_manual_peer(&mut self, host: impl Into<String>, port: u16) -> bool {
         let host = host.into();
         if self.manual_peers.iter().any(|(h, p)| h == &host && *p == port) {
@@ -247,7 +415,7 @@ impl FilamentNodeConfig {
         true
     }
 
-    /// Drop a user-added peer from `manual_peers`.
+    /// PD-UI-4: drop a user-added peer from `manual_peers`.
     pub fn drop_manual_peer(&mut self, host: &str, port: u16) -> bool {
         let before = self.manual_peers.len();
         self.manual_peers.retain(|(h, p)| !(h == host && *p == port));
@@ -278,10 +446,15 @@ fn light_client_summary_url(endpoint: &str, light_client_summary_port: u16) -> O
     // the *last* `:` regardless of which one that is) — a non-numeric tail
     // means there was no real port to swap out.
     old_port.parse::<u16>().ok()?;
+    // Port 0 = "same port as the REST endpoint": fleets where each Keystone
+    // serves /chain/summary on its own REST port (SC-4 local: 18081/18082).
+    if light_client_summary_port == 0 {
+        return Some(endpoint.to_string());
+    }
     Some(format!("{}:{}", scheme_and_host, light_client_summary_port))
 }
 
-/// Run peer discovery at startup — merge resolved peers into the
+/// PD-INT-1: run peer discovery at startup — merge resolved peers into the
 /// wallet's Keystone REST endpoint list and seed `MultiChainClient` for trust
 /// reconciliation before the first sync tick.
 pub async fn apply_startup_peer_discovery(
@@ -301,7 +474,7 @@ pub async fn apply_startup_peer_discovery(
         }
     };
 
-    // Resolve DNS seeds into the cache before synchronous resolve().
+    // PD-INT-2: resolve DNS seeds into the cache before synchronous resolve().
     let dns_written = crate::dns_seeds::refresh_dns_seeds_into_cache(
         &cache,
         &config.dns_seeds,
@@ -309,7 +482,7 @@ pub async fn apply_startup_peer_discovery(
     )
     .await;
     if dns_written > 0 {
-        info!("cached {dns_written} DNS seed peer(s) at startup");
+        info!("PD-INT-2: cached {dns_written} DNS seed peer(s) at startup");
     }
 
     let peers = resolve_discovery_peers(
@@ -357,7 +530,7 @@ pub async fn apply_startup_peer_discovery(
         }
     }
     if added > 0 {
-        info!("registered {added} discovery peer(s) from startup resolve");
+        info!("PD-INT-1: registered {added} discovery peer(s) from startup resolve");
     }
 }
 
@@ -532,7 +705,7 @@ impl SyncStats {
             ChainSyncStatus::Error { .. } => {
                 self.phase = "error".into();
             }
-            // Chain state may be current, but not enough independent
+            // MNT-6: chain state may be current, but not enough independent
             // peers are connected to trust it — surfaced distinctly rather
             // than folded into "synced".
             ChainSyncStatus::InsufficientPeers { .. } => {
@@ -563,7 +736,7 @@ async fn save_config_to_disk(cfg: &FilamentNodeConfig) {
     }
 }
 
-/// Atomically persist `FilamentNodeConfig` to `<data_dir>/config.toml`.
+/// PD-UI-4: atomically persist `FilamentNodeConfig` to `<data_dir>/config.toml`.
 pub async fn save_filament_config(cfg: &FilamentNodeConfig) {
     save_config_to_disk(cfg).await;
 }
@@ -704,7 +877,7 @@ pub async fn wire_f2f_inbox_subscription(
     })).await;
 }
 
-// ── Watch notifications ─────────────────────────────
+// ── FUD-5: Watch notifications (LC-45..LC-47c) ─────────────────────────────
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -821,12 +994,161 @@ pub async fn restore_invoice_watch_registrations(
     }
 }
 
+/// Highest tip that at least `required` of the reported tips reach (the
+/// `required`-th largest value). `None` when fewer than `required` reports.
+pub(crate) fn quorum_tip(reports: &[u32], required: usize) -> Option<u32> {
+    let required = required.max(1);
+    if reports.len() < required {
+        return None;
+    }
+    let mut sorted = reports.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    Some(sorted[required - 1])
+}
+
+/// Design §6 for a shard thin sync follows. `Confirmed` needs both:
+/// 1. Filament's own verified tip (`status == synced`, i.e. a fresh Keystone quorum on a state it
+///    checked block by block) at least `height + depth`; a Keystone's reported number counts for nothing;
+/// 2. the paying block bound to that verified chain ([`bind_payment`], which includes the payment itself).
+///
+/// While the state is not `synced`, nothing advances.
+/// Shards thin sync cannot follow (dynamically activated: no verified chain to bind to) get a
+/// lower-assurance rule: depth from the Keystone tip *quorum*, and the paying output proved inside a
+/// block record that at least `required` Keystones agree on. The invoice is labelled
+/// `keystone_quorum`; see the design doc, "Dynamic shards".
+async fn confirm_from_keystone_quorum(
+    store: &crate::mmr_client::invoice::InvoiceStore,
+    keystone_endpoints: &[String],
+    sse_tx: Option<&broadcast::Sender<String>>,
+    shard_id: u16,
+    min_depth: u32,
+    required: usize,
+) {
+    use crate::mmr_client::invoice::InvoiceState;
+    use crate::mmr_client::thin_shard::{quorum_payment, Binding};
+
+    let http = reqwest::Client::new();
+    let mut reports: Vec<u32> = Vec::new();
+    for ep in keystone_endpoints {
+        let url = format!("{ep}/shard/{shard_id}/tip");
+        let Ok(resp) = http.get(&url).send().await else { continue };
+        let Ok(body) = resp.json::<serde_json::Value>().await else { continue };
+        if let Some(h) = body.get("height").and_then(|v| v.as_u64()) {
+            reports.push(h as u32);
+        }
+    }
+    let Some(tip) = quorum_tip(&reports, required) else { return };
+    let mut allowed: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+    for inv in store.list(None).unwrap_or_default() {
+        if inv.shard_id != shard_id || !matches!(inv.state, InvoiceState::Pending(_)) {
+            continue;
+        }
+        let (Some(h), Some(idx)) = (inv.height_hint, inv.idx_hint) else { continue };
+        if tip.saturating_sub(h) < min_depth {
+            continue;
+        }
+        match quorum_payment(&http, keystone_endpoints, shard_id, h, idx, &inv.recipient, inv.amount_atoms, required).await {
+            Binding::Bound => {
+                allowed.insert(inv.invoice_id);
+            }
+            Binding::Unbound(why) => log::warn!("FUD-5: shard {shard_id}: invoice at height {h} not confirmed: {why}"),
+        }
+    }
+    if let Ok(confirmed) = store.advance_pending_confirmations_gated(shard_id, tip, min_depth, Some(&allowed)) {
+        for id in confirmed {
+            let _ = store.set_assurance(&id, crate::mmr_client::invoice::ASSURANCE_KEYSTONE_QUORUM);
+            log::info!("FUD-5: invoice confirmed on shard {shard_id} at quorum tip {tip} (lower assurance: no verified chain)");
+            if let Some(tx) = sse_tx {
+                let _ = tx.send(json!({
+                    "type": "tx_inclusion",
+                    "state": "confirmed",
+                    "shard_id": shard_id,
+                    "invoice_id": crate::mmr_client::invoice::base64url_encode16(&id),
+                    "tip_height": tip,
+                    "assurance": crate::mmr_client::invoice::ASSURANCE_KEYSTONE_QUORUM,
+                }).to_string());
+            }
+        }
+    }
+}
+
+async fn confirm_from_thin_state(
+    client: &Arc<RwLock<MultiChainClient>>,
+    store: &crate::mmr_client::invoice::InvoiceStore,
+    keystone_endpoints: &[String],
+    sse_tx: Option<&broadcast::Sender<String>>,
+    shard_id: u16,
+    min_depth: u32,
+) {
+    use crate::mmr_client::invoice::InvoiceState;
+    use crate::mmr_client::thin_chain::ThinState;
+    use crate::mmr_client::thin_shard::{bind_payment, Binding};
+
+    let Some(entry) = client.read().await.thin_shard(shard_id) else { return };
+    if entry.slot.status(Instant::now()) != "synced" {
+        log::debug!("FUD-5: shard {shard_id}: thin state not synced — not advancing invoices");
+        return;
+    }
+    let Some(st) = entry.slot.state() else { return };
+    let tip = st.height().unwrap_or(0);
+
+    let http = reqwest::Client::new();
+    let mut allowed: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+    for inv in store.list(None).unwrap_or_default() {
+        if inv.shard_id != shard_id || !matches!(inv.state, InvoiceState::Pending(_)) {
+            continue;
+        }
+        let Some(h) = inv.height_hint else { continue };
+        if tip.saturating_sub(h) < min_depth {
+            continue;
+        }
+        let Some(idx) = inv.idx_hint else { continue };
+        match bind_payment(
+            &http,
+            keystone_endpoints,
+            st,
+            shard_id,
+            h,
+            idx,
+            &inv.recipient,
+            inv.amount_atoms,
+            inv.mmr_proof_bytes.as_deref().unwrap_or(&[]),
+        )
+        .await
+        {
+            Binding::Bound => {
+                allowed.insert(inv.invoice_id);
+            }
+            Binding::Unbound(why) => {
+                log::warn!("FUD-5: shard {shard_id}: invoice at height {h} not confirmed: {why}");
+            }
+        }
+    }
+    if let Ok(confirmed) = store.advance_pending_confirmations_gated(shard_id, tip, min_depth, Some(&allowed)) {
+        for id in confirmed {
+            let _ = store.set_assurance(&id, crate::mmr_client::invoice::ASSURANCE_VERIFIED_CHAIN);
+            log::info!("FUD-5: invoice confirmed on shard {shard_id} at verified tip {tip}");
+            if let Some(tx) = sse_tx {
+                let _ = tx.send(json!({
+                    "type": "tx_inclusion",
+                    "state": "confirmed",
+                    "shard_id": shard_id,
+                    "invoice_id": crate::mmr_client::invoice::base64url_encode16(&id),
+                    "tip_height": tip,
+                }).to_string());
+            }
+        }
+    }
+}
+
 async fn advance_watch_invoice_confirmations(
     client: &Arc<RwLock<MultiChainClient>>,
     data_dir: &std::path::Path,
     keystone_endpoints: &[String],
     sse_tx: Option<&broadcast::Sender<String>>,
     confirmation_depth: u32,
+    required_keystones: usize,
+    thin_sync: bool,
 ) {
     let Ok(store) = crate::mmr_client::invoice::InvoiceStore::open(data_dir) else {
         return;
@@ -851,6 +1173,28 @@ async fn advance_watch_invoice_confirmations(
         let c = client.read().await;
         shard_ids = c.shard_ids().into_iter().map(|id| id as u16).collect();
     }
+    // Design §6: a shard that thin sync follows (every shard but a known-unsupported one, also
+    // before its first round) is confirmed only from Filament's own verified state (below). The
+    // Keystone-reported tip quorum is for the other shards.
+    let mut thin_followed: Vec<u16> = Vec::new();
+    if thin_sync {
+        let c = client.read().await;
+        for &shard_id in &shard_ids {
+            if c.thin_shard(shard_id).map_or(true, |t| t.note != Some("unsupported_dynamic_shard")) {
+                thin_followed.push(shard_id);
+            }
+        }
+    }
+    shard_ids.retain(|id| !thin_followed.contains(id));
+    for &shard_id in &thin_followed {
+        confirm_from_thin_state(client, &store, keystone_endpoints, sse_tx, shard_id, min_depth).await;
+    }
+    if thin_sync {
+        // What is left are the shards thin sync cannot follow (dynamically activated).
+        for shard_id in std::mem::take(&mut shard_ids) {
+            confirm_from_keystone_quorum(&store, keystone_endpoints, sse_tx, shard_id, min_depth, required_keystones).await;
+        }
+    }
     let mut tips: Vec<(u16, u32)> = Vec::new();
     {
         let c = client.read().await;
@@ -860,28 +1204,36 @@ async fn advance_watch_invoice_confirmations(
             }
         }
     }
-    // Always refresh from Keystone when available — prefer max(local, http)
-    // so a stale local tip (e.g. tip 0 after partial sync) cannot stall Confirmed.
+    // Keystone-reported tips are only trusted as a quorum: the highest value
+    // that at least `required` distinct Keystones claim to have reached. One
+    // Keystone (or fewer than `required` answers) can never confirm an invoice.
+    // A tip from Filament's own verified shard state, when present, stands alone.
     if !keystone_endpoints.is_empty() {
         let http = reqwest::Client::new();
         for &shard_id in &shard_ids {
-            let mut http_tip: Option<u32> = None;
+            let mut reports: Vec<u32> = Vec::new();
             for ep in keystone_endpoints {
                 let url = format!("{ep}/shard/{shard_id}/tip");
                 let Ok(resp) = http.get(&url).send().await else { continue };
                 let Ok(body) = resp.json::<serde_json::Value>().await else { continue };
                 if let Some(h) = body.get("height").and_then(|v| v.as_u64()) {
-                    http_tip = Some(h as u32);
-                    break;
+                    reports.push(h as u32);
                 }
             }
-            let Some(http_h) = http_tip else { continue };
+            let Some(q) = quorum_tip(&reports, required_keystones) else {
+                log::debug!(
+                    "FUD-5: shard {shard_id}: {} Keystone tip report(s), need {} — not advancing",
+                    reports.len(),
+                    required_keystones
+                );
+                continue;
+            };
             if let Some(slot) = tips.iter_mut().find(|(s, _)| *s == shard_id) {
-                if http_h > slot.1 {
-                    slot.1 = http_h;
+                if q > slot.1 {
+                    slot.1 = q;
                 }
             } else {
-                tips.push((shard_id, http_h));
+                tips.push((shard_id, q));
             }
         }
     }
@@ -895,7 +1247,8 @@ async fn advance_watch_invoice_confirmations(
             min_depth,
         ) {
             for id in confirmed {
-                log::info!("invoice confirmed on shard {shard_id} at tip {tip}");
+                let _ = store.set_assurance(&id, crate::mmr_client::invoice::ASSURANCE_KEYSTONE_TIP);
+                log::info!("FUD-5: invoice confirmed on shard {shard_id} at tip {tip} (weakest assurance: Keystone-reported tip)");
                 if let Some(tx) = sse_tx {
                     let _ = tx.send(json!({
                         "type": "tx_inclusion",
@@ -1004,8 +1357,8 @@ pub async fn wire_watch_notify_subscription(
     } else {
         confirmation_depth
     };
-    // Per-shard anchor cache (shard_id -> genesis anchor). A shard's
-    // own anchor is dynamic and unrelated to the beacon's — see
+    // FUD-5: per-shard anchor cache (shard_id -> genesis anchor). A shard's
+    // own anchor is dynamic (CV-23) and unrelated to the beacon's — see
     // `fetch_shard_genesis_anchor`'s own doc comment. No production path
     // ever calls `MultiChainClient::add_shard_chain` (it exists only as a
     // doc example / test helper — confirmed by grep), so `get_shard_state`
@@ -1039,8 +1392,8 @@ pub async fn wire_watch_notify_subscription(
                         process_inclusion_notif, InclusionApplyResult,
                     };
 
-                    // Fix: a shard's own MMR is constructed with its own
-                    // dynamic per-shard genesis anchor (the beacon chain's
+                    // FUD-5 fix: a shard's own MMR is constructed with its own
+                    // dynamic per-shard genesis anchor (CV-23: the beacon chain's
                     // `current_mmr_root` at the shard's activation height), not
                     // the beacon chain's own — structurally unrelated — genesis
                     // anchor. `TxInclusionNotif` is exclusively a shard-watch
@@ -1053,8 +1406,15 @@ pub async fn wire_watch_notify_subscription(
                     // anchor fails `verify_with_anchor` for every single shard
                     // block, unconditionally, which is exactly what was observed
                     // (100% "invalid MMR proof" rejection rate on shard chains).
-                    let local_anchor = client.read().await.get_shard_state(shard_id as u32).await
-                        .map(|s| s.anchor_hash()).ok();
+                    // Thin sync derives the anchor from beacon data it verified itself:
+                    // preferred over asking a Keystone for it.
+                    let local_anchor = {
+                        let c = client.read().await;
+                        match c.thin_shard_anchor(shard_id) {
+                            Some(a) => Some(a),
+                            None => c.get_shard_state(shard_id as u32).await.map(|s| s.anchor_hash()).ok(),
+                        }
+                    };
                     let anchor = match local_anchor {
                         Some(a) => a,
                         None => {
@@ -1073,7 +1433,7 @@ pub async fn wire_watch_notify_subscription(
                                 Some(a) => a,
                                 None => {
                                     log::warn!(
-                                        "could not resolve shard {shard_id}'s genesis \
+                                        "FUD-5: could not resolve shard {shard_id}'s genesis \
                                          anchor (no local ChainState, no light-client API \
                                          endpoint reachable) — dropping inclusion notif"
                                     );
@@ -1150,12 +1510,12 @@ pub async fn wire_watch_notify_subscription(
                         }
                         Ok((InclusionApplyResult::InvalidProof, _)) => {
                             log::warn!(
-                                "rejected inclusion notif — invalid MMR proof \
+                                "FUD-5: rejected inclusion notif — invalid MMR proof \
                                  (invalidating shard {shard_id} genesis-anchor cache)"
                             );
                             shard_anchor_cache.lock().await.remove(&shard_id);
                         }
-                        Err(e) => log::warn!("inclusion processing error: {e}"),
+                        Err(e) => log::warn!("FUD-5: inclusion processing error: {e}"),
                     }
                 });
             }
@@ -1166,7 +1526,7 @@ pub async fn wire_watch_notify_subscription(
                     if client.read().await.watch_state().lock().unwrap()
                         .apply_spent(shard_id, output_height, output_idx)
                     {
-                        log::debug!("UTXO spent ({shard_id}, {output_height}, {output_idx})");
+                        log::debug!("FUD-5: UTXO spent ({shard_id}, {output_height}, {output_idx})");
                     }
                 });
             }
@@ -1175,7 +1535,7 @@ pub async fn wire_watch_notify_subscription(
                     if client.read().await.watch_state().lock().unwrap()
                         .apply_revert(shard_id, height, output_idx)
                     {
-                        log::debug!("UTXO reverted ({shard_id}, {height}, {output_idx})");
+                        log::debug!("FUD-5: UTXO reverted ({shard_id}, {height}, {output_idx})");
                     }
                     let Ok(store) = crate::mmr_client::invoice::InvoiceStore::open(&data_dir) else {
                         return;
@@ -1336,6 +1696,8 @@ impl FilamentRuntime {
                     &cfg.all_keystone_endpoints(),
                     None,
                     cfg.confirmation_depth,
+                    cfg.required_keystones(),
+                    cfg.thin_sync,
                 ).await;
             }
 
@@ -1375,18 +1737,18 @@ impl FilamentRuntime {
         }
     }
 
-    /// Refresh wallet state from all configured Keystone REST endpoints.
+    /// MNT-7: refresh wallet state from all configured Keystone REST endpoints.
     pub async fn refresh_wallet_from_keystone(
         &self,
     ) -> Result<crate::mmr_client::filament_wallet::RefreshOutcome, String> {
         self.wallet.write().await.refresh_from_keystone().await
     }
 
-    /// Prune expired invoices using the current beacon tip.
+    /// G-4: prune expired invoices using the current beacon tip.
     pub async fn prune_expired_invoices(&self) {
         let tip = {
             let client = self.client.read().await;
-            client.get_beacon_state().await.map(|st| st.tip.height()).unwrap_or(0)
+            client.beacon_tip_height().await
         };
         if tip == 0 {
             return;
@@ -1401,7 +1763,7 @@ impl FilamentRuntime {
         }
     }
 
-    /// Evict stale cache entries, refresh DNS seeds, preserve manual peers.
+    /// PD-3/PD-4: evict stale cache entries, refresh DNS seeds, preserve manual peers.
     /// Returns the number of new DNS seed peers written to the cache.
     pub async fn maintain_peer_cache(&self, cache: &crate::peer_cache::PeerCache) -> usize {
         let (seeds, manual_peers) = {
@@ -1424,7 +1786,129 @@ impl FilamentRuntime {
         dns_written
     }
 
-    /// Fetch light-client chain summaries and reconcile trust state.
+    /// One thin beacon sync round (`thin_sync.rs`): tip poll, headers or one
+    /// session per Keystone, quorum over the verified states. The state lives
+    /// in the client; the client lock is not held across the HTTP calls.
+    async fn thin_beacon_round(
+        &self,
+        http: &reqwest::Client,
+        urls: &[String],
+        (network, genesis_file, required): (String, Option<String>, usize),
+    ) {
+        let params = match thin_sync_params(&network, genesis_file.as_deref()) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("thin sync: no trusted genesis: {e}");
+                return;
+            }
+        };
+        let mut slot = self.client.read().await.thin_beacon_slot().unwrap_or_default();
+        let report = crate::mmr_client::thin_sync::thin_round(http, urls, &params, required, &mut slot).await;
+        let mut client = self.client.write().await;
+        client.set_thin_beacon_slot(slot);
+        if let Some(verified) = report.disagreement {
+            client.report_beacon_disagreement(verified).await;
+        }
+    }
+
+    /// Shards thin sync follows this tick: the configured ones plus the shard of every
+    /// invoice that is not finished yet.
+    async fn thin_shard_targets(&self) -> Vec<u16> {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (mut ids, data_dir) = {
+            let cfg = self.config.read().await;
+            (cfg.thin_shards.clone(), cfg.data_dir.clone())
+        };
+        if let Ok(store) = crate::mmr_client::invoice::InvoiceStore::open(&data_dir) {
+            if let Ok(all) = store.list(None) {
+                ids.extend(
+                    all.iter()
+                        .filter(|i| !matches!(i.state, InvoiceState::Confirmed | InvoiceState::Expired | InvoiceState::Archived))
+                        .map(|i| i.shard_id),
+                );
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// One thin sync round for each followed shard: derive the anchor from the verified
+    /// beacon state when it is missing, then tip poll / blocks / session against every Keystone.
+    async fn thin_shard_rounds(
+        &self,
+        http: &reqwest::Client,
+        urls: &[String],
+        (network, genesis_file, required): (String, Option<String>, usize),
+    ) {
+        use crate::mmr_client::thin_shard::{anchor_from_header_proof, discover_anchor, ThinShardParams};
+        use crate::mmr_client::thin_sync::ShardThin;
+
+        let targets = self.thin_shard_targets().await;
+        if targets.is_empty() {
+            return;
+        }
+        let genesis = match beacon_genesis_config(&network, genesis_file.as_deref()) {
+            Ok(g) => g,
+            Err(e) => {
+                log::warn!("thin shard sync: no trusted genesis: {e}");
+                return;
+            }
+        };
+        for shard_id in targets {
+            let params = ThinShardParams::from_genesis(&genesis, shard_id);
+            let mut entry: ShardThin = self.client.read().await.thin_shard(shard_id).unwrap_or_default();
+            let Some(activation) = params.activation_height() else {
+                entry.note = Some("unsupported_dynamic_shard");
+                self.client.write().await.set_thin_shard(shard_id, entry);
+                continue;
+            };
+            if entry.anchor.is_none() {
+                let beacon = self.client.read().await.thin_beacon_slot().and_then(|s| s.state().cloned());
+                let Some(beacon) = beacon else {
+                    entry.note = Some("awaiting_anchor");
+                    self.client.write().await.set_thin_shard(shard_id, entry);
+                    continue;
+                };
+                entry.anchor = discover_anchor(&beacon, &params);
+                if entry.anchor.is_none() && beacon.leaf_count() > activation + 1 {
+                    for url in urls {
+                        let at = beacon.leaf_count();
+                        let resp: Result<common_types::common::proofs::ThinHeaderProofResponse, String> =
+                            crate::mmr_client::thin_sync::fetch_json(
+                                http,
+                                &format!("{url}/chain/header-proof/{activation}?count=2&at={at}"),
+                            )
+                            .await;
+                        match resp.map_err(|e| e.to_string()).and_then(|r| {
+                            anchor_from_header_proof(&beacon, genesis.bitcoin_anchor_hash, &params, &r).map_err(|e| e.to_string())
+                        }) {
+                            Ok(a) => {
+                                entry.anchor = Some(a);
+                                break;
+                            }
+                            Err(e) => log::warn!("thin shard sync: anchor proof from {url}: {e}"),
+                        }
+                    }
+                }
+            }
+            let Some(anchor) = entry.anchor else {
+                entry.note = Some("awaiting_anchor");
+                self.client.write().await.set_thin_shard(shard_id, entry);
+                continue;
+            };
+            entry.note = None;
+            let report =
+                crate::mmr_client::thin_sync::thin_shard_round(http, urls, &params, anchor, required, &mut entry.slot).await;
+            let mut client = self.client.write().await;
+            client.set_thin_shard(shard_id, entry);
+            if let Some(verified) = report.disagreement {
+                client.report_shard_disagreement(verified).await;
+            }
+        }
+    }
+
+    /// MNT-2/3/4: fetch light-client chain summaries and reconcile trust state.
     /// Returns `(label, result)` pairs for optional HTTP notification wiring.
     pub async fn sync_peer_chain_summaries(
         &self,
@@ -1448,8 +1932,21 @@ impl FilamentRuntime {
 
         let http = reqwest::Client::new();
 
+        // Thin sync replaces the beacon full-summary poll (never requested while it is on).
+        let (thin, thin_args) = {
+            let cfg = self.config.read().await;
+            (
+                cfg.thin_sync,
+                (cfg.network.clone(), cfg.genesis_file.clone(), cfg.required_keystones()),
+            )
+        };
+        if thin {
+            self.thin_beacon_round(&http, &urls, thin_args.clone()).await;
+            self.thin_shard_rounds(&http, &urls, thin_args).await;
+        }
+
         let mut beacon_responses: Vec<PeerChainSummaryResponse> = Vec::new();
-        for url in &urls {
+        for url in urls.iter().filter(|_| !thin) {
             match fetch_chain_summary(&http, &format!("{url}/chain/summary")).await {
                 Ok(summary) => {
                     beacon_responses.push(PeerChainSummaryResponse {
@@ -1536,6 +2033,65 @@ fn now_ms() -> u64 {
 
 // ── Chain serialization ───────────────────────────────────────────────────────
 
+/// `/chain/beacon` and the beacon entry of `/chain/all` while thin sync is on:
+/// height, tip hash, weight and status all come from the locally verified state.
+fn thin_beacon_json(slot: &crate::mmr_client::thin_sync::ThinBeaconSlot) -> Value {
+    let now = Instant::now();
+    let status = slot.status(now);
+    let (height, tip_hash, root, weight) = match slot.state() {
+        Some(st) => (
+            st.height().unwrap_or(0),
+            st.tip().map(|h| hex::encode(h.pow_hash())).unwrap_or_else(|| "0".repeat(64)),
+            hex::encode(<[u8; 32]>::from(st.root())),
+            st.weight().to_string(),
+        ),
+        None => (0, "0".repeat(64), "0".repeat(64), "0".to_string()),
+    };
+    json!({
+        "chain_id": 0, "label": "Beacon", "color": "var(--c-beacon)", "is_beacon": true,
+        "height": height,
+        "tip_hash": tip_hash,
+        "mmr_root": root,
+        "chain_weight": weight,
+        "status": status,
+        "lag_blocks": 0,
+        "proof_status": if status == "synced" { "verified" } else { "pending" },
+        "last_proof_at": height,
+        "source": "thin_sync",
+    })
+}
+
+/// A thin-synced shard in the same shape as [`chain_to_json`]; `status` is the
+/// slot's quorum status, or why the shard is not followed.
+fn thin_shard_json(shard_id: u16, t: &crate::mmr_client::thin_sync::ShardThin) -> Value {
+    let now = Instant::now();
+    let st = t.slot.state();
+    let height = st.and_then(|s| crate::mmr_client::thin_chain::ThinState::height(s)).unwrap_or(0);
+    let status_str = if t.note == Some("unsupported_dynamic_shard") {
+        "unsupported"
+    } else if t.note == Some("awaiting_anchor") {
+        "bootstrapping"
+    } else {
+        t.slot.status(now)
+    };
+    json!({
+        "chain_id": u32::from(shard_id) + 1,
+        "label": format!("Shard {shard_id}"),
+        "color": "var(--c-shard)",
+        "is_beacon": false,
+        "height": height,
+        "tip_hash": st.and_then(|s| s.tip_hash()).map(hex::encode).unwrap_or_else(|| "0".repeat(64)),
+        "mmr_root": st.map(|s| hex::encode(<[u8; 32]>::from(crate::mmr_client::thin_chain::ThinState::root(s)))).unwrap_or_else(|| "0".repeat(64)),
+        "chain_weight": st.map(|s| crate::mmr_client::thin_chain::ThinState::weight(s).to_string()).unwrap_or_else(|| "0".into()),
+        "status": status_str,
+        "note": t.note,
+        "lag_blocks": 0,
+        "proof_status": if status_str == "synced" { "verified" } else { "pending" },
+        "last_proof_at": height,
+        "source": "thin_sync",
+    })
+}
+
 fn chain_to_json(state: &ChainState, sync: ChainSyncStatus) -> Value {
     let height = state.tip.height();
     let is_beacon = state.chain_id == 0;
@@ -1612,8 +2168,12 @@ async fn wallet_send(
     Json(req): Json<SendRequest>,
 ) -> axum::response::Response {
     let (shard_id, amount_atoms) = (req.shard_id, req.amount_atoms);
+    let Some(tip) = crate::mmr_client::escrow_api::local_tip(&*s.client.read().await, Some(shard_id)).await else {
+        return (StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": format!("shard {} not synced yet — a send needs its verified tip", shard_id + 1) }))).into_response();
+    };
     let wallet = s.wallet.read().await;
-    match wallet.submit_transaction(&req).await {
+    match wallet.submit_transaction(&req, tip).await {
         Ok(resp) => {
             let preview = &req.to[..8.min(req.to.len())];
             s.notify("INFO", "wallet", "Transaction submitted",
@@ -1686,7 +2246,7 @@ async fn wallet_sign(
     }
 }
 
-/// Sign a Testnet Portal auth challenge with the wallet's
+/// TS-PORTAL-2f: sign a Testnet Portal auth challenge with the wallet's
 /// **held** key. The key is never accepted in the body and never returned —
 /// this is the difference from `/wallet/sign`. Requires Filament to have been
 /// started with a signing key (`--signing-key-file` / `FILAMENT_SIGNING_KEY`).
@@ -1760,9 +2320,12 @@ async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let client = s.client.read().await;
     let mut chains: Vec<Value> = Vec::new();
 
+    if s.config.read().await.thin_sync {
+        chains.push(thin_beacon_json(&client.thin_beacon_slot().unwrap_or_default()));
+    } else {
     match client.get_beacon_state().await {
         Ok(state) => {
-            // Trust-aware — a beacon that's otherwise "synced" but
+            // MNT-6: trust-aware — a beacon that's otherwise "synced" but
             // backed by too few independent peers shows insufficient_peers.
             let sync = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
             chains.push(chain_to_json(state, sync));
@@ -1779,13 +2342,22 @@ async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
             }));
         }
     }
+    }
 
     for shard_id in client.shard_ids() {
         if let Ok(state) = client.get_shard_state(shard_id).await {
-            // Per-shard trust, not the
+            // MNT-6 (shard precision fix): per-shard trust, not the
             // blanket-capability beacon check.
             let sync = client.get_trusted_sync_status_for_shard(shard_id).await;
             chains.push(chain_to_json(state, sync));
+        }
+    }
+
+    if s.config.read().await.thin_sync {
+        for id in client.thin_shard_ids() {
+            if let Some(t) = client.thin_shard(id) {
+                chains.push(thin_shard_json(id, &t));
+            }
         }
     }
 
@@ -1794,6 +2366,9 @@ async fn chain_all(State(s): State<FilamentAppState>) -> impl IntoResponse {
 
 async fn chain_beacon(State(s): State<FilamentAppState>) -> axum::response::Response {
     let client = s.client.read().await;
+    if s.config.read().await.thin_sync {
+        return (StatusCode::OK, Json(thin_beacon_json(&client.thin_beacon_slot().unwrap_or_default()))).into_response();
+    }
     match client.get_beacon_state().await {
         Ok(state) => {
             let sync = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
@@ -1808,6 +2383,11 @@ async fn chain_shard(
     Path(shard_id): Path<u32>,
 ) -> axum::response::Response {
     let client = s.client.read().await;
+    if s.config.read().await.thin_sync {
+        if let Some(t) = u16::try_from(shard_id).ok().and_then(|id| client.thin_shard(id).map(|t| (id, t))) {
+            return (StatusCode::OK, Json(thin_shard_json(t.0, &t.1))).into_response();
+        }
+    }
     match client.get_shard_state(shard_id).await {
         Ok(state) => {
             let sync = client.get_trusted_sync_status_for_shard(shard_id).await;
@@ -1821,10 +2401,11 @@ async fn sync_status(State(s): State<FilamentAppState>) -> impl IntoResponse {
     Json(s.sync_stats.read().await.clone())
 }
 
-/// `GET /sync/trust` — surfaces the multi-node trust state
-/// `MultiChainClient` tracks for the beacon chain — how many
+/// `GET /sync/trust` — MNT-5: surfaces the multi-node trust state
+/// `MultiChainClient` tracks (MNT-2/6) for the beacon chain — how many
 /// reputable, capability-matching peers are connected, whether that meets
 /// the configured minimum, and each qualifying peer's own reputation.
+/// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
 async fn sync_trust(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let snapshot = beacon_peer_trust_snapshot(&*s.client.read().await).await;
     Json(json!({
@@ -1835,7 +2416,7 @@ async fn sync_trust(State(s): State<FilamentAppState>) -> impl IntoResponse {
     }))
 }
 
-/// `GET /sync/proof-latency` — recent `verify_with_anchor` samples
+/// `GET /sync/proof-latency` — TS-F-3: recent `verify_with_anchor` samples
 /// from Path-2 inclusion processing (microseconds, oldest first, cap 64).
 async fn sync_proof_latency(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let samples = {
@@ -1858,7 +2439,7 @@ async fn sync_proof_latency(State(s): State<FilamentAppState>) -> impl IntoRespo
     }))
 }
 
-/// / PD-INT verification: beacon trust floor snapshot shared by HTTP
+/// MNT-5 / PD-INT verification: beacon trust floor snapshot shared by HTTP
 /// `GET /sync/trust`, Tauri `get_peer_trust`, and integration tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeaconPeerTrustSnapshot {
@@ -2122,49 +2703,26 @@ struct BroadcastRequest {
     shard_id: u16,
 }
 
-/// Broadcasts to every configured Keystone endpoint for propagation
+/// MNT-7: broadcasts to every configured Keystone endpoint for propagation
 /// redundancy — a reliability improvement, not a trust check. The first
 /// endpoint to accept wins; the rest aren't waited on.
 async fn wallet_broadcast(
     State(s): State<FilamentAppState>,
     Json(req): Json<BroadcastRequest>,
 ) -> axum::response::Response {
-    let endpoints = {
-        let cfg = s.config.read().await;
-        let eps = cfg.effective_keystone_endpoints(None);
-        if eps.is_empty() { vec!["http://127.0.0.1:7379".to_string()] } else { eps }
-    };
-
-    let body = json!({ "tx_hex": req.tx_hex, "shard_id": req.shard_id });
-    let client = reqwest::Client::new();
-
-    let mut last_error: Option<Value> = None;
-    for ep in &endpoints {
-        let url = format!("{}/wallet/broadcast", ep);
-        match client.post(&url).json(&body).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                let json: Value = resp.json().await
-                    .unwrap_or_else(|_| json!({ "status": status.as_u16() }));
-                if status.is_success() {
-                    s.notify("INFO", "wallet", "Transaction broadcast",
-                        &format!("tx {}… sent to Keystone ({})", &req.tx_hex[..8.min(req.tx_hex.len())], ep),
-                        Some("wallet"));
-                    // FI-5: register txid from broadcast response if Keystone returns one.
-                    if let Some(txid) = json.get("txid").and_then(|v| v.as_str()) {
-                        s.watch_tx(txid.to_string(), req.shard_id, 0);
-                    }
-                    return (StatusCode::OK, Json(json)).into_response();
-                }
-                last_error = Some(json);
+    // FIL-BCAST-1: raw bytes to Keystone POST /mempool/submit (there is no Keystone
+    // /wallet/broadcast route; this used to forward JSON there and always failed).
+    let endpoints = s.config.read().await.effective_keystone_endpoints(None);
+    match crate::mmr_client::keystone_submit::broadcast_hex(&reqwest::Client::new(), &endpoints, req.shard_id, &req.tx_hex).await {
+        Ok(json) => {
+            if let Some(txid) = json.get("txid").and_then(|v| v.as_str()) {
+                s.notify("INFO", "wallet", "Transaction broadcast", &format!("tx {}… accepted by Keystone", &txid[..8.min(txid.len())]), Some("wallet"));
+                s.watch_tx(txid.to_string(), req.shard_id, 0);
             }
-            Err(e) => {
-                last_error = Some(json!({ "endpoint": ep, "error": e.to_string() }));
-            }
+            (StatusCode::OK, Json(json)).into_response()
         }
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
     }
-
-    (StatusCode::BAD_GATEWAY, Json(json!({ "error": last_error.unwrap_or(json!("all configured endpoints failed")) }))).into_response()
 }
 
 // ── Invoice routes ───────────��────────────────────────────────────────────────
@@ -2207,7 +2765,7 @@ async fn invoice_create(
     };
     match store.create(recipient, body.amount_atoms, body.shard_id, body.memo, body.expiry_height, now_ms()) {
         Ok(id) => {
-            // Register WatchAddress so Keystone can push inclusion notifs.
+            // FUD-5: register WatchAddress so Keystone can push inclusion notifs.
             s.client.write().await.watch_address(recipient, body.shard_id);
             (StatusCode::OK, Json(json!({ "invoice_id": base64url_encode16(&id) }))).into_response()
         }
@@ -2426,6 +2984,135 @@ async fn contacts_update(
     }
 }
 
+// ── Escrow routes (IPP D14) ───────────────────────────────────────────────────
+//
+// Thin wrappers over `escrow_api` (shared with the Tauri commands). Heights come from
+// the light client's verified chain state; signing uses the wallet's hot key.
+
+use crate::mmr_client::escrow_api::{self, EscrowApiError};
+use crate::wallet::escrow::{EscrowOutpoint, EscrowStore};
+
+fn escrow_error(e: EscrowApiError) -> axum::response::Response {
+    let code = match e {
+        EscrowApiError::NotFound(_) => StatusCode::NOT_FOUND,
+        EscrowApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+        EscrowApiError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        EscrowApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (code, Json(json!({ "error": e.to_string() }))).into_response()
+}
+
+async fn escrow_store(s: &FilamentAppState) -> Result<EscrowStore, axum::response::Response> {
+    escrow_api::open_store(&s.config.read().await.data_dir).map_err(escrow_error)
+}
+
+fn escrow_reply<T: Serialize>(r: Result<T, EscrowApiError>) -> axum::response::Response {
+    match r {
+        Ok(v) => (StatusCode::OK, Json(json!(v))).into_response(),
+        Err(e) => escrow_error(e),
+    }
+}
+
+async fn escrow_list(State(s): State<FilamentAppState>) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let indexers = s.config.read().await.indexer_endpoints.clone();
+    for w in escrow_api::sync_outpoints(&store, &reqwest::Client::new(), &indexers).await {
+        log::warn!("escrow funding watch: {w}");
+    }
+    let client = s.client.read().await;
+    escrow_reply(escrow_api::list(&store, &client).await)
+}
+
+async fn escrow_open(
+    State(s): State<FilamentAppState>,
+    Json(req): Json<escrow_api::OpenEscrowRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let wallet = s.wallet.read().await;
+    let client = s.client.read().await;
+    let r = escrow_api::open(&store, &wallet, &client, &req).await;
+    if let Ok(v) = &r {
+        s.notify("INFO", "wallet", "Escrow policy stored",
+            &format!("escrow {} — back up the policy before funding", v.record.id), Some("providers"));
+    }
+    escrow_reply(r)
+}
+
+async fn escrow_outpoint_add(
+    State(s): State<FilamentAppState>,
+    Path(id): Path<String>,
+    Json(o): Json<EscrowOutpoint>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    escrow_reply(escrow_api::add_outpoint(&store, &id, o))
+}
+
+async fn escrow_outpoint_remove(
+    State(s): State<FilamentAppState>,
+    Path((id, height, idx)): Path<(String, u32, u16)>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    escrow_reply(escrow_api::remove_outpoint(&store, &id, height, idx))
+}
+
+async fn escrow_backup_export(State(s): State<FilamentAppState>) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    escrow_reply(escrow_api::export_backup(&store))
+}
+
+async fn escrow_backup_import(
+    State(s): State<FilamentAppState>,
+    Json(backup): Json<Value>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    escrow_reply(escrow_api::import_backup(&store, &backup).map(|added| json!({ "added": added })))
+}
+
+async fn escrow_pay(
+    State(s): State<FilamentAppState>,
+    Path(id): Path<String>,
+    Json(req): Json<escrow_api::PayRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let wallet = s.wallet.read().await;
+    let client = s.client.read().await;
+    let r = escrow_api::pay(&store, &wallet, &client, &id, &req).await;
+    if let Ok(v) = &r {
+        s.notify("INFO", "wallet", "Escrow payment signed (payer half)",
+            &format!("tx {}… — waiting for the provider's signature", &v.txid[..8]), Some("providers"));
+    }
+    escrow_reply(r)
+}
+
+async fn escrow_recover(
+    State(s): State<FilamentAppState>,
+    Path(id): Path<String>,
+    Json(req): Json<escrow_api::RecoverRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let built = {
+        let wallet = s.wallet.read().await;
+        let client = s.client.read().await;
+        escrow_api::recover(&store, &wallet, &client, &id, &req).await
+    };
+    let (mut resp, bytes) = match built { Ok(v) => v, Err(e) => return escrow_error(e) };
+    if req.broadcast {
+        let endpoints = s.config.read().await.effective_keystone_endpoints(None);
+        match escrow_api::submit_raw_tx(&reqwest::Client::new(), &endpoints, resp.shard_id, bytes).await {
+            Ok(v) => {
+                if let Some(shard) = resp.shard_id {
+                    s.watch_tx(resp.txid.clone(), shard, 0);
+                }
+                s.notify("INFO", "wallet", "Escrow recovery broadcast",
+                    &format!("tx {}… returns {} atoms", &resp.txid[..8], resp.value_atoms), Some("providers"));
+                resp.broadcast = Some(v);
+            }
+            Err(e) => return escrow_error(e),
+        }
+    }
+    (StatusCode::OK, Json(json!(resp))).into_response()
+}
+
 async fn sse_events(
     State(s): State<FilamentAppState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
@@ -2515,7 +3202,7 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
     }
 }
 
-/// Live multi-node sync (wired to a real transport): fetch chain
+/// Live multi-node sync (MNT-2/3/4, wired to a real transport): fetch chain
 /// summaries from every configured Keystone's light-client API
 /// (`FilamentNodeConfig::light_client_summary_urls`, same host as the
 /// wallet-ops endpoints, different port — see that method's doc) and
@@ -2525,12 +3212,13 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
 /// is surfaced rather than silently resolved. Covers the beacon chain and
 /// every shard chain Filament already tracks locally (`client.shard_ids()`)
 /// — Keystone's light-client API now serves both
-/// (`GET /chain/summary` and `GET /shard/{id}/chain/summary`).
+/// (`GET /chain/summary` and `GET /shard/{id}/chain/summary`). See
+/// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
 ///
 /// Each endpoint that answers the beacon fetch is registered as a peer
-/// (the `get_top_peers` candidate pool) if not already known, using the
+/// (MNT-2's `get_top_peers` candidate pool) if not already known, using the
 /// endpoint URL as `peer_id` — this is what makes `has_min_trusted_peers`/
-/// `get_trusted_sync_status` see real peers instead of staying
+/// `get_trusted_sync_status` (MNT-6) see real peers instead of staying
 /// permanently at zero. Shard fetches reuse the same peer set; they don't
 /// register peers on their own (a peer that can't serve shards but can serve
 /// beacon is still a real, useful peer).
@@ -2576,7 +3264,7 @@ pub(crate) fn consensus_shard_anchor(found: &[[u8; 32]]) -> Option<[u8; 32]> {
 /// cache. Disagreement is logged and **not** cached, so a later retry can
 /// still converge. An `InvalidProof` on a subsequent inclusion invalidates
 /// that `shard_id` so a shard reactivation with a new anchor can refetch
-/// `keystone_rest_endpoints` is Keystone's always-on main
+/// (P0-3 / P1-6). `keystone_rest_endpoints` is Keystone's always-on main
 /// API list (`FilamentNodeConfig::all_keystone_endpoints()`), not the
 /// separate opt-in light-client summary API.
 async fn fetch_shard_genesis_anchor(
@@ -2610,7 +3298,7 @@ async fn fetch_shard_genesis_anchor(
             let nonzero = found.iter().filter(|a| **a != [0u8; 32]).count();
             if nonzero > 1 {
                 warn!(
-                    "shard {shard_id} genesis-anchor disagreement among \
+                    "FUD-5: shard {shard_id} genesis-anchor disagreement among \
                      {nonzero} Keystone answers — not caching"
                 );
             }
@@ -2718,10 +3406,20 @@ async fn background_task(s: FilamentAppState) {
         // Refresh sync stats (FA-11: real per-chain breakdown)
         {
             let client = s.client.read().await;
-            // Trust-aware status for the beacon headline — "synced"
+            // MNT-6: trust-aware status for the beacon headline — "synced"
             // only counts if enough independent peers back it up.
-            let beacon_status = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
-            let beacon_tip = client.get_beacon_state().await.map(|st| st.tip.height()).unwrap_or(0);
+            let beacon_status = if s.config.read().await.thin_sync {
+                let required = s.config.read().await.required_keystones();
+                let slot = client.thin_beacon_slot().unwrap_or_default();
+                match slot.status(Instant::now()) {
+                    "synced" => ChainSyncStatus::Synced,
+                    "insufficient_peers" => ChainSyncStatus::InsufficientPeers { connected: 0, required },
+                    _ => ChainSyncStatus::NotStarted,
+                }
+            } else {
+                client.get_trusted_sync_status(ChainType::Beacon, 0).await
+            };
+            let beacon_tip = client.beacon_tip_height().await;
 
             // Build per-chain entries for the UI chain table
             let mut chain_entries: Vec<ChainSyncEntry> = Vec::new();
@@ -2735,7 +3433,7 @@ async fn background_task(s: FilamentAppState) {
                 progress: b_progress,
             });
             for shard_id in client.shard_ids() {
-                // Per-shard trust — a shard is
+                // MNT-6 (shard precision fix): per-shard trust — a shard is
                 // only "synced" here if peers proven capable of *this*
                 // shard specifically meet the trust floor, which is exactly
                 // what F2F shard-transaction confirmation needs to rely on.
@@ -2752,6 +3450,27 @@ async fn background_task(s: FilamentAppState) {
                     progress: s_progress,
                 });
             }
+            if s.config.read().await.thin_sync {
+                let required = s.config.read().await.required_keystones();
+                for id in client.thin_shard_ids() {
+                    let Some(t) = client.thin_shard(id) else { continue };
+                    let status = match t.status(Instant::now()) {
+                        "synced" => ChainSyncStatus::Synced,
+                        "insufficient_peers" => ChainSyncStatus::InsufficientPeers { connected: 0, required },
+                        _ => ChainSyncStatus::NotStarted,
+                    };
+                    let tip = t.slot.tip_height();
+                    let (phase, height, progress) = sync_status_parts(&status, tip);
+                    chain_entries.push(ChainSyncEntry {
+                        chain_id: u32::from(id) + 1,
+                        label: format!("Shard {id}"),
+                        phase,
+                        height,
+                        tip,
+                        progress,
+                    });
+                }
+            }
             drop(client);
 
             let mut stats = s.sync_stats.write().await;
@@ -2765,7 +3484,11 @@ async fn background_task(s: FilamentAppState) {
         // Beacon chain_update
         {
             let client = s.client.read().await;
-            if let Ok(state) = client.get_beacon_state().await {
+            if s.config.read().await.thin_sync {
+                let chain = thin_beacon_json(&client.thin_beacon_slot().unwrap_or_default());
+                drop(client);
+                let _ = s.sse_tx.send(json!({ "type": "chain_update", "data": chain }).to_string());
+            } else if let Ok(state) = client.get_beacon_state().await {
                 let sync = client.get_trusted_sync_status(ChainType::Beacon, 0).await;
                 let chain = chain_to_json(state, sync);
                 drop(client);
@@ -2812,10 +3535,12 @@ async fn background_task(s: FilamentAppState) {
                 &cfg.all_keystone_endpoints(),
                 Some(&s.sse_tx),
                 cfg.confirmation_depth,
+                cfg.required_keystones(),
+                cfg.thin_sync,
             ).await;
         }
 
-        // Live multi-node chain-summary sync every 30 s
+        // Live multi-node chain-summary sync every 30 s (MNT-2/3/4)
         sync_peer_tick += 1;
         if sync_peer_tick >= 6 {
             sync_peer_tick = 0;
@@ -2879,7 +3604,7 @@ async fn background_task(s: FilamentAppState) {
             }
         }
 
-        // Invoice expiry pruning every 5 min (60 ticks × 5 s)
+        // G-4: invoice expiry pruning every 5 min (60 ticks × 5 s)
         {
             static INVOICE_TICK: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
@@ -2889,7 +3614,7 @@ async fn background_task(s: FilamentAppState) {
             }
         }
 
-        // DNS seed resolution + peer-cache eviction every 10 min
+        // PD-3: DNS seed resolution + PD-4: peer-cache eviction every 10 min
         {
             static PEER_TICK: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
@@ -2925,6 +3650,9 @@ pub async fn start_server(
 
     let mut client = client;
     let mut wallet = wallet;
+    init_beacon_for_config(&mut client, &config)
+        .await
+        .map_err(|e| format!("cannot initialise beacon chain: {e}"))?;
     apply_startup_peer_discovery(&config, &mut wallet, &mut client).await;
 
     let state = FilamentAppState::new(client, wallet, config);
@@ -2944,7 +3672,7 @@ pub async fn start_server(
     }
     *state.p2p.write().await = p2p;
 
-    // Watch notifications → invoice FSM.
+    // FUD-5: watch notifications → invoice FSM (LC-45..LC-47c).
     wire_watch_notify_subscription(
         Arc::clone(&state.client),
         data_dir.clone(),
@@ -2966,7 +3694,7 @@ pub async fn start_server(
         Some(state.sse_tx.clone()),
     ).await;
 
-    // Surface peer disagreement to the UI via SSE.
+    // MNT-4: surface peer disagreement to the UI via SSE.
     {
         let sse_tx = state.sse_tx.clone();
         state.client.write().await.subscribe(Arc::new(move |event| {
@@ -3025,6 +3753,13 @@ pub async fn start_server(
         .route("/invoice/{id}/hints",      post(invoice_apply_hints))
         .route("/contacts",                get(contacts_list).post(contacts_add))
         .route("/contacts/{id}",           get(contacts_get).put(contacts_update).delete(contacts_delete))
+        .route("/escrow",                  get(escrow_list))
+        .route("/escrow/open",             post(escrow_open))
+        .route("/escrow/backup",           get(escrow_backup_export).post(escrow_backup_import))
+        .route("/escrow/{id}/outpoints",   post(escrow_outpoint_add))
+        .route("/escrow/{id}/outpoints/{height}/{idx}", delete(escrow_outpoint_remove))
+        .route("/escrow/{id}/pay",         post(escrow_pay))
+        .route("/escrow/{id}/recover",     post(escrow_recover))
         .route("/f2f/pubkey",              get(f2f_pubkey))
         .route("/f2f/messages",            get(f2f_messages))
         .route("/f2f/send",                post(f2f_send))
@@ -3121,18 +3856,19 @@ mod pd_ui_4_tests {
 /// PD-INT cold-start: two configured Keystones → trust floor 2/2 after one
 /// chain-summary sync tick (`FilamentRuntime::sync_peer_chain_summaries`).
 ///
-/// Builds a valid 2-leaf weighted chain summary with public `WeightedHash`
-/// helpers only.
+/// Builds a valid weighted chain summary with `WindowedWeightedMMR` from
+/// `common-types` (no monolith / Keystone dependency).
 #[cfg(test)]
 mod pd_int_cold_start_tests {
     use super::*;
     use axum::{routing::get, Json, Router};
     use common_types::common::crypto::weighted_hash::{
-        bag_peaks_weighted, hash_pair_weighted, rbits_to_u128_approx, WeightedHash,
+        rbits_to_u128_approx, WeightedHash,
     };
     use common_types::common::genesis::genesis_config::BeaconGenesisConfig;
     use common_types::common::proofs::types::{BeaconBlockData, BlockData};
-    use common_types::common::proofs::{MMRChainSummary, WeightedMMRBatchProof};
+    use common_types::common::proofs::MMRChainSummary;
+    use common_types::common::windowed_weighted_mmr::WindowedWeightedMMR;
 
     const SUMMARY_PORT: u16 = 28_180;
 
@@ -3158,38 +3894,51 @@ mod pd_int_cold_start_tests {
         })
     }
 
-    /// Genesis + tip (2-leaf MMR) with a verifiable batch proof for the tip.
-    fn build_beacon_summary(_block_count: u32) -> (BlockData, MMRChainSummary) {
+    /// Build genesis + a heavier tip summary (50 leaves) without Keystone.
+    fn build_beacon_summary(block_count: u32) -> (BlockData, MMRChainSummary) {
+        assert!(
+            block_count > 1,
+            "need at least genesis + one block for a heavier summary"
+        );
+
         let genesis_cfg = BeaconGenesisConfig::devnet();
         let anchor = genesis_cfg.bitcoin_anchor_hash;
         let bits = genesis_cfg.bits;
-        let anchor_wh = WeightedHash::from_anchor(&anchor);
+        let mut wmmr = WindowedWeightedMMR::new(&genesis_cfg);
 
-        let leaf0 = WeightedHash::from_leaf_rbits(&[1u8; 32], bits);
-        let leaf1 = WeightedHash::from_leaf_rbits(&[2u8; 32], bits);
-        let root0 = bag_peaks_weighted(&[leaf0], anchor_wh);
-        let parent = hash_pair_weighted(&leaf0, &leaf1);
-        let root1 = bag_peaks_weighted(&[parent], anchor_wh);
+        let mut blocks: Vec<BlockData> = Vec::with_capacity(block_count as usize);
+        let mut prev_root = WeightedHash::from_anchor(&anchor);
 
-        let genesis = make_beacon_block(0, leaf0, anchor_wh, root0, bits);
-        let tip = make_beacon_block(1, leaf1, root0, root1, bits);
+        for height in 0..block_count {
+            let raw = [(height as u8).wrapping_add(1); 32];
+            let leaf = WeightedHash::from_leaf_rbits(&raw, bits);
+            let (new_root, _weight, _evicted) = wmmr
+                .append(leaf)
+                .expect("append must succeed");
+            blocks.push(make_beacon_block(height, leaf, prev_root, new_root, bits));
+            prev_root = new_root;
+        }
 
-        let recent_blocks_proof = WeightedMMRBatchProof {
-            leaf_indices: vec![1],
-            leaf_hashes: vec![leaf1],
-            siblings: vec![leaf0],
-            peaks: vec![parent],
-            leaf_count: 2,
-            root: root1,
-        };
+        let recent_count = 10u32.min(block_count.saturating_sub(1));
+        let start = block_count - recent_count;
+        // Match Keystone: exclude genesis (height 0) from the batch proof.
+        let heights: Vec<u32> = (start.max(1)..block_count).collect();
+        let recent_blocks_proof = wmmr
+            .prove_batch(&heights)
+            .expect("prove_batch must succeed");
+        let recent_blocks: Vec<BlockData> = heights
+            .iter()
+            .map(|&h| blocks[h as usize].clone())
+            .collect();
 
+        let tip_block = blocks.last().expect("non-empty").clone();
         let summary = MMRChainSummary {
-            tip_block: tip.clone(),
-            chain_weight: root1.cumulative_difficulty_approx().max(1),
+            tip_block,
+            chain_weight: wmmr.canonical_chain_weight(),
             recent_blocks_proof,
-            recent_blocks: vec![tip],
+            recent_blocks,
         };
-        (genesis, summary)
+        (blocks[0].clone(), summary)
     }
 
     async fn spawn_summary_server(summary: MMRChainSummary) -> tokio::task::JoinHandle<()> {
@@ -3272,5 +4021,560 @@ mod pd_int_cold_start_tests {
         );
 
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod thin_sync_server_tests {
+    use super::*;
+    use crate::mmr_client::thin_chain::tests::ANCHOR;
+    use crate::mmr_client::thin_sync::tests::{extend, serve, Mock};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    async fn body(resp: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn genesis_file(dir: &std::path::Path) -> String {
+        use common_types::common::genesis::genesis_config::NetworkGenesisConfig;
+        let mut g = NetworkGenesisConfig::devnet();
+        g.beacon.bitcoin_anchor_hash = ANCHOR;
+        g.beacon.max_target = [0xFF; 32];
+        g.beacon.asserted_s_bits = 1;
+        let path = dir.join("genesis.toml");
+        std::fs::write(&path, toml::to_string(&g).unwrap()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn state(dir: &std::path::Path, urls: Vec<String>, thin: bool) -> FilamentAppState {
+        let config = FilamentNodeConfig {
+            thin_sync: thin,
+            genesis_file: Some(genesis_file(dir)),
+            keystone_rest_endpoints: urls,
+            light_client_summary_port: 0,
+            dns_seeds: Vec::new(),
+            data_dir: dir.to_string_lossy().into_owned(),
+            network: "devnet".into(),
+            ..FilamentNodeConfig::default()
+        };
+        let client = MultiChainClient::new(Box::new(crate::mmr_client::storage::InMemoryStorage::new()));
+        FilamentAppState::new(client, FilamentWallet::new("shisha:test".into(), None), config)
+    }
+
+    #[tokio::test]
+    async fn thin_sync_feeds_the_chain_endpoints_and_never_asks_for_a_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (Mock::new(40), Mock::new(40));
+        let urls = vec![serve(a.clone()).await, serve(b.clone()).await];
+        let s = state(dir.path(), urls, true);
+
+        // Before the first round: bootstrapping.
+        let v = body(chain_beacon(State(s.clone())).await).await;
+        assert_eq!((v["status"].as_str(), v["height"].as_u64()), (Some("bootstrapping"), Some(0)));
+
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let v = body(chain_beacon(State(s.clone())).await).await;
+        assert_eq!(v["status"], "synced", "{v}");
+        assert_eq!(v["height"], 39);
+        assert_ne!(v["chain_weight"], "0");
+        assert_eq!(v["is_beacon"], true);
+        let weight_40 = v["chain_weight"].clone();
+
+        extend(&a, 20);
+        extend(&b, 20);
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let all = body(chain_all(State(s.clone())).await.into_response()).await;
+        let beacon = &all.as_array().unwrap()[0];
+        assert_eq!((beacon["height"].as_u64(), beacon["status"].as_str()), (Some(59), Some("synced")));
+        assert_ne!(beacon["chain_weight"], weight_40, "weight is recomputed locally as blocks arrive");
+
+        for m in [&a, &b] {
+            assert_eq!(m.summary_calls.load(Ordering::SeqCst), 0, "no full summary request");
+            assert_eq!(m.session_calls.load(Ordering::SeqCst), 1, "one session, then headers");
+            assert_eq!(m.headers_calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn with_thin_sync_off_the_old_summary_is_still_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Mock::new(10);
+        let urls = vec![serve(a.clone()).await];
+        let s = state(dir.path(), urls, false);
+        s.runtime().sync_peer_chain_summaries(None).await;
+        assert_eq!(a.summary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(a.tip_calls.load(Ordering::SeqCst), 0, "thin routes are not used");
+    }
+
+    /// Two Keystones, each a beacon mock (work field `bits`) plus a shard mock over `shard_chain`.
+    async fn keystone_pair(
+        beacon_len: u32,
+        bits: u32,
+        shard_chain: Arc<crate::mmr_client::thin_shard::tests::Chain>,
+    ) -> (Vec<String>, Vec<Arc<crate::mmr_client::thin_sync::shard_tests::ShardMock>>, Vec<Arc<Mock>>) {
+        use crate::mmr_client::thin_sync::shard_tests::{router as shard_router, ShardMock};
+        use crate::mmr_client::thin_sync::tests::router as beacon_router;
+        let (mut urls, mut shards, mut beacons) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let b = Mock::with_bits(beacon_len, bits);
+            let sh = ShardMock::new(shard_chain.clone());
+            let app = beacon_router(b.clone()).merge(shard_router(sh.clone()));
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+            urls.push(format!("http://{addr}"));
+            shards.push(sh);
+            beacons.push(b);
+        }
+        (urls, shards, beacons)
+    }
+
+    /// The anchor the client must derive: the beacon root after the activation block (devnet: block 1).
+    fn expected_anchor(beacon_len: u32, bits: u32) -> crate::mmr_client::thin_shard::ShardAnchor {
+        let (hs, _) = crate::mmr_client::thin_chain::tests::build_proving_bits(beacon_len, 0, bits);
+        crate::mmr_client::thin_shard::ShardAnchor {
+            root: hs[2].prev_mmr_root,
+            genesis_bits: common_types::common::genesis::genesis_config::ShardGenesisConfig::bits_from_beacon_nbits(hs[1].bits, 16),
+        }
+    }
+
+    #[tokio::test]
+    async fn thin_sync_follows_a_shard_from_an_anchor_it_derived_itself() {
+        use crate::mmr_client::thin_shard::tests::Chain;
+        let dir = tempfile::tempdir().unwrap();
+        // Beacon work field D = 64 gives the shard genesis D = 4 (calibration 16).
+        let bits = common_types::common::crypto::weighted_hash::u128_to_rbits(64);
+        let anchor = expected_anchor(60, bits);
+        let chain = Arc::new(Chain::with_anchor_len(0, 0, anchor, 40));
+        let (urls, shards, beacons) = keystone_pair(60, bits, chain.clone()).await;
+        let mut s = state(dir.path(), urls, true);
+        s.config.write().await.thin_shards = vec![0, 9];
+
+        s.runtime().sync_peer_chain_summaries(None).await;
+
+        // Beacon synced, then shard 0 synced against the derived anchor.
+        let one = body(chain_shard(State(s.clone()), axum::extract::Path(0)).await).await;
+        assert_eq!((one["status"].as_str(), one["height"].as_u64()), (Some("synced"), Some(39)), "{one}");
+        assert_eq!(one["chain_id"], 1);
+        assert_eq!(one["is_beacon"], false);
+        assert_ne!(one["chain_weight"], "0");
+        let anchor_seen = s.client.read().await.thin_shard_anchor(0).expect("anchor derived");
+        assert_eq!(anchor_seen, <[u8; 32]>::from(anchor.root), "from verified beacon data, not a Keystone's word");
+
+        // The chain table lists the beacon and both followed shards; shard 9 is not in the genesis list.
+        let all = body(chain_all(State(s.clone())).await.into_response()).await;
+        let rows = all.as_array().unwrap();
+        assert_eq!(rows.len(), 3, "{all}");
+        assert_eq!(rows[2]["status"], "unsupported", "{all}");
+        for sh in &shards {
+            assert_eq!((sh.session_calls.load(Ordering::SeqCst), sh.blocks_calls.load(Ordering::SeqCst)), (1, 0));
+        }
+        for b in &beacons {
+            assert!(b.header_proof_calls.load(Ordering::SeqCst) <= 1, "the anchor proof is fetched once");
+            assert_eq!(b.summary_calls.load(Ordering::SeqCst), 0);
+        }
+        // A second tick keeps the anchor (no further header proofs).
+        let proofs_before: usize = beacons.iter().map(|b| b.header_proof_calls.load(Ordering::SeqCst)).sum();
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let proofs_after: usize = beacons.iter().map(|b| b.header_proof_calls.load(Ordering::SeqCst)).sum();
+        assert_eq!(proofs_before, proofs_after);
+    }
+
+    #[tokio::test]
+    async fn open_invoices_decide_which_shards_are_followed() {
+        use crate::mmr_client::invoice::{InvoiceState, InvoiceStore};
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path(), vec![], true);
+        assert!(s.runtime().thin_shard_targets().await.is_empty());
+        let store = InvoiceStore::open(dir.path()).unwrap();
+        let id = store.create([1u8; 32], 100, 3, "coffee", 0, 0).unwrap();
+        s.config.write().await.thin_shards = vec![0];
+        assert_eq!(s.runtime().thin_shard_targets().await, vec![0, 3]);
+        store.update_state(&id, InvoiceState::Confirmed).unwrap();
+        assert_eq!(s.runtime().thin_shard_targets().await, vec![0], "a finished invoice no longer needs its shard");
+    }
+
+    // ── Design §6: invoice confirmation from the verified state ──────────────────
+
+    /// A `Pending` invoice for shard `shard` paid at `height`, with `chain`'s inclusion proof stored.
+    fn pending_invoice(
+        dir: &std::path::Path,
+        shard: u16,
+        height: u32,
+        chain: &crate::mmr_client::thin_shard::tests::Chain,
+        _recipient: u8,
+    ) -> [u8; 16] {
+        pending_invoice_for(dir, shard, height, chain, chain.payee(height), 100)
+    }
+
+    /// An invoice for `addr`/`amount` that an inclusion notification at `height` claims was paid.
+    fn pending_invoice_for(
+        dir: &std::path::Path,
+        shard: u16,
+        height: u32,
+        chain: &crate::mmr_client::thin_shard::tests::Chain,
+        addr: [u8; 32],
+        amount: u64,
+    ) -> [u8; 16] {
+        use crate::mmr_client::invoice::InvoiceStore;
+        let store = InvoiceStore::open(dir).unwrap();
+        let id = store.create(addr, amount, shard, "x", 0, 0).unwrap();
+        let proof = chain.win.prove_batch(&[height]).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
+        assert_eq!(store.on_watch_inclusion(shard, height, 0, addr, bytes).unwrap(), Some(id));
+        id
+    }
+
+    fn invoice_state(dir: &std::path::Path, id: &[u8; 16]) -> crate::mmr_client::invoice::InvoiceState {
+        crate::mmr_client::invoice::InvoiceStore::open(dir).unwrap().load(id).unwrap().state
+    }
+
+    async fn advance(s: &FilamentAppState, urls: &[String], thin: bool) {
+        advance_watch_invoice_confirmations(&s.client, s.config.read().await.data_dir.as_ref(), urls, None, 6, 2, thin).await;
+    }
+
+    /// Followed shard 0 (40 blocks, tip 39) synced against two Keystones; returns everything a test needs.
+    async fn followed_shard() -> (
+        tempfile::TempDir,
+        FilamentAppState,
+        Vec<String>,
+        Vec<Arc<crate::mmr_client::thin_sync::shard_tests::ShardMock>>,
+        Arc<crate::mmr_client::thin_shard::tests::Chain>,
+    ) {
+        use crate::mmr_client::thin_shard::tests::Chain;
+        let dir = tempfile::tempdir().unwrap();
+        let bits = common_types::common::crypto::weighted_hash::u128_to_rbits(64);
+        let anchor = expected_anchor(60, bits);
+        let chain = Arc::new(Chain::with_anchor_len(0, 0, anchor, 40));
+        let (urls, shards, _beacons) = keystone_pair(60, bits, chain.clone()).await;
+        let s = state(dir.path(), urls.clone(), true);
+        s.config.write().await.thin_shards = vec![0];
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let t = s.client.read().await.thin_shard(0).unwrap();
+        assert_eq!(t.slot.status(std::time::Instant::now()), "synced");
+        (dir, s, urls, shards, chain)
+    }
+
+    #[tokio::test]
+    async fn an_invoice_confirms_from_the_verified_tip_and_a_bound_block() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, shards, chain) = followed_shard().await;
+        let old = pending_invoice(dir.path(), 0, 10, &chain, 1); // below the held records: bound by a range proof
+        let held = pending_invoice(dir.path(), 0, 30, &chain, 2); // a held record: bound locally
+        let shallow = pending_invoice(dir.path(), 0, 37, &chain, 3); // only 2 deep
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &old), InvoiceState::Confirmed);
+        assert_eq!(invoice_state(dir.path(), &held), InvoiceState::Confirmed);
+        assert_eq!(invoice_state(dir.path(), &shallow), InvoiceState::Pending(2));
+        assert!(shards.iter().map(|m| m.range_calls.load(std::sync::atomic::Ordering::SeqCst)).sum::<usize>() >= 1);
+        assert_eq!(shards.iter().map(|m| m.old_tip_calls.load(std::sync::atomic::Ordering::SeqCst)).sum::<usize>(), 0,
+            "the Keystone-reported tip is not consulted for a followed shard");
+    }
+
+    #[tokio::test]
+    async fn a_notification_for_a_block_that_does_not_pay_the_invoice_confirms_nothing() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, shards, chain) = followed_shard().await;
+        // A real, deep, held block (30); its only output pays someone else.
+        let wrong_recipient = pending_invoice_for(dir.path(), 0, 30, &chain, [201u8; 32], 100);
+        // A real old block (10, bound by a range proof); same lie.
+        let wrong_old = pending_invoice_for(dir.path(), 0, 10, &chain, [202u8; 32], 100);
+        advance(&s, &urls, true).await;
+        assert_ne!(invoice_state(dir.path(), &wrong_recipient), InvoiceState::Confirmed);
+        assert_ne!(invoice_state(dir.path(), &wrong_old), InvoiceState::Confirmed);
+        assert!(shards.iter().map(|m| m.tx_proof_calls.load(std::sync::atomic::Ordering::SeqCst)).sum::<usize>() >= 1,
+            "the payment itself was checked, not just the block");
+    }
+
+    #[tokio::test]
+    async fn an_underpaid_invoice_is_not_confirmed_but_an_overpaid_one_is() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, _shards, chain) = followed_shard().await;
+        let under = pending_invoice_for(dir.path(), 0, 30, &chain, chain.payee(30), 5_000); // output pays 1,000
+        let exact = pending_invoice_for(dir.path(), 0, 31, &chain, chain.payee(31), 1_000);
+        let over = pending_invoice_for(dir.path(), 0, 32, &chain, chain.payee(32), 999);
+        advance(&s, &urls, true).await;
+        assert_ne!(invoice_state(dir.path(), &under), InvoiceState::Confirmed);
+        assert_eq!(invoice_state(dir.path(), &exact), InvoiceState::Confirmed);
+        assert_eq!(invoice_state(dir.path(), &over), InvoiceState::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn a_forged_output_proof_does_not_confirm() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, shards, chain) = followed_shard().await;
+        // The invoice is for X; no block pays X. Every Keystone forges a proof claiming it does.
+        let x = [203u8; 32];
+        let id = pending_invoice_for(dir.path(), 0, 30, &chain, x, 100);
+        for m in &shards {
+            *m.forge_recipient.lock().unwrap() = Some(x);
+        }
+        advance(&s, &urls, true).await;
+        assert_ne!(invoice_state(dir.path(), &id), InvoiceState::Confirmed, "a changed output no longer matches the block's root");
+    }
+
+    #[tokio::test]
+    async fn a_keystone_reported_tip_confirms_nothing_for_a_followed_shard() {
+        use crate::mmr_client::invoice::InvoiceState;
+        use crate::mmr_client::thin_shard::tests::Chain;
+        let dir = tempfile::tempdir().unwrap();
+        let bits = common_types::common::crypto::weighted_hash::u128_to_rbits(64);
+        let chain = Arc::new(Chain::with_anchor_len(0, 0, expected_anchor(60, bits), 40));
+        let (urls, shards, _b) = keystone_pair(60, bits, chain.clone()).await;
+        let s = state(dir.path(), urls.clone(), true);
+        // No round has run: Filament has no verified state for shard 0 yet, but both Keystones claim tip 1000.
+        let id = pending_invoice(dir.path(), 0, 10, &chain, 1);
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &id), InvoiceState::Pending(0), "nothing verified, nothing confirmed");
+        assert_eq!(shards.iter().map(|m| m.old_tip_calls.load(std::sync::atomic::Ordering::SeqCst)).sum::<usize>(), 0);
+        // The older rule (thin sync off) is what trusted that claim.
+        advance(&s, &urls, false).await;
+        assert_eq!(invoice_state(dir.path(), &id), InvoiceState::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn a_block_that_is_not_in_our_verified_chain_is_not_bound() {
+        use crate::mmr_client::invoice::InvoiceState;
+        use crate::mmr_client::thin_shard::tests::Chain;
+        let (dir, s, urls, _shards, chain) = followed_shard().await;
+        // A valid proof about this shard's anchor, but for another chain's blocks.
+        let fork = Chain::with_anchor_len(0, 1, chain.anchor, 40);
+        let far = pending_invoice(dir.path(), 0, 10, &fork, 1);
+        let near = pending_invoice(dir.path(), 0, 30, &fork, 2);
+        let ours = pending_invoice(dir.path(), 0, 12, &chain, 3);
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &far), InvoiceState::Pending(29));
+        assert_eq!(invoice_state(dir.path(), &near), InvoiceState::Pending(9));
+        assert_eq!(invoice_state(dir.path(), &ours), InvoiceState::Confirmed, "the honest one still confirms");
+    }
+
+    #[tokio::test]
+    async fn range_proofs_for_another_root_do_not_bind_and_one_honest_keystone_does() {
+        use crate::mmr_client::invoice::InvoiceState;
+        use crate::mmr_client::thin_shard::tests::Chain;
+        let (dir, s, urls, shards, chain) = followed_shard().await;
+        let fork = Arc::new(Chain::with_anchor_len(0, 1, chain.anchor, 40));
+        let id = pending_invoice(dir.path(), 0, 10, &chain, 1);
+        for m in &shards {
+            *m.range_from.lock().unwrap() = Some(fork.clone());
+        }
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &id), InvoiceState::Pending(29), "every proof is for the wrong root");
+        *shards[1].range_from.lock().unwrap() = None;
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &id), InvoiceState::Confirmed);
+    }
+
+    /// Shard 9 is not in the genesis list: thin sync marks it unsupported on the next round, so it
+    /// is confirmed by the lower-assurance Keystone-quorum rule.
+    async fn unsupported_shard_9() -> (
+        tempfile::TempDir,
+        FilamentAppState,
+        Vec<String>,
+        Vec<Arc<crate::mmr_client::thin_sync::shard_tests::ShardMock>>,
+        Arc<crate::mmr_client::thin_shard::tests::Chain>,
+    ) {
+        let (dir, s, urls, shards, chain) = followed_shard().await;
+        s.config.write().await.thin_shards = vec![0, 9];
+        s.runtime().sync_peer_chain_summaries(None).await;
+        assert_eq!(s.client.read().await.thin_shard(9).unwrap().note, Some("unsupported_dynamic_shard"));
+        (dir, s, urls, shards, chain)
+    }
+
+    fn invoice_assurance(dir: &std::path::Path, id: &[u8; 16]) -> Option<String> {
+        crate::mmr_client::invoice::InvoiceStore::open(dir).unwrap().load(id).unwrap().assurance
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_shard_confirms_from_a_keystone_quorum_and_is_labelled_lower_assurance() {
+        use crate::mmr_client::invoice::{InvoiceState, ASSURANCE_KEYSTONE_QUORUM, ASSURANCE_VERIFIED_CHAIN};
+        let (dir, s, urls, shards, chain) = unsupported_shard_9().await;
+        let dynamic = pending_invoice(dir.path(), 9, 10, &chain, 4);
+        let followed = pending_invoice(dir.path(), 0, 10, &chain, 4);
+        advance(&s, &urls, true).await;
+        assert_eq!(invoice_state(dir.path(), &dynamic), InvoiceState::Confirmed, "two Keystones prove the payment");
+        assert_eq!(invoice_assurance(dir.path(), &dynamic).as_deref(), Some(ASSURANCE_KEYSTONE_QUORUM));
+        assert_eq!(invoice_state(dir.path(), &followed), InvoiceState::Confirmed);
+        assert_eq!(invoice_assurance(dir.path(), &followed).as_deref(), Some(ASSURANCE_VERIFIED_CHAIN), "followed shard: strongest label");
+        assert!(shards.iter().map(|m| m.tx_proof_calls.load(std::sync::atomic::Ordering::SeqCst)).sum::<usize>() >= 2);
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_shard_does_not_confirm_a_payment_the_keystones_cannot_prove() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, shards, chain) = unsupported_shard_9().await;
+        // The block at 10 pays someone else; the invoice is for X.
+        let wrong = pending_invoice_for(dir.path(), 9, 10, &chain, [210u8; 32], 100);
+        // Every Keystone forges the output to look like it pays X.
+        let forged = pending_invoice_for(dir.path(), 9, 11, &chain, [211u8; 32], 100);
+        for m in &shards {
+            *m.forge_recipient.lock().unwrap() = Some([211u8; 32]);
+        }
+        advance(&s, &urls, true).await;
+        assert_ne!(invoice_state(dir.path(), &wrong), InvoiceState::Confirmed);
+        assert_ne!(invoice_state(dir.path(), &forged), InvoiceState::Confirmed, "a changed output no longer matches the record's root");
+    }
+
+    #[tokio::test]
+    async fn one_honest_keystone_is_not_enough_for_an_unsupported_shard_unless_allowed() {
+        use crate::mmr_client::invoice::InvoiceState;
+        let (dir, s, urls, _shards, chain) = unsupported_shard_9().await;
+        let id = pending_invoice(dir.path(), 9, 10, &chain, 4);
+        // Only the first Keystone is reachable: one proof, quorum of two.
+        advance(&s, &urls[..1], true).await;
+        assert_ne!(invoice_state(dir.path(), &id), InvoiceState::Confirmed);
+        // The insecure single-Keystone mode lowers the quorum to one.
+        s.config.write().await.allow_single_keystone = true;
+        let one = s.config.read().await.required_keystones();
+        advance_watch_invoice_confirmations(&s.client, dir.path(), &urls[..1], None, 6, one, true).await;
+        assert_eq!(invoice_state(dir.path(), &id), InvoiceState::Confirmed);
+    }
+
+    #[tokio::test]
+    async fn one_keystone_does_not_make_the_beacon_synced_unless_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Mock::new(40);
+        let url = serve(a).await;
+        let s = state(dir.path(), vec![url], true);
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let v = body(chain_beacon(State(s.clone())).await).await;
+        assert_eq!(v["status"], "bootstrapping", "{v}");
+        s.config.write().await.allow_single_keystone = true;
+        s.runtime().sync_peer_chain_summaries(None).await;
+        let v = body(chain_beacon(State(s.clone())).await).await;
+        assert_eq!((v["status"].as_str(), v["height"].as_u64()), (Some("synced"), Some(39)), "{v}");
+    }
+}
+
+#[cfg(test)]
+mod escrow_route_tests {
+    use super::*;
+    use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
+    use common_types::common::proofs::types::{BeaconBlockData, BlockData};
+
+    fn xonly(sk: &SecretKey) -> String {
+        hex::encode(Keypair::from_secret_key(&Secp256k1::new(), sk).x_only_public_key().0.serialize())
+    }
+
+    /// App state with a beacon chain at height 0, a hot key, and a temp data dir.
+    async fn state(dir: &std::path::Path, with_key: bool) -> FilamentAppState {
+        let storage = Box::new(crate::mmr_client::storage::InMemoryStorage::new());
+        let mut client = MultiChainClient::new(storage);
+        let genesis = BlockData::Beacon(BeaconBlockData {
+            height: 0,
+            block_hash: Default::default(),
+            prev_mmr_root: Default::default(),
+            current_mmr_root: Default::default(),
+            version: 1,
+            delta: 0,
+            difficulty: 1,
+            bits: 0x1d10_0000,
+            nonce: 0,
+            tx_merkle_root: [0u8; 32],
+            merged_mining_root: [0u8; 32],
+        });
+        client.init_beacon_chain(genesis).await.unwrap();
+        let payer = SecretKey::from_slice(&[0x61; 32]).unwrap();
+        let mut wallet = FilamentWallet::new(xonly(&payer), None);
+        if with_key {
+            wallet.set_signing_key(payer);
+        }
+        let config = FilamentNodeConfig {
+            data_dir: dir.to_string_lossy().into_owned(),
+            dns_seeds: Vec::new(),
+            ..FilamentNodeConfig::default()
+        };
+        FilamentAppState::new(client, wallet, config)
+    }
+
+    async fn body(r: axum::response::Response) -> (StatusCode, Value) {
+        let code = r.status();
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        (code, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn open_req(h: u32) -> escrow_api::OpenEscrowRequest {
+        escrow_api::OpenEscrowRequest {
+            provider_pk_hex: xonly(&SecretKey::from_slice(&[0x62; 32]).unwrap()),
+            unlock_height: h,
+            shard_id: None,
+            provider_label: "Northwind Pay".into(),
+            min_lead_blocks: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn open_fund_pay_backup_and_early_recover() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path(), true).await;
+
+        // H too close to the verified tip (0 + 144 lead) is refused.
+        let (code, _) = body(escrow_open(State(s.clone()), Json(open_req(100))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+
+        let (code, v) = body(escrow_open(State(s.clone()), Json(open_req(500))).await).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        assert_eq!(v["state"], "empty");
+        assert_eq!(v["backed_up"], false);
+        let id = v["id"].as_str().unwrap().to_string();
+
+        let o = EscrowOutpoint { height: 3, output_idx: 1, value_atoms: 10_000 };
+        let (code, _) = body(escrow_outpoint_add(State(s.clone()), Path(id.clone()), Json(o)).await).await;
+        assert_eq!(code, StatusCode::OK);
+        let (_, list) = body(escrow_list(State(s.clone())).await).await;
+        assert_eq!(list[0]["state"], "open");
+        assert_eq!(list[0]["value_atoms"], 10_000);
+
+        let pay = escrow_api::PayRequest {
+            to_hex: "77".repeat(32),
+            amount_atoms: 4_000,
+            fee_atoms: 200,
+            outpoints: None,
+            min_blocks_left: None,
+        };
+        let (code, v) = body(escrow_pay(State(s.clone()), Path(id.clone()), Json(pay)).await).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        assert_eq!(v["payer_sigs_hex"].as_array().unwrap().len(), 1);
+        assert_eq!(v["change_atoms"], 5_800);
+        let tx = common_types::transaction::Transaction::deserialize_with_witnesses(
+            &hex::decode(v["tx_hex"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tx.inputs.len(), 1);
+
+        // Recovery before H is refused by the wallet.
+        let rec = escrow_api::RecoverRequest { to_hex: None, fee_atoms: 100, outpoints: None, broadcast: false };
+        let (code, _) = body(escrow_recover(State(s.clone()), Path(id.clone()), Json(rec)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+
+        // Backup export marks it backed up; import into a fresh wallet restores it.
+        let (code, backup) = body(escrow_backup_export(State(s.clone())).await).await;
+        assert_eq!(code, StatusCode::OK);
+        let (_, list) = body(escrow_list(State(s.clone())).await).await;
+        assert_eq!(list[0]["backed_up"], true);
+        let other = tempfile::tempdir().unwrap();
+        let s2 = state(other.path(), true).await;
+        let (code, v) = body(escrow_backup_import(State(s2.clone()), Json(backup)).await).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(v["added"], 1);
+
+        let (code, _) = body(
+            escrow_outpoint_remove(State(s.clone()), Path((id.clone(), 3, 1))).await,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, _) = body(escrow_outpoint_remove(State(s), Path(("nope".into(), 3, 1))).await).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn watch_only_wallet_cannot_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path(), false).await;
+        let (code, v) = body(escrow_open(State(s), Json(open_req(500))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("signing key"));
     }
 }

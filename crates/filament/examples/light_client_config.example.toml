@@ -1,0 +1,69 @@
+# Filament bootstrap config (FilamentBootstrapConfig) used by examples/quickstart.rs.
+# Every network table is required; fill in the genesis values of the network you join
+# (genesis_hash / genesis_mmr_root from that network's genesis). Parsed by a unit test
+# in src/mmr_client/light_client_config.rs so the schema cannot drift.
+
+[devnet]
+network_id               = "devnet"
+genesis_hash             = "REPLACE_WITH_GENESIS_HASH_HEX"
+genesis_height           = 0
+genesis_timestamp        = 1704067200
+genesis_difficulty       = 64
+genesis_bits             = 0x03000040
+genesis_mmr_root         = "REPLACE_WITH_GENESIS_MMR_ROOT_HEX"
+bitcoin_anchor_hash      = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
+bitcoin_anchor_height    = 935093
+bitcoin_anchor_timestamp = 1704067200
+
+[mainnet]
+network_id               = "mainnet"
+genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_height           = 0
+genesis_timestamp        = 0
+genesis_difficulty       = 1
+genesis_bits             = 0
+genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_height    = 0
+bitcoin_anchor_timestamp = 0
+
+[testnet1]
+network_id               = "testnet1"
+genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_height           = 0
+genesis_timestamp        = 0
+genesis_difficulty       = 1
+genesis_bits             = 0
+genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_height    = 0
+bitcoin_anchor_timestamp = 0
+
+[testnet2]
+network_id               = "testnet2"
+genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_height           = 0
+genesis_timestamp        = 0
+genesis_difficulty       = 1
+genesis_bits             = 0
+genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_height    = 0
+bitcoin_anchor_timestamp = 0
+
+[sync]
+recent_blocks_cache_size = 100
+poll_interval_secs       = 10
+max_concurrent_requests  = 10
+range_proof_batch_size   = 100
+request_timeout_secs     = 30
+paranoid_mode            = false
+
+[checkpoints.mainnet]
+[checkpoints.testnet1]
+[checkpoints.devnet]
+
+[peers.mainnet]
+[peers.testnet1]
+[peers.devnet]
+peers = ["localhost:8334"]

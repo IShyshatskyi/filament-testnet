@@ -1,6 +1,6 @@
 // crates/filament/src/dns_seeds.rs
 //
-// DNS seed resolution (Layer 3 of peer discovery).
+// PD-INT-2 — DNS seed resolution (Layer 3 of peer discovery).
 //
 // For each configured seed hostname:
 //   1. Query TXT records and honour `port=<u16>` when present.
@@ -8,6 +8,7 @@
 //      is absent or does not specify a port.
 //   3. Resolve A/AAAA addresses and return `(ip, port)` tuples for PeerCache.
 //
+// Design reference: `filament_app/docs/PEER_DISCOVERY_PLAN.md` PD-INT-2
 
 use crate::peer_cache::PeerCache;
 
