@@ -114,6 +114,10 @@ cargo test --workspace --features full-node
 | Document | Contents |
 |---|---|
 | [docs/reference.md](docs/reference.md) | Technical reference: data model, proofs, thin sync, genesis and networks, API, security model |
+| [docs/thin-sync.md](docs/thin-sync.md) | How the sync works, the checks, the quorum, invoice assurance levels, status values, measured sizes |
+| [docs/security.md](docs/security.md) | Threat model, what is verified, what is not, safe operation |
+| [docs/vectors.md](docs/vectors.md) | The shared consensus vectors that keep this code equal to the node |
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability |
 | [docs/filament_engineering_review.md](docs/filament_engineering_review.md) | Status review of this packaging (Aug 2026, partly superseded) |
 | [DISCLAIMER.md](DISCLAIMER.md) | Experimental-software notice |
 
