@@ -1,1 +1,3 @@
 src/mmr_client/README.md
+# Design-era notes and an index that links to the excluded README; the reference is docs/reference.md.
+src/mmr_client/doc_mmr_client
