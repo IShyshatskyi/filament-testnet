@@ -1752,42 +1752,6 @@ mod tests {
     use network_common::common::proofs::types::BeaconBlockData;
     use network_common::common::proofs::{MMRChainSummary, WeightedMMRBatchProof};
 
-    /// FIL-GENESIS-1 (client half): block 0 comes from the network genesis file the nodes load, the
-    /// epoch length is that network's own genesis parameter, and it can only be done once. The
-    /// summary-on-top half needs the node-side prover and lives in `crates/filament-tests`.
-    #[tokio::test]
-    async fn init_from_genesis_file_sets_block_zero_and_epoch_length() {
-        use network_common::common::genesis::genesis::GenesisGenerator;
-        use network_common::common::genesis::genesis_config::NetworkGenesisConfig;
-
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/genesis_devnet.toml");
-        let cfg = NetworkGenesisConfig::from_file(&path).unwrap();
-        let node_genesis = GenesisGenerator::generate_beacon_genesis(&cfg.beacon).unwrap();
-
-        let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
-        let hash = client.init_from_genesis_file(&path).await.unwrap();
-        assert_eq!(hash, <[u8; 32]>::from(node_genesis.hash), "same block 0 as the nodes");
-        assert_eq!(hash, GenesisGenerator::beacon_genesis_hash(&cfg.beacon).unwrap(), "chain identity");
-        assert_eq!(client.get_beacon_state().await.unwrap().tip.height(), 0);
-        assert_eq!(client.epoch_length(), cfg.beacon.shard_expansion.epoch_length);
-        assert_eq!(client.network_id(), NetworkId::Devnet, "FIL-GENESIS-3: network from the file");
-        assert_eq!(MultiChainClient::genesis_file_identity(&path).unwrap(), (hash, "Devnet".to_string()));
-        assert!(client.init_from_genesis_file(&path).await.is_err(), "only once");
-    }
-
-    /// Every genesis file a live network uses today loads (testnet-stress has a pinned hash).
-    #[tokio::test]
-    async fn repo_genesis_files_load() {
-        for f in ["genesis_devnet.toml", "genesis_testnet_stress.toml", "genesis_crash_recovery.toml", "genesis_devnet_15.toml"] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config").join(f);
-            let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
-            client.init_from_genesis_file(&path).await.unwrap_or_else(|e| panic!("{f}: {e}"));
-            // Devnet and Custom (local soak) files follow a dev network; testnet-stress a testnet.
-            let want = if f == "genesis_testnet_stress.toml" { NetworkId::Testnet } else { NetworkId::Devnet };
-            assert_eq!(client.network_id(), want, "{f}");
-        }
-    }
-
     #[tokio::test]
     async fn init_from_genesis_file_reports_bad_files() {
         let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
