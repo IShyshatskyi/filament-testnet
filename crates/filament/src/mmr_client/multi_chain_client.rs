@@ -755,26 +755,24 @@ impl MultiChainClient {
 
         // Store active network
         self.active_network = Some(network.to_string());
+        self.network_id = match network {
+            "mainnet" => NetworkId::Mainnet,
+            "devnet" => NetworkId::Devnet,
+            _ => NetworkId::Testnet,
+        };
 
         info!("Initialized {} network at height {}", network, genesis_height);
         
         Ok(())
     }
     
-    fn detect_network_id(config: &FilamentBootstrapConfig) -> Result<NetworkId, String> {
-        let zero = "0000000000000000000000000000000000000000000000000000000000000000";
-        
-        if config.mainnet.genesis_hash != zero {
-            Ok(NetworkId::Mainnet)
-        } else if config.testnet1.genesis_hash != zero {
-            Ok(NetworkId::Testnet)
-        } else if config.devnet.genesis_hash != zero {
-            Ok(NetworkId::Devnet)
-        } else {
-            Err("No valid genesis in config".to_string())
-        }
+    /// Network a freshly loaded config starts as. Every network table carries a real genesis, so
+    /// the file cannot say which one the user means: [`Self::init_from_network`] (or a genesis
+    /// file) sets it. Until then the client is the development network.
+    fn detect_network_id(_config: &FilamentBootstrapConfig) -> Result<NetworkId, String> {
+        Ok(NetworkId::Devnet)
     }
-    
+
     // ========================================================================
     // PEER MANAGEMENT
     // ========================================================================

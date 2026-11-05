@@ -13,6 +13,7 @@ pub struct FilamentBootstrapConfig {
     /// Network configurations
     pub mainnet: NetworkGenesisInfo,
     pub testnet1: NetworkGenesisInfo,
+    pub testnet2: NetworkGenesisInfo,
     pub testnet3: NetworkGenesisInfo,
     pub devnet: NetworkGenesisInfo,
     
@@ -210,6 +211,7 @@ impl FilamentBootstrapConfig {
         match network_id {
             "mainnet" => Some(&self.mainnet),
             "testnet1" => Some(&self.testnet1),
+            "testnet2" => Some(&self.testnet2),
             "testnet3" => Some(&self.testnet3),
             "devnet" => Some(&self.devnet),
             _ => None,
@@ -270,16 +272,59 @@ mod tests {
         assert_eq!(bytes[30], 0);
     }
     
-    /// The example config shipped with `examples/quickstart.rs` (and quoted on the website's
-    /// Filament page) must keep parsing as the schema changes.
+    /// The preset a bootstrap table must equal.
+    fn preset_for(network: &str) -> network_common::common::genesis::genesis_config::BeaconGenesisConfig {
+        use network_common::common::genesis::genesis_config::BeaconGenesisConfig as G;
+        match network {
+            "mainnet" => G::mainnet(),
+            "testnet1" => G::testnet1(),
+            "testnet2" => G::testnet2(),
+            "testnet3" => G::testnet3(),
+            "devnet" => G::devnet(),
+            other => panic!("no preset for {other}"),
+        }
+    }
+
+    /// Every network table of a bootstrap config equals what the preset derives: a stored copy of a
+    /// genesis hash that drifts from the nodes' is a client that refuses every real peer.
+    fn assert_tables_match_presets(cfg: &FilamentBootstrapConfig, which: &str) {
+        use network_common::common::genesis::genesis::GenesisGenerator;
+        use network_common::common::mmr_math::genesis_mmr_root;
+        for net in ["mainnet", "testnet1", "testnet2", "testnet3", "devnet"] {
+            let info = cfg.get_network(net).unwrap_or_else(|| panic!("{which}: no [{net}] table"));
+            let p = preset_for(net);
+            let block = GenesisGenerator::generate_beacon_genesis(&p).unwrap();
+            let ctx = format!("{which} [{net}]");
+            assert_eq!(info.network_id, net, "{ctx}");
+            assert_eq!(info.genesis_hash_bytes().unwrap(), *block.hash.raw(), "{ctx} genesis_hash");
+            assert_eq!(
+                info.genesis_mmr_root_bytes().unwrap(),
+                *genesis_mmr_root(&p.bitcoin_anchor_hash, block.hash).raw(),
+                "{ctx} genesis_mmr_root"
+            );
+            assert_eq!(info.genesis_height, 0, "{ctx}");
+            assert_eq!(info.genesis_timestamp, p.timestamp, "{ctx} genesis_timestamp");
+            assert_eq!(info.genesis_difficulty, p.difficulty, "{ctx} genesis_difficulty");
+            assert_eq!(info.genesis_bits, p.bits, "{ctx} genesis_bits");
+            assert_eq!(info.bitcoin_anchor_hash_bytes().unwrap(), p.bitcoin_anchor_hash, "{ctx} anchor hash");
+            assert_eq!(info.bitcoin_anchor_height, p.bitcoin_anchor_height, "{ctx} anchor height");
+            assert_eq!(info.bitcoin_anchor_timestamp, p.bitcoin_anchor_timestamp, "{ctx} anchor timestamp");
+        }
+    }
+
     #[test]
-    fn example_config_parses() {
+    fn bootstrap_config_matches_presets() {
+        let cfg: FilamentBootstrapConfig = toml::from_str(include_str!("light_client_config.toml")).unwrap();
+        assert_tables_match_presets(&cfg, "light_client_config.toml");
+    }
+
+    /// The example config shipped with `examples/quickstart.rs` (and quoted on the website's
+    /// Filament page) keeps parsing as the schema changes, and carries the derived genesis values.
+    #[test]
+    fn example_config_parses_and_matches_presets() {
         let cfg: FilamentBootstrapConfig =
             toml::from_str(include_str!("../../examples/light_client_config.example.toml")).unwrap();
-        assert_eq!(cfg.devnet.network_id, "devnet");
-        assert_eq!(cfg.devnet.genesis_bits, 0x0300_0040);
-        assert!(cfg.devnet.bitcoin_anchor_hash_bytes().is_ok());
-        assert!(cfg.devnet.genesis_hash_bytes().is_err(), "placeholder must be replaced by the user");
+        assert_tables_match_presets(&cfg, "light_client_config.example.toml");
         assert_eq!(cfg.peers.devnet.peers, vec!["localhost:8334".to_string()]);
     }
 

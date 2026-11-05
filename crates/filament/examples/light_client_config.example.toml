@@ -1,55 +1,73 @@
 # Filament bootstrap config (FilamentBootstrapConfig) used by examples/quickstart.rs.
-# Every network table is required; fill in the genesis values of the network you join
-# (genesis_hash / genesis_mmr_root from that network's genesis). Parsed by a unit test
-# in src/mmr_client/light_client_config.rs so the schema cannot drift.
-
-[devnet]
-network_id               = "devnet"
-genesis_hash             = "REPLACE_WITH_GENESIS_HASH_HEX"
-genesis_height           = 0
-genesis_timestamp        = 1704067200
-genesis_difficulty       = 64
-genesis_bits             = 0x03000040
-genesis_mmr_root         = "REPLACE_WITH_GENESIS_MMR_ROOT_HEX"
-bitcoin_anchor_hash      = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
-bitcoin_anchor_height    = 935093
-bitcoin_anchor_timestamp = 1704067200
+# Parsed by a unit test in src/mmr_client/light_client_config.rs so the schema cannot drift.
+#
+# The network tables below are DERIVED, not typed: genesis_hash and genesis_mmr_root come from
+# `GenesisGenerator::generate_beacon_genesis` on each network's `BeaconGenesisConfig` preset, and
+# the other fields are the preset's. A unit test (`bootstrap_config_matches_presets`) compares this
+# file with the presets, so a drift fails the build. Hashes are in internal byte order (the same
+# order the nodes write into prev_mmr_root), the reverse of a block explorer's display.
+# `devnet` is the stock preset; a local soak genesis has its own hash, so pass its genesis file
+# (`init_from_genesis_file`) instead of trusting this table for it.
 
 [mainnet]
-network_id               = "mainnet"
-genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
-genesis_height           = 0
-genesis_timestamp        = 0
-genesis_difficulty       = 1
-genesis_bits             = 0
-genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height    = 0
-bitcoin_anchor_timestamp = 0
+network_id = "mainnet"
+genesis_hash = "838e0d64fdee4246554c241ae801e1094fbcec0ad62404d74a0d0c2b03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "e6d1ca21b04efdc5fb8776397a696a5140a6407c0a4daf8acfb1d71603000080"
+bitcoin_anchor_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_height = 0
+bitcoin_anchor_timestamp = 1704067200
 
 [testnet1]
-network_id               = "testnet1"
-genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
-genesis_height           = 0
-genesis_timestamp        = 0
-genesis_difficulty       = 1
-genesis_bits             = 0
-genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height    = 0
-bitcoin_anchor_timestamp = 0
+network_id = "testnet1"
+genesis_hash = "0fe5fab91a058d92f826041cc53b694376aa1a767d5dbf52a261255d03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "9c7467b125b6df33cfea501d308e0f01605e1e368713f9e64a5365a803000080"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
+
+[testnet2]
+network_id = "testnet2"
+genesis_hash = "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 512
+genesis_bits = 0x03000200
+genesis_mmr_root = "e282773633a55c1d4d51c8da65f534b0cf616cde954301ab6ef0fb6e03000200"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
 
 [testnet3]
-network_id               = "testnet3"
-genesis_hash             = "0000000000000000000000000000000000000000000000000000000000000000"
-genesis_height           = 0
-genesis_timestamp        = 0
-genesis_difficulty       = 1
-genesis_bits             = 0
-genesis_mmr_root         = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_hash      = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height    = 0
-bitcoin_anchor_timestamp = 0
+network_id = "testnet3"
+genesis_hash = "d6180680892cf1da0266435ace905c2a35a21882791e4be45c66497c03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "a6f37195b0c98ff3d8382770fc25c57129aa6a965a73c87d0adbb54e03000080"
+bitcoin_anchor_hash = "29d5d423d7cb7ea3ee94452d610acb9313a38ff9fd5200000000000000000000"
+bitcoin_anchor_height = 935091
+bitcoin_anchor_timestamp = 1704067200
+
+[devnet]
+network_id = "devnet"
+genesis_hash = "2240f8752353043270ffe5d41e867b6dba8a7aa7b1b52abdd007524303000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "e54ee53b5a98ee53ee4bebf2c236aeb4d3b666aeda40e1e48deae81a03000080"
+bitcoin_anchor_hash = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
+bitcoin_anchor_height = 935093
+bitcoin_anchor_timestamp = 1704067200
 
 [sync]
 recent_blocks_cache_size = 100

@@ -1,120 +1,75 @@
 # Light Client Configuration
-# 
-# This file contains hardcoded genesis block information for different networks.
-# Light clients use this to bootstrap their chain state without trusting external sources.
 #
-# CRITICAL: Genesis blocks use Bitcoin anchor hashes to prevent pre-mining
-# The prev_block_hash and prev_mmr_root fields MUST equal the Bitcoin anchor hash
+# Genesis facts of each network, so a light client can bootstrap its chain state without trusting
+# a peer.
+#
+# The network tables below are DERIVED, not typed: genesis_hash and genesis_mmr_root come from
+# `GenesisGenerator::generate_beacon_genesis` on each network's `BeaconGenesisConfig` preset, and
+# the other fields are the preset's. A unit test (`bootstrap_config_matches_presets`) compares this
+# file with the presets, so a drift fails the build. Hashes are in internal byte order (the same
+# order the nodes write into prev_mmr_root), the reverse of a block explorer's display.
+# `devnet` is the stock preset; a local soak genesis has its own hash, so pass its genesis file
+# (`init_from_genesis_file`) instead of trusting this table for it.
 
 [mainnet]
-# Network identifier
 network_id = "mainnet"
-
-# Genesis block hash (hardcoded after mining)
-# This is the trusted anchor point for the entire blockchain
-# TODO: Set after mainnet genesis mining
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-
-# Genesis block height (always 0)
+genesis_hash = "838e0d64fdee4246554c241ae801e1094fbcec0ad62404d74a0d0c2b03000080"
 genesis_height = 0
-
-# Genesis timestamp (Unix seconds)
-genesis_timestamp = 1704067200  # 2024-01-01 00:00:00 UTC
-
-# Genesis difficulty (Phase A default D=128; must match BeaconGenesisConfig presets)
+genesis_timestamp = 1704067200
 genesis_difficulty = 128
-
-# Genesis bits — compact **rBits** for difficulty=128 (`0x03000080`).
-# Must match BeaconGenesisConfig::mainnet().bits.
 genesis_bits = 0x03000080
-
-# Genesis MMR root (for genesis, this is calculated after genesis mining)
-# TODO: Set after mainnet genesis mining
-genesis_mmr_root = "0000000000000000000000000000000000000000000000000000000000000000"
-
-# Bitcoin anchor (prevents pre-mining)
-# TODO: Set to actual Bitcoin block at mainnet launch
-# This hash will be used as prev_block_hash and prev_mmr_root in genesis
+genesis_mmr_root = "e6d1ca21b04efdc5fb8776397a696a5140a6407c0a4daf8acfb1d71603000080"
 bitcoin_anchor_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height = 825000  # Example Bitcoin block height
-bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block
-
+bitcoin_anchor_height = 0
+bitcoin_anchor_timestamp = 1704067200
 
 [testnet1]
 network_id = "testnet1"
-
-# TODO: Set after testnet1 genesis mining
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_hash = "0fe5fab91a058d92f826041cc53b694376aa1a767d5dbf52a261255d03000080"
 genesis_height = 0
 genesis_timestamp = 1704067200
 genesis_difficulty = 128
-# Compact rBits D=128 — must match BeaconGenesisConfig::testnet1().bits.
 genesis_bits = 0x03000080
+genesis_mmr_root = "9c7467b125b6df33cfea501d308e0f01605e1e368713f9e64a5365a803000080"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
 
-# TODO: Set after testnet1 genesis mining
-genesis_mmr_root = "0000000000000000000000000000000000000000000000000000000000000000"
-
-# Bitcoin anchor for testnet1
-# TODO: Set to actual Bitcoin block
-bitcoin_anchor_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height = 0
-bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block
-
+[testnet2]
+network_id = "testnet2"
+genesis_hash = "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 512
+genesis_bits = 0x03000200
+genesis_mmr_root = "e282773633a55c1d4d51c8da65f534b0cf616cde954301ab6ef0fb6e03000200"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
 
 [testnet3]
 network_id = "testnet3"
-
-# TODO: Set after testnet3 genesis mining
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_hash = "d6180680892cf1da0266435ace905c2a35a21882791e4be45c66497c03000080"
 genesis_height = 0
 genesis_timestamp = 1704067200
 genesis_difficulty = 128
-# Compact rBits D=128 — must match BeaconGenesisConfig::testnet3().bits.
 genesis_bits = 0x03000080
-
-# TODO: Set after testnet3 genesis mining
-genesis_mmr_root = "0000000000000000000000000000000000000000000000000000000000000000"
-
-# Bitcoin anchor for testnet3
-# TODO: Set to actual Bitcoin block
-bitcoin_anchor_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-bitcoin_anchor_height = 0
-bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block
-
+genesis_mmr_root = "a6f37195b0c98ff3d8382770fc25c57129aa6a965a73c87d0adbb54e03000080"
+bitcoin_anchor_hash = "29d5d423d7cb7ea3ee94452d610acb9313a38ff9fd5200000000000000000000"
+bitcoin_anchor_height = 935091
+bitcoin_anchor_timestamp = 1704067200
 
 [devnet]
 network_id = "devnet"
-
-# Genesis block hash (to be set after devnet genesis mining)
-# TODO: Mine devnet genesis and set this hash
-genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+genesis_hash = "2240f8752353043270ffe5d41e867b6dba8a7aa7b1b52abdd007524303000080"
 genesis_height = 0
 genesis_timestamp = 1704067200
 genesis_difficulty = 128
-# Compact rBits D=128 — must match BeaconGenesisConfig::devnet().bits.
 genesis_bits = 0x03000080
-
-# Genesis MMR root
-# BEFORE mining: Equals bitcoin_anchor_hash (pre-genesis state)
-# AFTER mining: Equals genesis_hash (genesis becomes the first block)
-#
-# Current state: Pre-mining, so set to bitcoin_anchor_hash.
-#
-# BYTE ORDER: This hex string is parsed byte-by-byte by hex_to_bytes32(),
-# so it must be written in INTERNAL (reversed / little-endian) byte order —
-# the same order that genesis_config.rs stores in DEVNET_ANCHOR_HASH and that
-# the full node writes into prev_mmr_root.  This is the OPPOSITE of the
-# display string shown on block explorers.
-genesis_mmr_root = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
-
-# Bitcoin anchor for devnet (matches genesis_config.rs DEVNET_ANCHOR_HASH)
-# Block 935093 — internal (reversed) byte order.
-# Display order (block explorer): 00000000000000000000a2331379d2d599650753fdc982b202cb01df8299e14a
-# Internal order (used here):     4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000
+genesis_mmr_root = "e54ee53b5a98ee53ee4bebf2c236aeb4d3b666aeda40e1e48deae81a03000080"
 bitcoin_anchor_hash = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
 bitcoin_anchor_height = 935093
-bitcoin_anchor_timestamp = 1704067200  # Unix seconds of Bitcoin anchor block (2024-01-01 00:00:00 UTC)
-
+bitcoin_anchor_timestamp = 1704067200
 
 # Light client synchronization settings
 [sync]
