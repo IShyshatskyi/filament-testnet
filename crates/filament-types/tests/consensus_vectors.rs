@@ -11,6 +11,7 @@ use filament_types::expand_voting::{
 use filament_types::genesis::{BeaconGenesisConfig, ShardGenesisConfig};
 use filament_types::genesis_network::NetworkGenesisConfig;
 use filament_types::hash::{hash_pair, sha256d};
+use filament_types::merged_mining_check::{verify_shard_id_and_mmn_with_ref_s, MergedMiningError};
 use filament_types::shard_header::{BeaconHeader, FullShardHeader};
 use filament_types::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
 use filament_types::transaction_impl::{ExtensionHeader, ExtensionRecord, FlatInput, FlatOutput, WitnessEntry};
@@ -95,6 +96,36 @@ fn aux_from_json(c: &Value) -> BeaconHeader {
         beacon_height: c["beacon_height"].as_u64().unwrap() as u32,
         beacon_merkle_root: from_h32(&c["beacon_merkle_root"]),
         coinbase_hash: from_h32(&c["coinbase_hash"]),
+    }
+}
+
+struct MmCase { header: FullShardHeader, tree_depth: usize, expected: Option<(u16, u16)>, ref_s: Option<u32>, initial: [u8; 32], genesis_s: u32 }
+
+fn mm_class(r: Result<(), MergedMiningError>) -> &'static str {
+    match r {
+        Ok(()) => "ok",
+        Err(MergedMiningError::InvalidRbits(_)) => "invalid_rbits",
+        Err(MergedMiningError::ChainCountAboveMaximum(_)) => "count_above_max",
+        Err(MergedMiningError::InsufficientProofOfWork) => "insufficient_pow",
+        Err(MergedMiningError::HashSorting(_)) => "hash_sorting",
+        Err(MergedMiningError::ProofInvalid(_)) => "proof_invalid",
+    }
+}
+
+fn mm_case_from_json(c: &Value) -> MmCase {
+    let proof: Vec<MergedMiningHash> = c["proof"].as_array().unwrap().iter().map(|x| MergedMiningHash::from(from_h32(x))).collect();
+    let header = FullShardHeader::new(
+        c["height"].as_u64().unwrap() as u32, wh(from_h32(&c["prev_mmr_root"])), wh([0u8; 32]),
+        from_h32(&c["tx_merkle_root"]), c["difficulty"].as_u64().unwrap() as u32, proof,
+        c["shard_id"].as_u64().unwrap() as u16, aux_from_json(&c["aux"]),
+    );
+    MmCase {
+        header,
+        tree_depth: c["tree_depth"].as_u64().unwrap() as usize,
+        expected: c["expected"].as_array().map(|a| (a[0].as_u64().unwrap() as u16, a[1].as_u64().unwrap() as u16)),
+        ref_s: c["ref_s"].as_u64().map(|x| x as u32),
+        initial: from_h32(&c["initial"]),
+        genesis_s: c["genesis_s"].as_u64().unwrap() as u32,
     }
 }
 
@@ -307,6 +338,11 @@ fn every_shared_vector_matches() {
         assert_eq!(h(&sh.hash()), c["hash"].as_str().unwrap());
         assert_eq!(h(&sh.merged_mining_leaf_hash()), c["leaf_hash"].as_str().unwrap());
         assert_eq!(h(sh.hash_weighted().raw()), c["weighted"].as_str().unwrap());
+    }
+    for c in v["merged_mining_check"].as_array().unwrap() {
+        let m = mm_case_from_json(c);
+        let res = mm_class(verify_shard_id_and_mmn_with_ref_s(&m.header, m.tree_depth, m.expected, m.ref_s, &m.initial, m.genesis_s));
+        assert_eq!(res, c["result"].as_str().unwrap());
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {

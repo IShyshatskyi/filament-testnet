@@ -1296,6 +1296,434 @@
       "shard": null
     }
   ],
+  "merged_mining_check": [
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "ok",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": [
+        3,
+        3
+      ],
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "ok",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": [
+        2,
+        4
+      ],
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "ok",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": [
+        4,
+        5
+      ],
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "proof_invalid",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": 40,
+      "result": "invalid_rbits",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": 1,
+      "result": "ok",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "d49f16f2c28be348ebc779ae74a1befda4aee1bc81d76600f944d53b93a99840",
+        "bits": 50331649,
+        "coinbase_hash": "30f00ca0ad1be963d0e5d6ad1e5afb6d1b3cb841a78dc3fba32af1333546d59d",
+        "delta": -5,
+        "merged_mining_root": "4dc92f8faaa88620384fd26eae578ab8a62b35f8bf9c004915c727ea9e022003",
+        "nonce": 19,
+        "prev_mmr_root": "774e55b65ae012a82b99f20db4fa0bfed956d8e72855a7033470b1aaf2d85072",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 0,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "8a145bddf81c25d423c0f3983642ef91634ff02f66a04ffd3d172a38f3cff7cf",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": 40,
+      "result": "ok",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "532c9eced7972a41cb6494cadcc8478ec21e05672f5ce8a57fe4aa9307dd6d78"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "3600e4809bc66ebab6058f052cd0acf93db689b2dbbf1767118a648594320001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "proof_invalid",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "25e5efec80dbc7f8afd3358d46fd9250c8b3be90e4b657beaf3c14d92e726f2d",
+        "bits": 50331649,
+        "coinbase_hash": "16df10f82770103a28fb655e50f60b78defa7e2de2cf03faab709788dba64a68",
+        "delta": -5,
+        "merged_mining_root": "d83d9e2882cf5930e723d9824999b62a339541ae66e80b07071d121929682003",
+        "nonce": 65,
+        "prev_mmr_root": "570887cf2933276287f3de7b6db7d398a04fa517ec75af273fed5355adcc6d6d",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "db337c92f3b4c5cf7c5dd7d66fa9cb9bc62c8e0e16311fd11fc1bec627021f21",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "hash_sorting",
+      "shard_id": 2,
+      "tree_depth": 2,
+      "tx_merkle_root": "5d1b1ac845b0d25a2b5831b69ab16b765b50b8848e1e7cad3b56d811d9eefb05"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "5dfd733e335ecd14e7ed9560395968e1fc5f6b35e7fe183c43f6af2629047603",
+        "bits": 50331649,
+        "coinbase_hash": "6f59099313850e4f1df06ebd3514abc3bd8ad146885fd151e826b99e2eb12d55",
+        "delta": -5,
+        "merged_mining_root": "fa9ff9adbba044f43d79c4ff2078f1181f85d4cc3d24de902ac73a2f340a2003",
+        "nonce": 0,
+        "prev_mmr_root": "8d07aa0148c44263c2105d9a4724579c63daf394c9286aa917c54ecaa27c6d15",
+        "version": 536870912
+      },
+      "difficulty": 50331652,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "45e784aa6133bb81cb9f966b3c0062b6342077656a0c217b74439b8ea308936a",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "insufficient_pow",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "f228dc56f27994e423ec23588467e2a53bc39aa38082727a7d58f0accaebca8d"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "62f8240c62b6649a12e92a8c141aa34040b82a82d3adabb230fde8023c0fc43a",
+        "bits": 50331649,
+        "coinbase_hash": "ca60e01e9776aa2a8bd2ca21d86d73acee85b0b2eb8b2e32655f8367d4e81856",
+        "delta": -5,
+        "merged_mining_root": "2d1f1d16381063398d13a34bdcec121f7176f5d683a5ec9923176a2043972003",
+        "nonce": 0,
+        "prev_mmr_root": "66bcd68916d52d729ec8da97e91756fd8f9a4adef1a565d97a4cf56406d1093f",
+        "version": 536870912
+      },
+      "difficulty": 0,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "a5ee5a941de0b60638526d4009f067ab9c06c6ee48d2a57e91ad6b559c0a7be9",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "invalid_rbits",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "8a3e8c3f01545a2b77c4c3d14c7537ef3fbe613c9552c9a48312b71c91b1600a"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "984efe9032dcf16b0514952b0f66b5926d9fdd4c748efeea135fe89e7c2686f4",
+        "bits": 50331649,
+        "coinbase_hash": "6d2bfa808a8abc7d7ba4eaa619dd75eff30f676415b351dc2c5dca0c8214aa18",
+        "delta": -5,
+        "merged_mining_root": "a4571926cf790b2b561effca4f595578e62f3f9ef27e1f30838743ac910c2003",
+        "nonce": 0,
+        "prev_mmr_root": "94e2fc0dad021e69513e2fc84e5db0c06dd4601136c408a485aef062e365db89",
+        "version": 536870912
+      },
+      "difficulty": 50331649,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "9b20410502e84c8a1ae424bddadb947452eb400bafe8fd4804fe0e64d9e9aa47",
+      "proof": [
+        "85998e7e7e1bb7eff6450979cc80ccc6fdeaee5edbb39d1d682866deda080001",
+        "422f0589862112b703773b8d44457fc1b657645965cd86f21dfe737c7b3f1001"
+      ],
+      "ref_s": null,
+      "result": "invalid_rbits",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "f8e249cfa1f300d73dcf8afc3de65e8fe3b5e19750930185486e8f2491a65a1b"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "0b1997203287cd32f915c3a9c49062aa92cdcea92294641a89748eafa18dc388",
+        "bits": 50331649,
+        "coinbase_hash": "206a9d159ad4c456f4d8405a54eec4bf45e456b16f8ae6d1cdf89f16b6e4d155",
+        "delta": -5,
+        "merged_mining_root": "c83c7817fb1a2ec054e2896b5e3f17a0f050ffe9c0b040372a48994e4ebe0001",
+        "nonce": 36,
+        "prev_mmr_root": "a87e44e1543cd0ca555ce62ea439b9e6ad25fc5f4c8e0e8ea616b39146f20948",
+        "version": 536870912
+      },
+      "difficulty": 50331650,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "9602cd7473c2ec1913fd10fbdeebc75329f8296d22764a369981ba5fe19e9f37",
+      "proof": [],
+      "ref_s": null,
+      "result": "ok",
+      "shard_id": 0,
+      "tree_depth": 2,
+      "tx_merkle_root": "dab22246517533a13f0127389c1b5a10fde04a28c01ccccc7cea4532817c3f2c"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "4f9a8d358ecec419bbf2bf1cbcd14ac59e431132d5c25ccf994664b9f2001487",
+        "bits": 50331649,
+        "coinbase_hash": "54087c9dd958e7814465c63a3c73684d8e389e4e889491947fe762f058e18e9f",
+        "delta": -5,
+        "merged_mining_root": "7cf5936f6739a1c3170470bdba88c38b8bae82d5af44b6fc7723f3f0bded2004",
+        "nonce": 83,
+        "prev_mmr_root": "2cd98cbb0705439c9e0bd4db42ac3f9609840022f3ccdc5241a7661a2b841091",
+        "version": 536870912
+      },
+      "difficulty": 50331656,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "3cd42e76e3c2d13f9406d8ec9e747f699993e0c0f2bf4c66fe94ca264c9c13f4",
+      "proof": [
+        "7c54ad8a83ecc739d491caaf282a04a0f7f1e5bdb901575ed4a77446d0e50001",
+        "ee93c073ddab401b9e6fa3479a2b337da9b21046a5c40aa244597446344e1002"
+      ],
+      "ref_s": null,
+      "result": "proof_invalid",
+      "shard_id": 5,
+      "tree_depth": 2,
+      "tx_merkle_root": "57fe13a2df91dddf6bacb4be9365903ff3bf89debe14879f4c303d56bb8308a0"
+    },
+    {
+      "aux": {
+        "beacon_height": 77,
+        "beacon_merkle_root": "73b58add7921e1ecd99c802398b2a5c4a08b3bf7729b18c5b7142d849872e787",
+        "bits": 50331649,
+        "coinbase_hash": "5e834a1a3433d57cd80105b377b63d75db7daec6a7dc5a8fe037c782346212a5",
+        "delta": -5,
+        "merged_mining_root": "7a9d02028e1b65a5d54c33962e2312631f974c2bfcad76ea31c272013f8e6004",
+        "nonce": 50,
+        "prev_mmr_root": "799e18be313bda3b0511866af3e5939567fc39175d0c9a4f5f765ab02f34c315",
+        "version": 536870912
+      },
+      "difficulty": 50331656,
+      "expected": null,
+      "genesis_s": 2,
+      "height": 5,
+      "initial": "0f00000000000000000000000000000000000000000000000000000000000000",
+      "prev_mmr_root": "1e769c1e1e213c2872099b19f6cb5717e02384b55cbe5c5aa7d3d54e8ad577c1",
+      "proof": [
+        "0707070707070707070707070707070707070707070707070707070707074002",
+        "711d363f02bf762a0b0d772fd7bf4756d1c1e93e1a5ae5e11246fa0440400001"
+      ],
+      "ref_s": null,
+      "result": "proof_invalid",
+      "shard_id": 1,
+      "tree_depth": 2,
+      "tx_merkle_root": "c071c8b6f8bb61192391c7d97867b50ec13636c6d09f6f32ecca37b9c7f52698"
+    }
+  ],
   "merged_mining_hash": {
     "combines": [
       {
