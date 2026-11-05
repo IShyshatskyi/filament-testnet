@@ -133,7 +133,13 @@ if [[ -f "$DENY_LOCAL" ]]; then
   scan_denylist_file "$DENY_LOCAL"
 fi
 
+# The shared consensus vectors (tests/vectors) are data copied from the node, not scope: they are
+# excluded so the ceiling still measures source growth.
 types_kb=$(du -sk "$CRATES/filament-types" | awk '{print $1}')
+if [[ -d "$CRATES/filament-types/tests/vectors" ]]; then
+  vec_kb=$(du -sk "$CRATES/filament-types/tests/vectors" | awk '{print $1}')
+  types_kb=$(( types_kb - vec_kb ))
+fi
 p2p_kb=$(du -sk "$CRATES/filament-p2p" | awk '{print $1}')
 if (( types_kb > 512 )); then
   echo "error: crates/filament-types is ${types_kb}KiB (ceiling 512KiB) — possible scope leak" >&2
