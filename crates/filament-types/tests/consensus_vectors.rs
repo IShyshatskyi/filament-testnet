@@ -8,9 +8,11 @@ use filament_types::expand_voting::{
     admissible_s_bits_range, checked_s_bits_for_chain_count, compute_step_with, count_after_steps,
     s_bits_for_chain_count, shard_admissible_count_range, shard_reference_s_bits,
 };
-use filament_types::genesis::{BeaconGenesisConfig, ExpandVotingConfig, ShardGenesisConfig};
+use filament_types::genesis::{BeaconGenesisConfig, ShardGenesisConfig};
 use filament_types::genesis_network::NetworkGenesisConfig;
 use filament_types::hash::{hash_pair, sha256d};
+use filament_types::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
+use filament_types::transaction_impl::{ExtensionHeader, ExtensionRecord, FlatInput, FlatOutput, WitnessEntry};
 use filament_types::pow_check::{validate_one_wire_beacon_chunk, validate_wire_beacon_headers_pow_seq};
 use filament_types::merged_mining_hash::MergedMiningHash;
 use filament_types::pow_target::{hash_meets_target, rbits_to_target};
@@ -44,6 +46,41 @@ fn genesis_summary(g: &BeaconGenesisConfig) -> Value {
             "activation_delay": e.activation_delay, "epoch_length": e.epoch_length,
         },
     })
+}
+
+fn body_from_json(v: &Value) -> ShardBlockBody {
+    ShardBlockBody {
+        outputs: v["outputs"].as_array().unwrap().iter()
+            .map(|o| FlatOutput { value: o[0].as_u64().unwrap(), recipient: from_h32(&o[1]) }).collect(),
+        inputs: v["inputs"].as_array().unwrap().iter()
+            .map(|i| FlatInput { prev_height: i[0].as_u64().unwrap() as u32, prev_output_idx: i[1].as_u64().unwrap() as u16 }).collect(),
+        witnesses: v["witnesses"].as_array().unwrap().iter().map(|w| WitnessEntry { witness_data: hv(w) }).collect(),
+        extensions: v["extensions"].as_array().unwrap().iter().map(|e| {
+            let payload = hv(&e[2]);
+            ExtensionRecord {
+                header: ExtensionHeader { extension_type: e[0].as_u64().unwrap() as u16, version: e[1].as_u64().unwrap() as u16, payload_length: payload.len() as u32 },
+                payload,
+            }
+        }).collect(),
+        descriptors: v["descriptors"].as_array().unwrap().iter().map(|d| {
+            let n = |k: usize| d[k].as_u64().unwrap() as u32;
+            TransactionDescriptor { out_start: n(0), out_len: n(1), in_start: n(2), in_len: n(3), witness_start: n(4), witness_len: n(5) as u16, extension_start: n(6), extension_len: n(7) as u16 }
+        }).collect(),
+    }
+}
+
+/// Everything the light client derives from a body: leaves, root, and a proof per output.
+fn body_expectations(b: &ShardBlockBody) -> Value {
+    let leaves: Vec<String> = (0..b.descriptors.len()).map(|i| h(&b.tx_leaf_hash(i).unwrap())).collect();
+    let root = b.calculate_tx_merkle_root();
+    let proofs: Vec<Value> = (0..b.outputs.len() as u32)
+        .map(|o| {
+            let p: TxInclusionProof = b.tx_inclusion_proof(7, o).expect("proof");
+            assert!(p.verify(&root));
+            serde_json::json!({"output_idx": o, "tx_idx": p.tx_idx, "path": p.path.iter().map(|x| h(x)).collect::<Vec<_>>(), "value_is_committed": p.value_is_committed()})
+        })
+        .collect();
+    serde_json::json!({"leaves": leaves, "root": h(&root), "proofs": proofs})
 }
 
 fn h(b: &[u8]) -> String {
@@ -230,6 +267,10 @@ fn every_shared_vector_matches() {
     for c in v["genesis"]["shard_bits"].as_array().unwrap() {
         let got = ShardGenesisConfig::bits_from_beacon_nbits(c["beacon_rbits"].as_u64().unwrap() as u32, c["calibration"].as_u64().unwrap() as u32);
         assert_eq!(got as u64, c["out"].as_u64().unwrap());
+    }
+    for c in v["shard_body"].as_array().unwrap() {
+        let b = body_from_json(&c["body"]);
+        assert_eq!(body_expectations(&b), c["expect"]);
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {

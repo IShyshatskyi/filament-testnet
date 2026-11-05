@@ -20,6 +20,7 @@ pub mod mmr_math;
 pub mod merged_mining_hash;
 pub mod pow_target;
 pub mod pow_check;
+pub mod shard_body;
 pub mod crypto_escrow;
 pub mod ipp;
 
