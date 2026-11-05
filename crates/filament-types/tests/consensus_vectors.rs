@@ -6,6 +6,9 @@
 use filament_types::beacon_wire_header::WireBeaconHeader;
 use filament_types::hash::{hash_pair, sha256d};
 use filament_types::hash_sorting::{extract_sorting_bits, find_eligible_shard};
+use filament_types::mmr_math::{
+    fork_path_positions, genesis_mmr_root, peak_descriptors, replay_peaks_after_appends,
+};
 use filament_types::relay_hash::relay_id;
 use filament_types::tx_sighash::{prevouts_hash, sighash_v2};
 use filament_types::txid::txid_from_parts;
@@ -117,6 +120,32 @@ fn every_shared_vector_matches() {
             &inputs, &outputs, &exts,
         );
         assert_eq!(h(&out), c["out"].as_str().unwrap());
+    }
+    let m = &v["mmr_math"];
+    for c in m["peak_descriptors"].as_array().unwrap() {
+        let got: Vec<Vec<u64>> = peak_descriptors(c["leaf_count"].as_u64().unwrap() as u32)
+            .iter().map(|(p, hh)| vec![*p as u64, *hh as u64]).collect();
+        let want: Vec<Vec<u64>> = c["peaks"].as_array().unwrap().iter()
+            .map(|p| vec![p[0].as_u64().unwrap(), p[1].as_u64().unwrap()]).collect();
+        assert_eq!(got, want);
+    }
+    for c in m["replay_peaks_after_appends"].as_array().unwrap() {
+        let leaves: Vec<WeightedHash> = c["leaves"].as_array().unwrap().iter().map(|p| wh(from_h32(p))).collect();
+        let got = replay_peaks_after_appends(&peaks_of(&c["base_peaks"]), c["base_leaf_count"].as_u64().unwrap() as u32, &leaves);
+        let want: Vec<Vec<String>> = c["after"].as_array().unwrap().iter()
+            .map(|ps| ps.as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect()).collect();
+        let got: Vec<Vec<String>> = got.iter().map(|ps| ps.iter().map(|p| h(p.raw())).collect()).collect();
+        assert_eq!(got, want);
+    }
+    for c in m["genesis_mmr_root"].as_array().unwrap() {
+        assert_eq!(h(genesis_mmr_root(&from_h32(&c["anchor_hash"]), wh(from_h32(&c["leaf"]))).raw()), c["out"].as_str().unwrap());
+    }
+    for c in m["fork_path_positions"].as_array().unwrap() {
+        let got: Vec<Vec<u64>> = fork_path_positions(c["from"].as_u64().unwrap() as u32, c["to"].as_u64().unwrap() as u32)
+            .iter().map(|(i, l)| vec![*i as u64, *l as u64]).collect();
+        let want: Vec<Vec<u64>> = c["positions"].as_array().unwrap().iter()
+            .map(|p| vec![p[0].as_u64().unwrap(), p[1].as_u64().unwrap()]).collect();
+        assert_eq!(got, want);
     }
     for c in v["relay_id"].as_array().unwrap() {
         assert_eq!(h(&relay_id(&hv(&c["payload"]))), c["out"].as_str().unwrap());

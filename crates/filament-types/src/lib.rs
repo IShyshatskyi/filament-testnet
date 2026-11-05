@@ -16,6 +16,7 @@ pub mod verification;
 pub mod proofs;
 pub mod beacon_wire_header;
 pub mod weighted_mmr_peaks;
+pub mod mmr_math;
 pub mod crypto_escrow;
 pub mod ipp;
 
@@ -52,6 +53,10 @@ pub mod common {
         }
         pub use crate::genesis_network::GenesisGenerator;
         pub use genesis_config::BeaconGenesisConfig;
+    }
+
+    pub mod mmr_math {
+        pub use crate::mmr_math::*;
     }
 
     pub mod weighted_mmr_core {
