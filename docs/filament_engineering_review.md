@@ -1,5 +1,12 @@
 # Filament-Test engineering review (public packaging)
 
+> **Status note (Nov 5, 2026).** This review is a snapshot from Aug 25, 2026. Since then: thin sync
+> (beacon and shards), the 148-byte beacon header, genesis derived from the presets, the shared
+> consensus vectors and an almost fully synced `filament` crate landed. Read [../README.md](../README.md)
+> and [reference.md](reference.md) for the current state; the "not ready" verdict on bootstrap in the
+> table below no longer holds for genesis (derived locally) but still holds for a public Keystone
+> (there is none) and for live-fleet evidence (none yet).
+
 **Date:** 2026-08-25  
 **Scope:** Current `mmr-light-client` workspace (Filament-Test packaging: `filament`, `filament-types`, `filament-p2p`)  
 **Network name (public):** Heaviest Chain Rule Test Network  

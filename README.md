@@ -1,340 +1,133 @@
-# Filament-Test — MMR Light Client (public test packaging)
+# Filament — MMR light client for the Shisha test networks
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 
-This repository is **Filament-Test**: the public **test-network** packaging of the
-Filament MMR light client for the **Heaviest Chain Rule Test Network**.
+Filament follows the Shisha Network's chains **without trusting one node and without storing the
+chains**. It keeps a few kilobytes per chain (the Merkle Mountain Range peaks and the last 16
+headers), checks every header's proof of work, computes chain weight itself, and compares several
+full nodes before it believes anything. Full nodes (**Keystone**) serve data; Filament verifies it.
 
-It is **not** the production Filament product line. Use it to verify beacon and shard
-chain weight with Merkle Mountain Range (MMR) proofs on testnet — without a full UTXO
-set or every historical header.
+This repository is the public **test-network** packaging. It is experimental and unaudited:
+read [DISCLAIMER.md](DISCLAIMER.md) before use. Cargo package and binary: **`filament`**.
 
-GitHub repo name: `filament-testnet` (legacy local clone folder may still be
-`mmr-light-client`). Cargo package / binary name: **`filament`**.
+## What it verifies
 
-Pin / provenance: [`VERSION`](VERSION). Public packaging is the three crates under
-`crates/` only (`filament`, `filament-types`, `filament-p2p`).
+| Check | How |
+|---|---|
+| Genesis | Block 0 is generated locally from a network preset or the genesis file the nodes load. No peer supplies it. |
+| Proof of work | Every beacon header, and every shard block's auxiliary beacon header, is checked against its target. |
+| Linkage and weight | Each header must extend the root Filament computed; weight is computed from the leaves' work, never received. |
+| Agreement | A state is trusted only when at least two Keystones hold it (one with `--allow-single-keystone`). |
+| Payments | An invoice confirms only when the paying output is proved inside a block of a shard chain Filament verified. |
 
----
+It does **not** validate transactions, run consensus rules, mine, or keep a UTXO set. It relies on
+the network's proof of work like any light client. No zero-knowledge proofs are used.
+Details and limits: [docs/reference.md](docs/reference.md), sections 1 and 11.
 
-## Why MMR light clients?
+Traffic, measured on small test chains: a tip poll is about 110 bytes, a first sync 8–12 KB per
+chain, and one new block 350–550 bytes (the older full summary was 134–159 KB per poll).
 
-### The scalability problem
+## Networks
 
-**Network traffic efficiency and low latency are critical for blockchain scalability.**
+| Network | Chains | Note |
+|---|---|---|
+| `testnet2` | 15 | The announced community network (CPU mining) |
+| `testnet3` | 3 | ASIC-oriented |
+| `testnet1` | 3 | Historical |
+| `testnet-stress` | 3 | Short-lived load-test network |
+| `devnet` | 3 | Local development |
+| `mainnet` | 3 | Not launched |
 
-Traditional SPV (Simplified Payment Verification) clients have fundamental limitations
-that MMR light clients solve.
+`--network` must match the chain your Keystone serves. A mismatch appears as
+`Invalid chain summary proof`. For a local or custom chain, pass its genesis file with
+`--genesis-file`.
 
-### Traditional SPV (problems)
-
-| Operation | Traditional SPV | Network load |
-|-----------|-----------------|--------------|
-| Initial sync (1M blocks) | 80 MB headers | 80 MB download |
-| Verify 1M PoW hashes | Full computation | High CPU |
-| Daily sync (144 blocks, single Bitcoin-style chain) | ~11.5 KB | Constant overhead |
-| Daily sync (N shard chains, 37.5s blocks) | 144×16×N blocks, 136 B headers | ~306 KB × N |
-| Reorg (100 blocks) | Header redownload | Inefficient |
-
-Shard chains target a much faster ~37.5-second block interval than Bitcoin's 10 minutes —
-**16×** more blocks per day per chain (the calibration ratio between beacon and shard block
-cadence) — and each header carries more data than Bitcoin's 80 bytes (136 bytes per
-`LightShardHeader`). For **N** shard
-chains, that's `144 × 16 × N` block headers a traditional SPV client would need daily, growing
-linearly with shard count — exactly the load MMR proofs are designed to collapse to a
-near-constant summary instead.
-
-Every SPV client downloads headers for **every** block → O(n) load per client.
-Supporting thousands of SPV clients makes running full nodes expensive and limits
-decentralization.
-
-### MMR light clients (solution)
-
-| Operation | MMR client | Network load | Savings |
-|-----------|------------|--------------|---------|
-| Initial sync (1M blocks) | ~1–2 MB proof | Compact | **~98%** |
-| Verify chain weight | Proof verification | Low CPU | **~99%** |
-| Daily sync | Summary proof (~KB) | Minimal | **~99%** |
-| Reorg (100 blocks) | Fork proof (~KB) | Efficient | Large |
-
-**Key insight:** Proof size is **O(log n)**, not O(n). A million-block chain needs on
-the order of tens of hashes in a proof — not a million headers.
-
-### Why this matters for full nodes
-
-**Security of the network is based on full nodes.** They enforce protocol rules and
-are the only entities that should feed proofs to light clients.
-
-Traditional SPV burdens full nodes with large header downloads. MMR proofs cut that
-cost by ~50×, so more operators can afford to run full nodes → stronger decentralization.
-
-### Low latency / heaviest-chain following
-
-MMR clients request a **chain summary** (recent tips + cryptographic proof), verify
-**cumulative chain weight** (heaviest-chain rule), and converge in roughly **one RTT** —
-instead of downloading and re-checking long header sequences.
-
-### Multi-chain merged mining
-
-MMR-based SPV is especially valuable for **multi-chain merged-mining** designs with
-high block frequency and large headers (beacon + many shards):
-
-- Traditional header-only sync grows as *shards × blocks × header size*
-- Nodes need not watch every shard — only chains they care about
-- MMR proofs stay O(log n) per chain; no trusted checkpoints required for pruning
-
-**Trustless pruning:** keep genesis + recent blocks + proofs — not every historical
-header forever.
-
-### Summary
-
-1. **Network efficiency** — large bandwidth reduction per client  
-2. **Full-node sustainability** — more clients per node  
-3. **Decentralization** — cheaper full nodes → more full nodes  
-4. **Low latency** — fast heaviest-chain decisions  
-5. **Future-proof** — logarithmic growth with chain length  
-6. **Security** — verify work without downloading all headers  
-
----
-
-## What you get (current stack)
-
-| Crate | Role |
-|-------|------|
-| `crates/filament` | Light client: `WeightedMMRLight`, `MultiChainClient`, HTTP API `:7380`, wallet/invoices, Path-2 P2P |
-| `crates/filament-types` | `WeightedHash`, weighted proofs, verification (clean-room) |
-| `crates/filament-p2p` | ShishaNet codec + `PeerManager` (Path-2, clean-room) |
-
-**Filament-Test verifies proofs. Full nodes (Keystone) serve them.**
-
-Current cryptography uses **Weighted MMR** nodes (`WeightedHash`: compact hash +
-cumulative difficulty / rBits). ASIC-oriented PoW hashing remains compatible with
-Bitcoin-style verification where applicable. This is a **breaking upgrade** from the
-April 2026 classic SHA-256 MMR library (local `archive/` / git tag
-`archive/sha256-2026-04`; not published on this branch).
-
----
+There is **no always-on public Keystone** right now. Point Filament at one you run, or one whose
+operator gave you its URL, and check it first: `curl -s http://KEYSTONE_HOST:8080/health`.
 
 ## Quick start
-
-### Build
-
-Requires a recent Rust stable toolchain.
 
 ```bash
 cargo build --release -p filament --features full-node --bin filament
 ```
 
-Lean library only (verify + client, no HTTP/P2P):
-
-```bash
-cargo check -p filament
-```
-
-### Run (against a Keystone you operate or have been given)
-
-`--network` must match the genesis the Keystone is serving. A mismatch shows up as
-`Invalid chain summary proof` (the Bitcoin anchor in the genesis differs per network).
-
-There is **no always-on public Keystone** at the moment: earlier test endpoints were
-short-lived and are gone. Point the client at your own Keystone, or at one whose operator
-gave you its URL, and confirm it is up first (`curl -s http://<keystone-host>:8080/health`).
-Replace `<keystone-host>` with a real host name or IP (do **not** paste the literal
-`<keystone-host>`: shells treat `<` as redirection).
-
 ```bash
 ./target/release/filament \
-  --network devnet \
-  --keystone 'http://KEYSTONE_HOST:8080' \
-  --keystone-summary-port 8080 \
-  --port 7380 \
+  --network testnet2 \
+  --keystone 'http://KEYSTONE_A:8080' \
+  --keystone-extra 'http://KEYSTONE_B:8080' \
+  --thin-sync \
   --disable-p2p
 ```
 
-The Keystone **summary** API is plain HTTP on `mmr_light_client.summary_port` (no TLS).
-After ~30 s: `curl -s http://127.0.0.1:7380/sync/status` should show `phase: synced` and a
-non-zero `tip_height`. Wallet operations (a Keystone's `:18180`) should stay off the public
-Internet.
-
-Local API (loopback): `http://127.0.0.1:7380`
+After about 30 seconds:
 
 ```bash
 curl -s http://127.0.0.1:7380/health
-curl -s http://127.0.0.1:7380/sync/status
+curl -s http://127.0.0.1:7380/sync/status      # phase: synced, tip_height > 0
 ```
 
-Multi-node trust (optional): pass several Keystones so one node cannot hide a heavier chain.
+Notes:
+
+* Two Keystones give a quorum. With one, add `--allow-single-keystone` and accept the weaker trust.
+* `--thin-sync` is off by default until it has run against a live fleet. Without it Filament polls the
+  older, much larger chain summary.
+* Add `--thin-shard N` to follow shard `N`; an open invoice also starts following its shard.
+* The local API listens on loopback (`127.0.0.1:7380`). Keep a Keystone's wallet port off the public
+  internet.
+* Path-2 P2P (push notifications of payments) is on unless you pass `--disable-p2p`. The Keystone's
+  ShishaNet port is usually 18334 (`--keystone-p2p-port`). Check a node with
+  `./scripts/p2p_handshake_probe.sh HOST:18334 testnet2`.
+
+The full flag list is in [docs/reference.md](docs/reference.md), section 7.
+
+## As a library
 
 ```bash
-./target/release/filament \
-  --network devnet \
-  --keystone 'http://KEYSTONE_A:8080' \
-  --keystone-summary-port 8080 \
-  --keystone-extra 'http://KEYSTONE_B:8080'
+cargo run -p filament --example quickstart -- crates/filament/src/mmr_client/light_client_config.toml http://KEYSTONE_HOST:8080
 ```
 
-For a dedicated **`testnet-stress`** fleet (different genesis), use `--network testnet-stress`
-and Keystones started for that network.
+[`crates/filament/examples/quickstart.rs`](crates/filament/examples/quickstart.rs) shows the shape:
+load a bootstrap config, initialise a network's genesis (the example uses `devnet`), reconcile a
+Keystone's chain summary, and read the verified tip. The reference describes the rest of the API.
 
-Path-2 P2P (Keystone ShishaNet port often **18334**):
+## Crates
+
+| Crate | Role |
+|---|---|
+| [`crates/filament`](crates/filament) | The client, HTTP server, wallet, invoices, thin sync |
+| [`crates/filament-types`](crates/filament-types) | Clean-room types and verification: weighted hashes, proofs, genesis, shard header and body, merged-mining check |
+| [`crates/filament-p2p`](crates/filament-p2p) | ShishaNet codec and peer manager (wire v17) for the light-client handshake |
+
+`filament-types` and `filament-p2p` are independent re-implementations of the node's code. Every
+consensus function in them is checked byte for byte against the node through
+`crates/filament-types/tests/vectors/consensus_v1.json`, a file the node generates. A failing case
+means this repository drifted from the node.
 
 ```bash
-./target/release/filament \
-  --network testnet1 \
-  --keystone 'http://127.0.0.1:8080' \
-  --keystone-p2p-port 18334 \
-  --manual-peer '127.0.0.1:18334'
+cargo test --workspace --features full-node
 ```
-
-### Checking a Keystone with the handshake probe
-
-`filament-p2p` ships a small probe that dials a ShishaNet peer and reports whether the
-light-client handshake completes:
-
-```bash
-./scripts/p2p_handshake_probe.sh KEYSTONE_HOST:18334 devnet
-# optionally pin the expected genesis hash (64 hex characters):
-./scripts/p2p_handshake_probe.sh KEYSTONE_HOST:18334 testnet-stress <genesis-hash-hex>
-```
-
-What the handshake checks:
-
-- **Network magic.** Each network has its own 4-byte magic (for example `SHDV` devnet,
-  `SHTS` testnet-stress). A peer on another network is refused at the first frame.
-- **Genesis pin.** The `version` message carries a 32-byte genesis hash. When both sides send a
-  non-zero hash and the hashes differ, the connection is refused. The client fills in its
-  hash from the embedded network config; networks whose genesis has not been mined yet send
-  zeros and are not pinned. For `testnet-stress` the pinned hash is
-  `00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040`.
-- **Timeouts.** A peer that never sends `version`/`verack` is dropped after 5 s; a dial that does
-  not connect within 10 s is abandoned.
-
-The public `filament-p2p` speaks ShishaNet wire **v15** and negotiates `min(ours, theirs)`,
-so it connects to nodes on newer versions but does not use features introduced after v15.
-
----
-
-## Key features
-
-### Verification levels
-
-| Level | Use case | PoW |
-|-------|----------|-----|
-| Beacon block data | Beacon chain | Full where required |
-| Full shard block data | Recent / weight-critical | Full |
-| Light shard block data | Deep history | Compact / trusted hash path |
-
-### Strategies
-
-- **Full** — MMR structure for all blocks; PoW for full payloads  
-- **Light** — MMR-focused (maximum efficiency)  
-- **Paranoid** — MMR + PoW wherever applicable (maximum scrutiny)  
-
-### Multi-chain
-
-One beacon + N shards via `MultiChainClient`, independent sync per chain, selective
-shard following.
-
-### Product surface (Filament-Test)
-
-- HTTP API on `:7380` (health, sync, wallet helpers, invoices, …)  
-- Watch / invoice flows and optional Path-2 inclusion notifications  
-- Multi-Keystone endpoints for heaviest-chain / trust floor checks (MNT)  
-
----
-
-## Architecture (conceptual)
-
-```text
-MultiChainClient
-  ├── BeaconChainHandler  (WeightedMMRLight + tip / weight)
-  └── ShardChainHandlers  (per shard_id)
-        └── proofs verified via filament-types
-
-Wallet / HTTP / P2P  →  Filament-Test :7380  →  verifies Weighted MMR proofs
-                              │
-                              ▼
-                    Keystone full node (prove_*)
-```
-
----
-
-## Security model
-
-### No zero-knowledge proofs
-
-**This client does not use and is not designed around ZK light-client schemes.**
-
-Position (mathematical, not fashion):
-
-- ZK “proofs” in this setting are probabilistic arguments, not absolute proofs  
-- Fork choice must not collapse to a **single** data provider  
-- Heaviest-chain selection should be checkable from **independent** peers  
-- Prefer long-studied hash / Merkle / PoW structure over novel trusted setups  
-
-**What Filament-Test uses instead:**
-
-- Weighted MMR + Merkle-style structure (hash trees)  
-- Proof-of-work / cumulative **chain weight** (heaviest-chain rule)  
-- Multi-peer / multi-Keystone verification where configured  
-- Bitcoin-style anchoring at genesis (network-specific)  
-
-### Core properties
-
-- Verify cumulative work **without** all headers  
-- Detect and follow heavier forks via proofs  
-- No single Keystone as the sole trust root when MNT is enabled  
-- Genesis + Bitcoin anchor from bootstrap config  
-
-### Trust assumptions
-
-- Correct genesis / anchor configuration  
-- At least one honest proof-serving full node among those you query (stronger with many)  
-- Hash function and PoW assumptions of the network  
-
-Filament-Test does **not** mine and does **not** hold a full UTXO database.
-
----
 
 ## Documentation
 
-| Doc | Contents |
-|-----|----------|
-| This README | Product narrative, build/run, security stance |
-| [DISCLAIMER.md](DISCLAIMER.md) | Legal / experimental notice |
-| [docs/filament_engineering_review.md](docs/filament_engineering_review.md) | Current Filament-Test packaging status (Aug 2026) |
-| [archive/](archive/) (local only; gitignored) | Classic-MMR snapshot — see tag `archive/sha256-2026-04` |
+| Document | Contents |
+|---|---|
+| [docs/reference.md](docs/reference.md) | Technical reference: data model, proofs, thin sync, genesis and networks, API, security model |
+| [docs/filament_engineering_review.md](docs/filament_engineering_review.md) | Status review of this packaging (Aug 2026, partly superseded) |
+| [DISCLAIMER.md](DISCLAIMER.md) | Experimental-software notice |
 
-The long-form “why MMR / SPV / multi-chain” narrative is kept in this README (drawn from
-the April README). Obsolete classic-MMR **source** is not published in this branch
-(`archive/` is gitignored; recover via tag `archive/sha256-2026-04` if needed).
+## Repository boundary
 
----
-
-## Public packaging boundary
-
-This repo must stay thin: only `filament`, `filament-types`, and `filament-p2p`.
-Private full-node engines (including `WindowedWeightedMMR` / `weighted_mmr_core`
-layout) must never appear under `crates/`.
-
-```bash
-# Hard-fail on denylist hits (also runs in GitHub Actions on main)
-./scripts/check_public_boundary.sh --strict
-```
-
-Policy files: `scripts/public_allowlist.txt`, `scripts/public_denylist.txt`.
-Maintainer-only maps (gitignored): `scripts/local/README.md`.
-
----
+This repository holds only the three crates above. Full-node and mining code never appears here.
+`scripts/check_public_boundary.sh --strict` enforces it, and `scripts/sync_filament_public.sh`
+brings the `filament` crate over from the node's repository (its header describes the process).
+`VERSION` records the commit a sync came from.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Experimental / unaudited testnet software —
-see [DISCLAIMER.md](DISCLAIMER.md).
+MIT, see [LICENSE](LICENSE). Experimental and unaudited testnet software.
 
 ## Acknowledgments
 
-- FlyClient (Bünz et al.) for MMR-oriented light-client ideas  
-- Bitcoin SPV / proof-of-work security model  
-- Heaviest Chain Rule as the fork-choice foundation of this test-network design
+FlyClient (Bünz et al.) for MMR-based light-client ideas, and Bitcoin's SPV and proof-of-work model.

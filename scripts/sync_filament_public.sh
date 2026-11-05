@@ -515,6 +515,10 @@ PY2
     return 1
   fi
 
+  echo "  publish the technical reference as docs/reference.md"
+  mkdir -p "$ROOT/docs"
+  cp "$SHISHA/crates/filament/src/mmr_client/README.md" "$ROOT/docs/reference.md"
+
   echo "  boundary check --strict"
   if ! "$CHECK" --strict; then
     cleanup_on_fail
