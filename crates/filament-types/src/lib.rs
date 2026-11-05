@@ -17,6 +17,8 @@ pub mod proofs;
 pub mod beacon_wire_header;
 pub mod weighted_mmr_peaks;
 pub mod mmr_math;
+pub mod merged_mining_hash;
+pub mod pow_target;
 pub mod crypto_escrow;
 pub mod ipp;
 
@@ -27,6 +29,12 @@ pub mod common {
         pub use crate::tx_sighash;
         pub use crate::tx_sighash::{prevouts_hash, sighash_v2};
         pub use crate::weighted_hash;
+        pub mod merged_mining_hash {
+            pub use crate::merged_mining_hash::*;
+        }
+        pub mod difficulty {
+            pub use crate::pow_target::hash_meets_target;
+        }
         pub use crate::weighted_hash::{
             bag_peaks_weighted, bag_peaks_weighted_u128, hash_pair_weighted, rbits_add,
             rbits_to_u128_approx, u128_to_rbits, WeightedHash,

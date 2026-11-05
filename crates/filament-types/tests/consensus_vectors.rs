@@ -5,6 +5,8 @@
 
 use filament_types::beacon_wire_header::WireBeaconHeader;
 use filament_types::hash::{hash_pair, sha256d};
+use filament_types::merged_mining_hash::MergedMiningHash;
+use filament_types::pow_target::{hash_meets_target, rbits_to_target};
 use filament_types::hash_sorting::{extract_sorting_bits, find_eligible_shard};
 use filament_types::mmr_math::{
     fork_path_positions, genesis_mmr_root, peak_descriptors, replay_peaks_after_appends,
@@ -120,6 +122,36 @@ fn every_shared_vector_matches() {
             &inputs, &outputs, &exts,
         );
         assert_eq!(h(&out), c["out"].as_str().unwrap());
+    }
+    let mm = &v["merged_mining_hash"];
+    for c in mm["leaves"].as_array().unwrap() {
+        assert_eq!(h(MergedMiningHash::from_active_leaf(&from_h32(&c["shard_hash"])).raw()), c["out"].as_str().unwrap());
+    }
+    for c in mm["combines"].as_array().unwrap() {
+        let levels = c["levels"].as_array().unwrap();
+        let mut cur: Vec<MergedMiningHash> = levels[0].as_array().unwrap().iter().map(|x| MergedMiningHash::from(from_h32(x))).collect();
+        for want in &levels[1..] {
+            cur = cur.chunks(2).map(|p| MergedMiningHash::combine(&p[0], &p[1])).collect();
+            let got: Vec<String> = cur.iter().map(|x| h(x.raw())).collect();
+            let want: Vec<String> = want.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+            assert_eq!(got, want);
+        }
+    }
+    for c in mm["parts"].as_array().unwrap() {
+        let prefix: [u8; 30] = hv(&c["prefix"]).try_into().unwrap();
+        let x = MergedMiningHash::from_parts(&prefix, c["tree_height"].as_u64().unwrap() as u8, c["chain_count"].as_u64().unwrap() as u16);
+        assert_eq!(h(x.raw()), c["out"].as_str().unwrap());
+        assert_eq!(MergedMiningHash::chain_count_of_root(x.raw()) as u64, c["root_chain_count"].as_u64().unwrap());
+        assert_eq!(MergedMiningHash::tree_height_of_root(x.raw()) as u64, c["root_tree_height"].as_u64().unwrap());
+        let swapped = MergedMiningHash::root_with_chain_count(*x.raw(), c["swapped_count"].as_u64().unwrap() as u16);
+        assert_eq!(h(&swapped), c["swapped"].as_str().unwrap());
+    }
+    for c in v["pow_target"]["targets"].as_array().unwrap() {
+        let got = rbits_to_target(c["rbits"].as_u64().unwrap() as u32, &from_h32(&c["initial"]), c["s"].as_u64().unwrap() as u32);
+        assert_eq!(h(&got), c["out"].as_str().unwrap());
+    }
+    for c in v["pow_target"]["meets"].as_array().unwrap() {
+        assert_eq!(hash_meets_target(&from_h32(&c["hash"]), &from_h32(&c["target"])), c["out"].as_bool().unwrap());
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {
