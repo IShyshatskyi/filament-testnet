@@ -34,7 +34,7 @@ fn calculate_aux_hash(height: u32, merged_mining_root: [u8; 32]) -> [u8; 32] {
 }
 
 /// `SHA256d(coinbase_hash ‖ aux_hash)`: the value in the commitment slot of the 80-byte header.
-fn calculate_commitment_hash_from_coinbase(
+pub(crate) fn calculate_commitment_hash_from_coinbase(
     height: u32,
     coinbase_hash: [u8; 32],
     merged_mining_root: [u8; 32],

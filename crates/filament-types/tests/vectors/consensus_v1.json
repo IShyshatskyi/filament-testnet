@@ -4627,6 +4627,262 @@
       }
     }
   ],
+  "shard_header": {
+    "aux": [
+      {
+        "beacon_height": 70874,
+        "beacon_merkle_root": "bc9519443be8191d97496d953fb12c5bc416af355b65bb66e9790bf95b36d64d",
+        "bits": 50331649,
+        "coinbase_hash": "5a35ae09dcb5db6db07ffbe3b6cd56f24f658bd5c0ef638845c0dada3a764671",
+        "delta": -28252,
+        "for_mining": "00000020651beed8da4c6def13be93e983d0aab1af7d33063022b85b94907da418d426e26775271fd100c56eb1083ecd6f5df847d3f20199a26c455c56674d8e099d864da491ffff0100000341b20ca6",
+        "hash": "9cdb6e0cee39595c3beca7be3fa2f0e96e27ad4286d0d7f93e945780a4a0cd53",
+        "merged_mining_root": "b5ce29a591fbf82e689016d52731bc8448a7854339e0b9f6067e8e98dd7c99a0",
+        "nonce": 2785849921,
+        "prev_mmr_root": "651beed8da4c6def13be93e983d0aab1af7d33063022b85b94907da418d426e2",
+        "version": 536870912,
+        "weighted": "9cdb6e0cee39595c3beca7be3fa2f0e96e27ad4286d0d7f93e94578003000001"
+      },
+      {
+        "beacon_height": 43306,
+        "beacon_merkle_root": "0204a641f1c30fa08a08301b5a1ce5481b0a2376a847bcedcfaad09a63457ed2",
+        "bits": 50331650,
+        "coinbase_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "delta": -48510,
+        "for_mining": "010000208c588edfb56d7faa3de7cc52857c97ccb311d1541f36a39150bfaa0229e5f6cce0528fa4c8617e8fd6cd0461fb9a460d94428e40a75e701375891de19e4c137b8242ffff0200000395acb84b",
+        "hash": "fae8892a9802373b4e26626fff7549d7bace22c940434eae29351043b866c904",
+        "merged_mining_root": "2e3eb6d122399ed5d219fb0d6c6b3b3d61dbde7e3fd7fbde979ed75166d97ea4",
+        "nonce": 1270394005,
+        "prev_mmr_root": "8c588edfb56d7faa3de7cc52857c97ccb311d1541f36a39150bfaa0229e5f6cc",
+        "version": 536870913,
+        "weighted": "fae8892a9802373b4e26626fff7549d7bace22c940434eae2935104303000002"
+      },
+      {
+        "beacon_height": 99812,
+        "beacon_merkle_root": "8589277ca9aa2012d607a1d93dc234db59701b0aa94a027cf9702a518da446bf",
+        "bits": 50331652,
+        "coinbase_hash": "583abb3ba33e6a2a2cda1140f4cdaa2798f29272384213a47d71621ac2152904",
+        "delta": -38151,
+        "for_mining": "02000020df69830675e9de3accf8f7d0e9eb53b43da4cb89370f15d0359cdcd89fd8f5424cd8128c042df2c69846cfd814e23e13fb414f6842f5f49a0d1635c58573d28bf96affff04000003416ffb7a",
+        "hash": "b60cfda7bccb3c06d3b8ef30781ba47d084f81f59e087447ba6cbbfe5b8ece08",
+        "merged_mining_root": "4d8856535a6893271d9661cfc3d4e46e7172bb46c7107f5dd5b80e79a926d9d1",
+        "nonce": 2063298369,
+        "prev_mmr_root": "df69830675e9de3accf8f7d0e9eb53b43da4cb89370f15d0359cdcd89fd8f542",
+        "version": 536870914,
+        "weighted": "b60cfda7bccb3c06d3b8ef30781ba47d084f81f59e087447ba6cbbfe03000004"
+      },
+      {
+        "beacon_height": 51579,
+        "beacon_merkle_root": "79ba30024a4c345a4d65cfc7be6c323ec708beb44fb51d8d16a5618fc4a17c6d",
+        "bits": 50331776,
+        "coinbase_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "delta": -24117,
+        "for_mining": "03000020167ce4a0851b066e6e71e4ffb678a0290c2232a15000f2b2484529822cf5a13b10bef23bb3f2d185a178ef1ef0e75253611e66a7aa113602d72e4ed48aed0ad1cba1ffff8000000318871eca",
+        "hash": "088a869ea1cc9cf58cf09043455574fd5f5e8d6a9cd5482624ec43228a050607",
+        "merged_mining_root": "c24551f2099e48dec9d7cef2ba0914aa26982bde83cdec099606592dc04f288f",
+        "nonce": 3390998296,
+        "prev_mmr_root": "167ce4a0851b066e6e71e4ffb678a0290c2232a15000f2b2484529822cf5a13b",
+        "version": 536870915,
+        "weighted": "088a869ea1cc9cf58cf09043455574fd5f5e8d6a9cd5482624ec432203000080"
+      },
+      {
+        "beacon_height": 92902,
+        "beacon_merkle_root": "7f353700e279890ed5e4ffe63c0dd8865c8ee9c063d6f05b404a4098a2cefaef",
+        "bits": 50332160,
+        "coinbase_hash": "d45a8271c5486136616b6f0662b43635f74d3b2fece8f0e0aca6501dc017b493",
+        "delta": -38245,
+        "for_mining": "04000020f43d11f36972f96d8fe218069ea2140a8a90698162ac48462b21486e8b2d0db849b3be7dc6dadb2ac0f8b11108aa31b483bfb77a757d20dc51c14ea84b35dc369b6affff00020003b34379d3",
+        "hash": "df3cbc3df47b3bc0cd65ff61bb2bda99ab7d2f6e0c4c5d71477efff63a04fb73",
+        "merged_mining_root": "a99bebd9b1e5026cde8677bea6d0b65e531e97a2047f6603afc481643f3d1e00",
+        "nonce": 3547939763,
+        "prev_mmr_root": "f43d11f36972f96d8fe218069ea2140a8a90698162ac48462b21486e8b2d0db8",
+        "version": 536870916,
+        "weighted": "df3cbc3df47b3bc0cd65ff61bb2bda99ab7d2f6e0c4c5d71477efff603000200"
+      },
+      {
+        "beacon_height": 698,
+        "beacon_merkle_root": "7ee97d6ed113081c2c8dacf48b078baa361faf676a3e36d0884c5122f8f2211f",
+        "bits": 51380224,
+        "coinbase_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "delta": -22990,
+        "for_mining": "05000020a9eff104eb2404f436c61a5f10d0839d3abea79de31bc756c63f38bbef97df89988ab98e22ea8dd0e62703c96e8b37c4544278a9081ea1567454366c588847b832a6ffff0000100384166c8d",
+        "hash": "b8d2de78042b26d728d57d46cce344095c9e2c68d16052445cfc012065a22e96",
+        "merged_mining_root": "397ecb513b7f473385467ab7c821497748b3c5d6e2b745fd2eea31c03bb6ee76",
+        "nonce": 2372671108,
+        "prev_mmr_root": "a9eff104eb2404f436c61a5f10d0839d3abea79de31bc756c63f38bbef97df89",
+        "version": 536870917,
+        "weighted": "b8d2de78042b26d728d57d46cce344095c9e2c68d16052445cfc012003100000"
+      },
+      {
+        "beacon_height": 21642,
+        "beacon_merkle_root": "b286ea33d0a10e143fbf844717bd705c8199c12ccbcedda9f25a2a0c99d12f54",
+        "bits": 58720255,
+        "coinbase_hash": "c7f2749a0936b83ce24ae01f05e396d4f7727f015a651650d2d15ba7c056fa23",
+        "delta": -43548,
+        "for_mining": "060000208a6dae593e4f4eb1d11395a46dd15fd6b6ed8e23f170432eed5d1e44a1118e9c8421c6992a6ec61e504ba60781e843102b4981ac88dd88116dd702ab1556eb37e455ffffffff7f03562e0bd8",
+        "hash": "f0d4e61358572d4d99a435065156b4326d579f46c3c2ace2fc684bdafb737d87",
+        "merged_mining_root": "16ba90be29d8a6c4e2de45e32715d44fdfad969dcc84d1dd4417359a2aee33e2",
+        "nonce": 3624611414,
+        "prev_mmr_root": "8a6dae593e4f4eb1d11395a46dd15fd6b6ed8e23f170432eed5d1e44a1118e9c",
+        "version": 536870918,
+        "weighted": "f0d4e61358572d4d99a435065156b4326d579f46c3c2ace2fc684bda037fffff"
+      },
+      {
+        "beacon_height": 40982,
+        "beacon_merkle_root": "6afa429372a3cb8b1ea5abb3d749ab8bd4752e69d199efda3fdca5f62a82bc16",
+        "bits": 67174400,
+        "coinbase_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "delta": -10448,
+        "for_mining": "0700002010f43d3bfe0143d0f88b44a17d5235cfeffc85632e278342d62c0c38c8e53a6b521a6691f265fdb1134fb31b98d4497e441ef47ced3ef0db1da46911e979fc1c30d7ffff00000104e158da26",
+        "hash": "0c34d43efce718ad55852f30150c180b8868d2b51ba9f19068b853957d87175d",
+        "merged_mining_root": "0fc1f3acd7b8f4fd4d85e14d241f9d4907b5bc27d0fec720ad6d24252f3d045d",
+        "nonce": 651843809,
+        "prev_mmr_root": "10f43d3bfe0143d0f88b44a17d5235cfeffc85632e278342d62c0c38c8e53a6b",
+        "version": 536870919,
+        "weighted": "0c34d43efce718ad55852f30150c180b8868d2b51ba9f19068b8539504010000"
+      }
+    ],
+    "headers": [
+      {
+        "aux_index": 0,
+        "beacon_coinbase": "43f9743edccfe2ff427eec0d69d50e48c653abf8d58857b7629677212debee83fc75992c8ad7b8b936900ff152f833df4a",
+        "current_mmr_root": "5d9eb85004790d2621d8b7d51e63d5d9d19f4c410629ebdcaed24f28ca6c6355",
+        "difficulty": 50331776,
+        "for_hash": "457a09004cfe3592bfdc38f7b086c7d2ebcf3f0cbda52f0f73b89995b63503bdfb5a994f8b26a818ec76ab8306b44d8691c489dceeee705de9c2b262b3744a27cdaab157800000039cdb6e0cee39595c3beca7be3fa2f0e96e27ad4286d0d7f93e945780a4a0cd53a491ffff3143f9743edccfe2ff427eec0d69d50e48c653abf8d58857b7629677212debee83fc75992c8ad7b8b936900ff152f833df4a",
+        "hash": "b1d88eed6d3e45b8be9621dd2e378780cd22a8d762bfd189564f32ee23ea3932",
+        "height": 621125,
+        "leaf_hash": "e730843857fcc0c950eeb1820d07f2f48b6cc044289ea6140c6746a34dbcda70",
+        "prev_mmr_root": "4cfe3592bfdc38f7b086c7d2ebcf3f0cbda52f0f73b89995b63503bdfb5a994f",
+        "proof": [],
+        "shard_id": 3130,
+        "tx_merkle_root": "8b26a818ec76ab8306b44d8691c489dceeee705de9c2b262b3744a27cdaab157",
+        "weighted": "b1d88eed6d3e45b8be9621dd2e378780cd22a8d762bfd189564f32ee03000080"
+      },
+      {
+        "aux_index": 1,
+        "beacon_coinbase": null,
+        "current_mmr_root": "4e5b13c567c3067d786ed6f9fea5447ba45c3905d3f447f61d87cac8bda27556",
+        "difficulty": 50332160,
+        "for_hash": "4c9d0b00ad4d1e83a5daec8876bad2b26e96b827824253091ab276608704cf08549bf5865375bf3ba1fdc15c793f4d061dc07501475b6fbed79d2ea031b4cf099581eff600020003fae8892a9802373b4e26626fff7549d7bace22c940434eae29351043b866c9048242ffff",
+        "hash": "22934530a6bfc3554a8a905a9d3894175730b9ede4cdd28c420b0bd0e37fac2a",
+        "height": 761164,
+        "leaf_hash": "0eed656bb456ea68d961ae4e04b4c3d099468e2c0fed0e781ad4d9f3c798c1d7",
+        "prev_mmr_root": "ad4d1e83a5daec8876bad2b26e96b827824253091ab276608704cf08549bf586",
+        "proof": [
+          "5a58224c796b4c3e6a4af36936feb4ba7e7643fc10f6e48b12af8dfd18e39b5d"
+        ],
+        "shard_id": 3961,
+        "tx_merkle_root": "5375bf3ba1fdc15c793f4d061dc07501475b6fbed79d2ea031b4cf099581eff6",
+        "weighted": "22934530a6bfc3554a8a905a9d3894175730b9ede4cdd28c420b0bd003000200"
+      },
+      {
+        "aux_index": 2,
+        "beacon_coinbase": null,
+        "current_mmr_root": "560a41b75090c9a1c2dda35cfacf8f91f9aaa7aecd936da2ec7b979ecbdc9e0c",
+        "difficulty": 51380224,
+        "for_hash": "791c0a002b48bc2296db4e697b5a189c2236a47c0f9467fc990d41b1e7b83555869f313d1b2e3f1f5526279687b607f2aa607bcf2af88a202a4307675aa7c447d4d1160800001003b60cfda7bccb3c06d3b8ef30781ba47d084f81f59e087447ba6cbbfe5b8ece08f96affff",
+        "hash": "ae671cb06a44222a4f236d11678fe7f63156608c353b9889ecfe72e74b45243c",
+        "height": 662649,
+        "leaf_hash": "7f82a282ca02b0c8b63365f7847c6270d0270ed65468f5cdd41d6e614fa7a84a",
+        "prev_mmr_root": "2b48bc2296db4e697b5a189c2236a47c0f9467fc990d41b1e7b83555869f313d",
+        "proof": [
+          "df4a5bdde9e59ace8aab7c662ff3ffb05df051d2084eb919fde478a0ef77cc79",
+          "748a7669da1b1137607a88a5c920f01094f2b9be7371609871a408817c0931a2"
+        ],
+        "shard_id": 3444,
+        "tx_merkle_root": "1b2e3f1f5526279687b607f2aa607bcf2af88a202a4307675aa7c447d4d11608",
+        "weighted": "ae671cb06a44222a4f236d11678fe7f63156608c353b9889ecfe72e703100000"
+      },
+      {
+        "aux_index": 3,
+        "beacon_coinbase": "546878a2052d07092b05e5a8ed5aa29d5c8a9be275cb187ecccfb0353507e58c117f6de9940f374dab20d0d31632d66517",
+        "current_mmr_root": "dcc6c32d0447c6fa517610c15dd4302cfde2bff52c7a98037882033bb52060b2",
+        "difficulty": 58720255,
+        "for_hash": "45e700002b491da71aedb1737959d64ec2649b778b8be4a3a742b04d5cc04804577602ba7c1b22d76ea9af624a00f181a7757678cab02ff3e5258ab62b9d6a3fcefcbc1effff7f03088a869ea1cc9cf58cf09043455574fd5f5e8d6a9cd5482624ec43228a050607cba1ffff31546878a2052d07092b05e5a8ed5aa29d5c8a9be275cb187ecccfb0353507e58c117f6de9940f374dab20d0d31632d66517",
+        "hash": "bbdc2b7f9b911e97962f5adeca338e65d1cfd5913309fb4e3647dd4464d1e8bf",
+        "height": 59205,
+        "leaf_hash": "c94d5fff740863a3672e2535a4661d7822090c794aac010b4380781c1f1e01fc",
+        "prev_mmr_root": "2b491da71aedb1737959d64ec2649b778b8be4a3a742b04d5cc04804577602ba",
+        "proof": [
+          "dce30c2d216d27881b8d23aa3a2e6bf9c1ecb5ffe76f85da5897194e62a2f5b1",
+          "7672e7da60e45e3512e1e48e43c3855d502c43743c30d23708befa051ce6a45a",
+          "74c9778651813797e6fb6bb6b3092b729115a71f8a2c3b98fa1f1b3f7e3a118b"
+        ],
+        "shard_id": 3153,
+        "tx_merkle_root": "7c1b22d76ea9af624a00f181a7757678cab02ff3e5258ab62b9d6a3fcefcbc1e",
+        "weighted": "bbdc2b7f9b911e97962f5adeca338e65d1cfd5913309fb4e3647dd44037fffff"
+      },
+      {
+        "aux_index": 4,
+        "beacon_coinbase": null,
+        "current_mmr_root": "a4e8094a944bd5cd75521979b636cf7e915dd3c28439e50d6abfe76afa22babe",
+        "difficulty": 67174400,
+        "for_hash": "61060600f89c3bf0bc798fbbc1d5215f337ff8782ac606475bbe0d262601b0eaee8ac82694ea18051805e3b141fef892455982dbfdbfd0c799ce12ecc2410b94915ab45f00000104df3cbc3df47b3bc0cd65ff61bb2bda99ab7d2f6e0c4c5d71477efff63a04fb739b6affff",
+        "hash": "bcd5a6841711ce532e6d811fceadc6a920537fa5478d1efca646d49acd21498f",
+        "height": 394849,
+        "leaf_hash": "1d45264a747186dfc5508fa28d6bb5e3287523f098c66a09258242d1d79bb076",
+        "prev_mmr_root": "f89c3bf0bc798fbbc1d5215f337ff8782ac606475bbe0d262601b0eaee8ac826",
+        "proof": [],
+        "shard_id": 2241,
+        "tx_merkle_root": "94ea18051805e3b141fef892455982dbfdbfd0c799ce12ecc2410b94915ab45f",
+        "weighted": "bcd5a6841711ce532e6d811fceadc6a920537fa5478d1efca646d49a04010000"
+      },
+      {
+        "aux_index": 5,
+        "beacon_coinbase": null,
+        "current_mmr_root": "25811c9a2cda0ccd6751e276a5731ee1052cbd96ad95b33e1df7612983a5f71a",
+        "difficulty": 100728832,
+        "for_hash": "912d0900fe0b561d9d24fdf5699843831a3dbfe519259c5ff47e48a9137baf22ff710016b353cbee74dcc771d4491c4c466c002d47842246d729d5498f3099519f7f14d000000106b8d2de78042b26d728d57d46cce344095c9e2c68d16052445cfc012065a22e9632a6ffff",
+        "hash": "4d2b9eaa5731c8736ce5a4551c2fb47e0ca4a02bf83e9a9dbb813b51f98447ef",
+        "height": 601489,
+        "leaf_hash": "ec9ce3d2e09467d2104686d46e8051bde26cb85beefc5b54b13057453ee3119f",
+        "prev_mmr_root": "fe0b561d9d24fdf5699843831a3dbfe519259c5ff47e48a9137baf22ff710016",
+        "proof": [
+          "11ccf5f7f0d48237c90379554c56f28a8e23f6f48ecc0e9749ec74c8f90d6a16"
+        ],
+        "shard_id": 302,
+        "tx_merkle_root": "b353cbee74dcc771d4491c4c466c002d47842246d729d5498f3099519f7f14d0",
+        "weighted": "4d2b9eaa5731c8736ce5a4551c2fb47e0ca4a02bf83e9a9dbb813b5106010000"
+      },
+      {
+        "aux_index": 6,
+        "beacon_coinbase": "038778f2c5c2256b21d76cf6b74462c413b1f8354f45515f1305db3252ce9b1c22f6c1021024242c347a84abd065c5cecd",
+        "current_mmr_root": "422306030ad9a04884bfe86d99bf9667fb0f1a2dd83c050324a574d07031c4af",
+        "difficulty": 219152384,
+        "for_hash": "1ee608003901b1e403f729fa7b0de9f5bcc645f4a1e1ac146cd368b522f0cd9b49acef186e8585b29b8fe8d7e415e4bf60e6e65bcf24bc4c3baedace468f398f48df6c620000100df0d4e61358572d4d99a435065156b4326d579f46c3c2ace2fc684bdafb737d87e455ffff31038778f2c5c2256b21d76cf6b74462c413b1f8354f45515f1305db3252ce9b1c22f6c1021024242c347a84abd065c5cecd",
+        "hash": "3a1e37ba6006c577fe15c3e3b5528f7100dc08f43e6827ac714784e9f2e90c2a",
+        "height": 583198,
+        "leaf_hash": "a70261fc435d850209992af15cbb9b06462a56e93789f0d4b52aa8bf981a460b",
+        "prev_mmr_root": "3901b1e403f729fa7b0de9f5bcc645f4a1e1ac146cd368b522f0cd9b49acef18",
+        "proof": [
+          "f152392f1913af6414bc4581485ce6da6cb27292ad7fbc34084ca79b1659cf06",
+          "9000e2b7f23cdb4e91e03d2be534a2e8109f21aca2c821762e18a0e2e45392a3"
+        ],
+        "shard_id": 920,
+        "tx_merkle_root": "6e8585b29b8fe8d7e415e4bf60e6e65bcf24bc4c3baedace468f398f48df6c62",
+        "weighted": "3a1e37ba6006c577fe15c3e3b5528f7100dc08f43e6827ac714784e90d100000"
+      },
+      {
+        "aux_index": 7,
+        "beacon_coinbase": null,
+        "current_mmr_root": "f8bb42d269834cc98fc029473c7634adce505a6ca882fd11ef17d14f231e911c",
+        "difficulty": 50331649,
+        "for_hash": "e29d0b0082c91664ab6b90f391c47e679e115765583d2326edadfcaf222d4f492dad432c00aef683db6246855cc3229ab5118f18dad179822f922458f914c050c052bd8a010000030c34d43efce718ad55852f30150c180b8868d2b51ba9f19068b853957d87175d30d7ffff",
+        "hash": "c1e30044b6f49fa6132c572094c3f1b7ef52515083a857c5d0a3b6602713db10",
+        "height": 761314,
+        "leaf_hash": "143c570b6f410440d28db7f9472e355ab9b582682f2a86e5becd34d9e180413e",
+        "prev_mmr_root": "82c91664ab6b90f391c47e679e115765583d2326edadfcaf222d4f492dad432c",
+        "proof": [
+          "47783641374c7bd977e5cc671c052f0f7dc16eb2dff1bfcfbfe3eb89b692dd2e",
+          "b83b0795e291ab37cfdb0a41ed01959cb8dd373910fceecd03dc0317cb7cc957",
+          "7bbbac4ca2ca8e04cd5cee0dd95e02b0341393296cd21a61127846073417c0c8"
+        ],
+        "shard_id": 1296,
+        "tx_merkle_root": "00aef683db6246855cc3229ab5118f18dad179822f922458f914c050c052bd8a",
+        "weighted": "c1e30044b6f49fa6132c572094c3f1b7ef52515083a857c5d0a3b66003000001"
+      }
+    ]
+  },
   "sighash": {
     "prevouts_hash": [
       {

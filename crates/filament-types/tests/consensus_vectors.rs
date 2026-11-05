@@ -11,6 +11,7 @@ use filament_types::expand_voting::{
 use filament_types::genesis::{BeaconGenesisConfig, ShardGenesisConfig};
 use filament_types::genesis_network::NetworkGenesisConfig;
 use filament_types::hash::{hash_pair, sha256d};
+use filament_types::shard_header::{BeaconHeader, FullShardHeader};
 use filament_types::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
 use filament_types::transaction_impl::{ExtensionHeader, ExtensionRecord, FlatInput, FlatOutput, WitnessEntry};
 use filament_types::pow_check::{validate_one_wire_beacon_chunk, validate_wire_beacon_headers_pow_seq};
@@ -81,6 +82,20 @@ fn body_expectations(b: &ShardBlockBody) -> Value {
         })
         .collect();
     serde_json::json!({"leaves": leaves, "root": h(&root), "proofs": proofs})
+}
+
+fn aux_from_json(c: &Value) -> BeaconHeader {
+    BeaconHeader {
+        version: c["version"].as_u64().unwrap() as u32,
+        delta: c["delta"].as_i64().unwrap() as i32,
+        nonce: c["nonce"].as_u64().unwrap(),
+        prev_mmr_root: wh(from_h32(&c["prev_mmr_root"])),
+        merged_mining_root: from_h32(&c["merged_mining_root"]),
+        bits: c["bits"].as_u64().unwrap() as u32,
+        beacon_height: c["beacon_height"].as_u64().unwrap() as u32,
+        beacon_merkle_root: from_h32(&c["beacon_merkle_root"]),
+        coinbase_hash: from_h32(&c["coinbase_hash"]),
+    }
 }
 
 fn h(b: &[u8]) -> String {
@@ -271,6 +286,27 @@ fn every_shared_vector_matches() {
     for c in v["shard_body"].as_array().unwrap() {
         let b = body_from_json(&c["body"]);
         assert_eq!(body_expectations(&b), c["expect"]);
+    }
+    for c in v["shard_header"]["aux"].as_array().unwrap() {
+        let aux = aux_from_json(c);
+        assert_eq!(h(&aux.serialize_for_mining()), c["for_mining"].as_str().unwrap());
+        assert_eq!(h(&aux.hash()), c["hash"].as_str().unwrap());
+        assert_eq!(h(aux.hash_weighted().raw()), c["weighted"].as_str().unwrap());
+    }
+    for c in v["shard_header"]["headers"].as_array().unwrap() {
+        let aux = aux_from_json(&v["shard_header"]["aux"][c["aux_index"].as_u64().unwrap() as usize]);
+        let proof: Vec<MergedMiningHash> = c["proof"].as_array().unwrap().iter().map(|x| MergedMiningHash::from(from_h32(x))).collect();
+        let mut sh = FullShardHeader::new(
+            c["height"].as_u64().unwrap() as u32, wh(from_h32(&c["prev_mmr_root"])), wh(from_h32(&c["current_mmr_root"])),
+            from_h32(&c["tx_merkle_root"]), c["difficulty"].as_u64().unwrap() as u32, proof, c["shard_id"].as_u64().unwrap() as u16, aux,
+        );
+        if let Some(rec) = c["beacon_coinbase"].as_str() {
+            sh = sh.with_beacon_coinbase(hex::decode(rec).unwrap());
+        }
+        assert_eq!(h(&sh.serialize_for_hash()), c["for_hash"].as_str().unwrap());
+        assert_eq!(h(&sh.hash()), c["hash"].as_str().unwrap());
+        assert_eq!(h(&sh.merged_mining_leaf_hash()), c["leaf_hash"].as_str().unwrap());
+        assert_eq!(h(sh.hash_weighted().raw()), c["weighted"].as_str().unwrap());
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {
