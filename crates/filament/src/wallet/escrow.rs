@@ -22,11 +22,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bitcoin::secp256k1::rand::rngs::OsRng;
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
-use common_types::common::crypto::escrow::{
+use network_common::common::crypto::escrow::{
     escrow_sighash, recovery_witness, EscrowPolicy, WITNESS_TYPE_ESCROW_COOP, WITNESS_TYPE_ESCROW_RECOVERY,
 };
-use common_types::common::crypto::{prevouts_hash, sighash_v2};
-use common_types::transaction::types::{Transaction, TxInput, TxOutput};
+use network_common::common::crypto::{prevouts_hash, sighash_v2};
+use network_common::transaction::types::{Transaction, TxInput, TxOutput};
 use serde::{Deserialize, Serialize};
 
 /// Backup file format version.
@@ -127,7 +127,7 @@ impl EscrowRecord {
     pub fn chain_id(&self) -> u16 {
         match self.shard_id {
             None => 0,
-            Some(s) => common_types::transaction::shard_chain_id(s),
+            Some(s) => network_common::transaction::shard_chain_id(s),
         }
     }
 }
@@ -148,7 +148,8 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
-fn own_xonly(key: &SecretKey) -> [u8; 32] {
+#[doc(hidden)] // used by the monorepo-only tests (crates/filament-tests)
+pub fn own_xonly(key: &SecretKey) -> [u8; 32] {
     Keypair::from_secret_key(&Secp256k1::new(), key).x_only_public_key().0.serialize()
 }
 
@@ -506,4 +507,88 @@ impl EscrowStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    const H: u32 = 500;
+
+    fn keys() -> (SecretKey, SecretKey) {
+        (SecretKey::from_slice(&[0x51; 32]).unwrap(), SecretKey::from_slice(&[0x52; 32]).unwrap())
+    }
+
+    fn setup(dir: &Path) -> (EscrowStore, EscrowRecord, EscrowPolicy, SecretKey, SecretKey) {
+        let (payer, provider) = keys();
+        let policy = new_policy(&payer, own_xonly(&provider), H, 100, 50).unwrap();
+        let store = EscrowStore::open(dir).unwrap();
+        let rec = store.add(&policy, Some(0), "Northwind Pay").unwrap();
+        let rec = store.add_outpoint(&rec.id, EscrowOutpoint { height: 7, output_idx: 0, value_atoms: 10_000 }).unwrap();
+        (store, rec, policy, payer, provider)
+    }
+
+    #[test]
+    fn policy_checks() {
+        let (payer, provider) = keys();
+        assert!(matches!(new_policy(&payer, own_xonly(&payer), H, 100, 50), Err(EscrowError::SameKeys)));
+        assert!(matches!(new_policy(&payer, [0u8; 32], H, 100, 50), Err(EscrowError::InvalidKey(_))));
+        assert!(matches!(
+            new_policy(&payer, own_xonly(&provider), 150, 100, 50),
+            Err(EscrowError::UnlockTooSoon { min_unlock_height: 151, .. })
+        ));
+        assert!(new_policy(&payer, own_xonly(&provider), 151, 100, 50).is_ok());
+    }
+
+
+
+    #[test]
+    fn payer_half_refuses_wrong_key_and_foreign_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_s, rec, policy, _payer, provider) = setup(dir.path());
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxInput { prev_height: 7, prev_output_idx: 0 }],
+            outputs: vec![TxOutput { value: 9_000, recipient: policy.sender_pk }],
+            locktime: 0,
+            expiration_height: 0,
+            witnesses: Vec::new(),
+            extensions: Vec::new(),
+        };
+        let c = rec.chain_id();
+        assert!(matches!(
+            sign_payer_half(&tx, 0, c, &[(10_000, policy.hash())], &policy, &provider),
+            Err(EscrowError::WrongKey)
+        ));
+        let (payer, _) = keys();
+        assert!(matches!(
+            sign_payer_half(&tx, 0, c, &[(10_000, [9u8; 32])], &policy, &payer),
+            Err(EscrowError::NotThisEscrow(0))
+        ));
+    }
+
+
+    #[test]
+    fn store_backup_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, rec, policy, _payer, _p) = setup(dir.path());
+        assert_eq!(store.not_backed_up().unwrap().len(), 1);
+        let json = store.export_backup().unwrap();
+        assert!(store.not_backed_up().unwrap().is_empty());
+        // Adding the same policy again returns the existing record.
+        assert_eq!(store.add(&policy, Some(0), "x").unwrap().id, rec.id);
+
+        let other = tempfile::tempdir().unwrap();
+        let restored = EscrowStore::open(other.path()).unwrap();
+        assert_eq!(restored.import_backup(&json).unwrap(), 1);
+        assert_eq!(restored.import_backup(&json).unwrap(), 0, "import is idempotent");
+        let r = restored.get(&rec.id).unwrap();
+        assert_eq!(r.policy().unwrap(), policy);
+        assert_eq!(r.outpoints, rec.outpoints);
+
+        let after = store.remove_outpoint(&rec.id, 7, 0).unwrap();
+        assert!(after.outpoints.is_empty());
+
+        // A tampered backup (H changed, P kept) is refused.
+        let bad = json.replace(&format!("\"unlock_height\": {H}"), "\"unlock_height\": 501");
+        assert!(matches!(restored.import_backup(&bad), Err(EscrowError::BadBackup(_))));
+    }
+}

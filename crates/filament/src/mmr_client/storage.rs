@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 
-use common_types::common::proofs::types::BlockData;
+use network_common::common::proofs::types::BlockData;
 use crate::mmr_client::chain_handler::ChainState;
 
 // ============================================================================
@@ -447,8 +447,8 @@ impl LightClientStorage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common_types::common::proofs::types::BeaconBlockData;
-    use common_types::common::crypto::weighted_hash::WeightedHash;
+    use network_common::common::proofs::types::BeaconBlockData;
+    use network_common::common::crypto::weighted_hash::WeightedHash;
     use crate::mmr_client::chain_handler::ChainType;
     use crate::mmr_client::weighted_mmr_light::WeightedMMRLight;
 

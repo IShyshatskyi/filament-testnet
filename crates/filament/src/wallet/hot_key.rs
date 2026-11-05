@@ -208,4 +208,57 @@ impl HotKeyStore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn create_unlock_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = HotKeyStore::open(dir.path()).unwrap();
+        assert!(store.info().unwrap().is_none());
+        assert!(matches!(store.unlock("whatever-pass"), Err(HotKeyError::NotFound)));
+
+        let secret = SecretKey::from_slice(&[0x5a; 32]).unwrap();
+        assert!(matches!(store.create(&secret, "short"), Err(HotKeyError::WeakPassword)));
+        let info = store.create(&secret, "correct horse").unwrap();
+        assert_eq!(info.pubkey_hex, hex::encode(xonly(&secret)));
+        assert_eq!(store.info().unwrap().unwrap(), info);
+        assert_eq!(store.unlock("correct horse").unwrap(), secret);
+        assert!(matches!(store.unlock("wrong horse!"), Err(HotKeyError::Decrypt)));
+
+        // Never overwritten.
+        assert!(matches!(store.generate("another pass"), Err(HotKeyError::AlreadyExists)));
+        assert_eq!(store.unlock("correct horse").unwrap(), secret);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.path().join(HOT_KEY_FILE)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn altered_file_does_not_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = HotKeyStore::open(dir.path()).unwrap();
+        store.generate("correct horse").unwrap();
+        let path = dir.path().join(HOT_KEY_FILE);
+        let original = fs::read_to_string(&path).unwrap();
+
+        // Swapped public key (the AAD) → no decrypt.
+        let mut f: HotKeyFile = serde_json::from_str(&original).unwrap();
+        f.pubkey_hex = hex::encode(xonly(&SecretKey::from_slice(&[0x11; 32]).unwrap()));
+        fs::write(&path, serde_json::to_vec(&f).unwrap()).unwrap();
+        assert!(matches!(store.unlock("correct horse"), Err(HotKeyError::Decrypt)));
+
+        // Flipped ciphertext byte → no decrypt.
+        let mut f: HotKeyFile = serde_json::from_str(&original).unwrap();
+        let mut ct = hex::decode(&f.ciphertext_hex).unwrap();
+        ct[0] ^= 1;
+        f.ciphertext_hex = hex::encode(ct);
+        fs::write(&path, serde_json::to_vec(&f).unwrap()).unwrap();
+        assert!(matches!(store.unlock("correct horse"), Err(HotKeyError::Decrypt)));
+    }
+}

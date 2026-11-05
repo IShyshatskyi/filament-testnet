@@ -18,7 +18,7 @@ The authoritative module documentation is **[`../README.md`](../README.md)** (th
 |---|---|
 | `archive/README.md` (v0.2.0 "verification optimization" note) | `../README.md` |
 | `archive/DEPENDENCIES_AND_OBSTACLES.md` ("80% ready for standalone release") | Crate split Gap 8 — `crates/filament/` exists |
-| `archive/UPDATED_IMPLEMENTATION_PLAN.md`, `archive/architecture_summary.md` | The implemented architecture (`../README.md`, `HybridMMRState`, peaks-only light MMR ownership split) |
+| `archive/UPDATED_IMPLEMENTATION_PLAN.md`, `archive/architecture_summary.md` | The implemented architecture (`../README.md`, `HybridMMRState`, `WindowedWeightedMMR` ownership split) |
 | `archive/integration_guide2.md` | `crates/filament/` facade + `filament_app/` Tauri scaffold |
 | `archive/proof_sigs_download.md` (Jan 2026, v0.3.0 proof signatures) | WeightedHash migration (Mar 2026) — pre-`Weighted*` proof types |
 | `archive/wallet_light_client_plan.md` | `docs/plan/Filament_UTXO_Discovery_Design.md` + P2P Phase 10 + `filament_app/docs/` plans |

@@ -371,9 +371,9 @@ pub struct PayResponse {
 
 impl PayResponse {
     /// The `PayHalfSign` message for the provider endpoint (`common::ipp`).
-    pub fn to_message(&self, session_id: &str, payment_request_id: &str, chain_id: u16) -> common_types::common::ipp::PayHalfSign {
-        common_types::common::ipp::PayHalfSign {
-            version: common_types::common::ipp::IPP_VERSION,
+    pub fn to_message(&self, session_id: &str, payment_request_id: &str, chain_id: u16) -> network_common::common::ipp::PayHalfSign {
+        network_common::common::ipp::PayHalfSign {
+            version: network_common::common::ipp::IPP_VERSION,
             session_id: session_id.to_string(),
             payment_request_id: payment_request_id.to_string(),
             chain_id,
@@ -381,7 +381,7 @@ impl PayResponse {
             prevouts: self
                 .prevouts
                 .iter()
-                .map(|p| common_types::common::ipp::Prevout { value_atoms: p.value_atoms, recipient_hex: p.recipient_hex.clone() })
+                .map(|p| network_common::common::ipp::Prevout { value_atoms: p.value_atoms, recipient_hex: p.recipient_hex.clone() })
                 .collect(),
             payer_sigs_hex: self.payer_sigs_hex.clone(),
         }
@@ -491,4 +491,96 @@ pub async fn submit_raw_tx(
         .map_err(EscrowApiError::Unavailable)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn rec(outpoints: Vec<EscrowOutpoint>) -> EscrowRecord {
+        EscrowRecord {
+            id: "abcd".into(),
+            provider_label: String::new(),
+            shard_id: Some(0),
+            sender_pk_hex: String::new(),
+            provider_pk_hex: String::new(),
+            unlock_height: 100,
+            policy_hash_hex: String::new(),
+            outpoints,
+            created_at_ms: 0,
+            backed_up_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn view_state_follows_tip_and_h() {
+        let o = vec![EscrowOutpoint { height: 5, output_idx: 0, value_atoms: 700 }];
+        assert_eq!(view(rec(vec![]), Some(10)).state, "empty");
+        assert_eq!(view(rec(o.clone()), None).state, "unknown");
+        assert_eq!(view(rec(o.clone()), Some(50)).state, "open");
+        assert_eq!(view(rec(o.clone()), Some(94)).state, "closing");
+        assert_eq!(view(rec(o.clone()), Some(100)).state, "recoverable");
+        assert_eq!(view(rec(o), Some(50)).value_atoms, 700);
+    }
+
+    /// Funding watch against a fake indexer: new outputs are added, an indexed-and-missing
+    /// one is forgotten, one above the indexer's height is kept, other chains are ignored.
+    #[tokio::test]
+    async fn sync_outpoints_follows_the_indexer() {
+        use axum::{routing::get, Json, Router};
+        let dir = tempfile::tempdir().unwrap();
+        let store = EscrowStore::open(dir.path()).unwrap();
+        let policy = network_common::common::crypto::escrow::EscrowPolicy {
+            sender_pk: [1; 32],
+            provider_pk: [2; 32],
+            unlock_height: 500,
+        };
+        let rec = store.add(&policy, Some(0), "P").unwrap();
+        store.add_outpoint(&rec.id, EscrowOutpoint { height: 10, output_idx: 0, value_atoms: 5 }).unwrap(); // spent
+        store.add_outpoint(&rec.id, EscrowOutpoint { height: 99, output_idx: 0, value_atoms: 6 }).unwrap(); // above indexer
+
+        let p_hex = rec.policy_hash_hex.clone();
+        let app = Router::new().route(
+            "/explorer/utxos",
+            get(move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                let p = p_hex.clone();
+                async move {
+                    assert_eq!(q.get("address"), Some(&p));
+                    let (utxos, truncated, cursor) = if q.get("cursor").is_none() {
+                        (serde_json::json!([
+                            { "chain": "shard", "shard_id": 0, "height": 20, "output_idx": 1, "value": 700 },
+                            { "chain": "shard", "shard_id": 3, "height": 21, "output_idx": 0, "value": 9 }
+                        ]), true, Some("c1"))
+                    } else {
+                        (serde_json::json!([{ "chain": "shard", "shard_id": 0, "height": 22, "output_idx": 2, "value": 800 }]), false, None)
+                    };
+                    Json(serde_json::json!({
+                        "address": p, "utxos": utxos, "truncated": truncated, "next_cursor": cursor,
+                        "as_of": [{ "chain": "shard", "shard_id": 0, "indexed_height": 50, "durable_height": 50 }]
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let warnings = sync_outpoints(&store, &reqwest::Client::new(), &[format!("http://{addr}")]).await;
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut got: Vec<(u32, u16, u64)> =
+            store.get(&rec.id).unwrap().outpoints.iter().map(|o| (o.height, o.output_idx, o.value_atoms)).collect();
+        got.sort();
+        assert_eq!(got, vec![(20, 1, 700), (22, 2, 800), (99, 0, 6)]);
+
+        // Unreachable indexer: a warning, nothing changed.
+        let w = sync_outpoints(&store, &reqwest::Client::new(), &["http://127.0.0.1:1".into()]).await;
+        assert_eq!(w.len(), 1);
+        assert_eq!(store.get(&rec.id).unwrap().outpoints.len(), 3);
+    }
+
+    #[test]
+    fn pick_refuses_unknown_outpoint() {
+        let r = rec(vec![EscrowOutpoint { height: 5, output_idx: 1, value_atoms: 700 }]);
+        assert_eq!(pick(&r, &None).unwrap().len(), 1);
+        assert_eq!(pick(&r, &Some(vec![OutpointRef { height: 5, output_idx: 1 }])).unwrap().len(), 1);
+        assert!(pick(&r, &Some(vec![OutpointRef { height: 5, output_idx: 0 }])).is_err());
+    }
+}

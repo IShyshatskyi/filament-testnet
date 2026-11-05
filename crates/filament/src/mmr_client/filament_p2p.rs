@@ -72,7 +72,9 @@ pub fn protocol_for_network(network: &str) -> ShishaProtocol {
 }
 
 /// The beacon genesis hash of a known network, derived from its preset (never from a stored
-/// copy of the hash). `None` for a network without a preset.
+/// copy of the hash: the copy this replaced had drifted from the real testnet-stress hash and
+/// would have refused every real peer). `None` for a network without a preset, and for `devnet`:
+/// many unrelated local chains run as `devnet`, so its name does not identify one genesis.
 fn genesis_hash_for_network(network: &str) -> Option<[u8; 32]> {
     use network_common::common::genesis::genesis::GenesisGenerator;
     use network_common::common::genesis::genesis_config::BeaconGenesisConfig;
@@ -81,7 +83,6 @@ fn genesis_hash_for_network(network: &str) -> Option<[u8; 32]> {
         "testnet1" => BeaconGenesisConfig::testnet1(),
         "testnet2" => BeaconGenesisConfig::testnet2(),
         "testnet3" => BeaconGenesisConfig::testnet3(),
-        "devnet" => BeaconGenesisConfig::devnet(),
         "testnet-stress" => BeaconGenesisConfig::testnet_stress(),
         _ => return None,
     };
@@ -369,7 +370,7 @@ mod tests {
     }
     /// The hash the full node documents for testnet-stress. If this drifts, every
     /// real client is refused at the handshake, so it is pinned here on purpose.
-    const TESTNET_STRESS_GENESIS: &str = "00000622f98d6d0582578e855345d39af3a8fe966846ac3fa4ddbc3103000040";
+    const TESTNET_STRESS_GENESIS: &str = "000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080";
 
     fn hex32(s: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
@@ -387,13 +388,20 @@ mod tests {
     }
 
     #[test]
-    fn networks_without_a_mined_genesis_advertise_unknown() {
-        // devnet / testnet1 / testnet2 / mainnet carry an all-zero hash in the
-        // bootstrap config until they are mined; zero must never be sent as a
-        // real identity (a node compares only when both sides are non-zero, but
-        // pinning zero would make intent unreadable).
-        for net in ["devnet", "testnet1", "testnet2", "mainnet"] {
-            assert_eq!(protocol_for_network(net).genesis_hash(), [0u8; 32], "{net} should be unpinned");
+    fn named_networks_are_pinned_to_their_preset_genesis_except_devnet() {
+        use network_common::common::genesis::genesis::GenesisGenerator;
+        use network_common::common::genesis::genesis_config::BeaconGenesisConfig;
+        // devnet's name does not identify a chain (every local soak genesis runs as devnet).
+        assert_eq!(protocol_for_network("devnet").genesis_hash(), [0u8; 32], "devnet should be unpinned");
+        for (net, cfg) in [
+            ("mainnet", BeaconGenesisConfig::mainnet()),
+            ("testnet1", BeaconGenesisConfig::testnet1()),
+            ("testnet2", BeaconGenesisConfig::testnet2()),
+            ("testnet3", BeaconGenesisConfig::testnet3()),
+        ] {
+            let want = GenesisGenerator::beacon_genesis_hash(&cfg).unwrap();
+            assert_ne!(want, [0u8; 32]);
+            assert_eq!(protocol_for_network(net).genesis_hash(), want, "{net}");
         }
     }
 

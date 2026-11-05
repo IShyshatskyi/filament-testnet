@@ -18,10 +18,10 @@
 
 use std::collections::VecDeque;
 
-use common_types::common::blocks::beacon_wire_header::{WireBeaconHeader, WIRE_BEACON_HEADER_SIZE};
-use common_types::common::proofs::{ThinSessionResponse, ThinTipResponse};
-use common_types::common::crypto::weighted_hash::{bag_peaks_weighted_u128, WeightedHash};
-use common_types::common::weighted_mmr_core::WeightedMMR;
+use network_common::common::blocks::beacon_wire_header::{WireBeaconHeader, WIRE_BEACON_HEADER_SIZE};
+use network_common::common::proofs::{ThinSessionResponse, ThinTipResponse};
+use network_common::common::crypto::weighted_hash::{bag_peaks_weighted_u128, WeightedHash};
+use network_common::common::mmr_math;
 
 /// How many full headers are kept (owner decision, Oct 29, 2026).
 pub const RECENT_HEADERS: usize = 16;
@@ -57,7 +57,7 @@ impl std::error::Error for ThinSyncError {}
 fn decode_headers_hex(hex_str: &str) -> Result<Vec<WireBeaconHeader>, ThinSyncError> {
     let bytes = hex::decode(hex_str).map_err(|_| ThinSyncError::BadResponse("headers are not valid hex".into()))?;
     if bytes.len() % WIRE_BEACON_HEADER_SIZE != 0 {
-        return Err(ThinSyncError::BadResponse("headers are not whole 150-byte records".into()));
+        return Err(ThinSyncError::BadResponse("headers are not whole 148-byte records".into()));
     }
     bytes
         .chunks_exact(WIRE_BEACON_HEADER_SIZE)
@@ -254,19 +254,12 @@ impl ThinBeaconState {
 
     /// Proof-of-work check of one header against this state's genesis facts.
     pub fn check_pow(&self, h: &WireBeaconHeader) -> Result<(), ThinSyncError> {
-        // Same check as filament-p2p::pow_validator (kept local so thin_chain
-        // does not require the optional full-node p2p feature).
-        let _ = self.genesis_asserted_s_bits;
-        let pow = h.pow_hash();
-        for i in 0..32 {
-            if pow[i] < self.initial_target[i] {
-                return Ok(());
-            }
-            if pow[i] > self.initial_target[i] {
-                return Err(ThinSyncError::BadPow("pow does not meet target"));
-            }
-        }
-        Ok(())
+        network_common::common::pow_check::validate_wire_beacon_headers_pow_seq(
+            &h.serialize(),
+            &self.initial_target,
+            self.genesis_asserted_s_bits,
+        )
+        .map_err(|(_, why)| ThinSyncError::BadPow(why))
     }
 
     /// Verify `h` as the next block and append it. On error the state is unchanged.
@@ -289,7 +282,7 @@ impl ThinBeaconState {
         let next_count = self.leaf_count.checked_add(1).ok_or(ThinSyncError::Overflow)?;
         let leaf = WeightedHash::from_leaf_rbits(&h.pow_hash(), h.bits);
         let (peaks, root, weight) =
-            WeightedMMR::compute_peaks_after_append(&self.peaks, self.leaf_count, leaf, self.anchor);
+            mmr_math::compute_peaks_after_append(&self.peaks, self.leaf_count, leaf, self.anchor);
 
         self.peaks = peaks;
         self.root = root;
@@ -302,5 +295,3 @@ impl ThinBeaconState {
         Ok(())
     }
 }
-
-

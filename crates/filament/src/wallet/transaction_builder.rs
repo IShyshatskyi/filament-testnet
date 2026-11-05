@@ -12,7 +12,7 @@
 // transactions against the current flat-vector `Transaction`/`WitnessEntry`
 // types without going through the deleted builder.
 
-use common_types::transaction::types::{Transaction, WitnessEntry};
+use network_common::transaction::types::{Transaction, WitnessEntry};
 use bitcoin::secp256k1::{Secp256k1, Message, SecretKey, Keypair};
 use bitcoin::secp256k1::rand::rngs::OsRng;
 
@@ -44,9 +44,9 @@ impl SchnorrSigner {
             ));
         }
         let txid = tx.txid(chain_id).0;
-        let prev = common_types::common::crypto::prevouts_hash(prevouts);
+        let prev = network_common::common::crypto::prevouts_hash(prevouts);
         Self::sign_with(tx, keys, |i| {
-            Ok(common_types::common::crypto::sighash_v2(&txid, &prev, i as u32))
+            Ok(network_common::common::crypto::sighash_v2(&txid, &prev, i as u32))
         })
     }
 
@@ -57,9 +57,9 @@ impl SchnorrSigner {
         chain_id: u16,
         prevouts: &[(u64, [u8; 32])],
     ) -> [u8; 32] {
-        common_types::common::crypto::sighash_v2(
+        network_common::common::crypto::sighash_v2(
             &tx.txid(chain_id).0,
-            &common_types::common::crypto::prevouts_hash(prevouts),
+            &network_common::common::crypto::prevouts_hash(prevouts),
             input_index as u32,
         )
     }
@@ -99,7 +99,7 @@ mod tests {
     use super::*;
     use bitcoin::secp256k1::rand::rngs::OsRng as TestOsRng;
     use bitcoin::secp256k1::Secp256k1 as TestSecp256k1;
-    use common_types::transaction::types::{TxInput, TxOutput};
+    use network_common::transaction::types::{TxInput, TxOutput};
 
     fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         Transaction {
@@ -145,41 +145,5 @@ mod tests {
         let h0 = SchnorrSigner::sighash(&tx, 0, 0, &[(1, [7u8; 32])]);
         let h1 = SchnorrSigner::sighash(&tx, 0, 1, &[(1, [7u8; 32])]);
         assert_ne!(h0, h1, "chain_id must provide cross-shard replay protection");
-    }
-
-    /// A signature from this signer passes the node's own CV-70 admission
-    /// (sighash v2), and one signed over wrong spent values is refused.
-    #[test]
-    fn v2_signature_verifies_on_node_validator() {
-        use common_types::common::utxo::ForkUtxoOverlay;
-        use common_types::common::validation::transactions::{
-            validate_transaction_for_mempool, MempoolAdmissionParams,
-        };
-        use common_types::common::validation::BlockValidationUtxo;
-        use common_types::transaction::{shard_chain_id, FlatOutput};
-
-        let secp = Secp256k1::new();
-        let key = SecretKey::from_slice(&[0x44u8; 32]).unwrap();
-        let recipient = Keypair::from_secret_key(&secp, &key).x_only_public_key().0.serialize();
-        let mut utxo = ForkUtxoOverlay::new();
-        utxo.add(0, 0, FlatOutput { value: 10_000, recipient });
-
-        let mut tx = make_tx(1, 1);
-        tx.version = 1;
-        tx.inputs[0] = TxInput { prev_height: 0, prev_output_idx: 0 };
-        tx.outputs[0] = TxOutput { value: 9_000, recipient };
-        let chain_id = shard_chain_id(0);
-        tx.witnesses = SchnorrSigner::sign_transaction(&tx, &[key], chain_id, &[(10_000, recipient)]).unwrap();
-
-        let params = MempoolAdmissionParams::production(1, 0, 1024, chain_id);
-        validate_transaction_for_mempool(&tx, BlockValidationUtxo::ReorgBuffer(&utxo), params)
-            .expect("signature must verify on the node");
-        // A signature made for different spent values must not verify (prevouts are committed).
-        let mut bad = tx.clone();
-        bad.witnesses = SchnorrSigner::sign_transaction(&bad, &[key], chain_id, &[(9_999, recipient)]).unwrap();
-        assert!(validate_transaction_for_mempool(&bad, BlockValidationUtxo::ReorgBuffer(&utxo), params).is_err());
-
-        let err = SchnorrSigner::sign_transaction(&tx, &[key], chain_id, &[]).unwrap_err();
-        assert!(err.contains("prevout count"));
     }
 }

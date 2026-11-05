@@ -12,7 +12,7 @@
 use log::{info, debug};
 use std::collections::HashMap;
 
-use common_types::common::proofs::{MMRChainSummary, BlockData};
+use network_common::common::proofs::{MMRChainSummary, BlockData};
 use crate::mmr_client::chain_handler::{ChainHandler, ChainState, ChainType};
 use crate::mmr_client::storage::LightClientStorage;
 
@@ -45,6 +45,9 @@ pub struct ShardChainHandler {
     
     /// Current epoch (synced from beacon)
     current_epoch: u32,
+
+    /// Governance epoch length of this network, from its genesis (never a process global).
+    epoch_length: u32,
     
     
     /// Cross-shard transaction cache
@@ -80,8 +83,14 @@ impl ShardChainHandler {
             handler,
             shard_id,
             current_epoch: 0,
+            epoch_length: network_common::common::expand_voting::DEFAULT_EPOCH_LENGTH,
             cross_shard_tx_cache: HashMap::new(),
         }
+    }
+
+    /// Set the network's governance epoch length (from its genesis `shard_expansion.epoch_length`).
+    pub fn set_epoch_length(&mut self, epoch_length: u32) {
+        self.epoch_length = epoch_length.max(1);
     }
     
     /// Get current chain state
@@ -179,8 +188,8 @@ impl ShardChainHandler {
         // one governance epoch spans `epoch_length() * calibration` shard
         // heights. `update_from_beacon` is the authoritative path; this is the
         // fallback when no beacon epoch is pushed.
-        let span = (common_types::common::expand_voting::epoch_length().max(1) as u64)
-            .saturating_mul(common_types::common::genesis::genesis_config::SHARD_CALIBRATION_CONSTANT)
+        let span = (self.epoch_length.max(1) as u64)
+            .saturating_mul(network_common::common::genesis::genesis_config::SHARD_CALIBRATION_CONSTANT)
             .min(u32::MAX as u64) as u32;
         let new_epoch = height / span.max(1);
         
@@ -199,8 +208,8 @@ impl ShardChainHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common_types::common::proofs::types::BeaconBlockData;
-    use common_types::common::crypto::weighted_hash::WeightedHash;
+    use network_common::common::proofs::types::BeaconBlockData;
+    use network_common::common::crypto::weighted_hash::WeightedHash;
     use crate::mmr_client::storage::InMemoryStorage;
 
     #[test]

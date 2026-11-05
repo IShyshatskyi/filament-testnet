@@ -9,4 +9,4 @@
 // so every existing `crate::mmr_client::verification::X` call site keeps
 // resolving unchanged. See docs/plan/Crate_Split_Plan.md §Gap 9.
 
-pub use common_types::common::verification::*;
+pub use network_common::common::verification::*;

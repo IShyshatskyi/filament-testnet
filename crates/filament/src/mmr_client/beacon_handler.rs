@@ -10,8 +10,8 @@
 
 use log::info;
 
-//use common_types::common::proofs::types::BlockData;
-use common_types::common::proofs::{MMRChainSummary,BlockData};
+//use network_common::common::proofs::types::BlockData;
+use network_common::common::proofs::{MMRChainSummary,BlockData};
 use crate::mmr_client::chain_handler::{ChainHandler, ChainState, ChainType};
 use crate::mmr_client::storage::LightClientStorage;
 
@@ -22,6 +22,9 @@ pub struct BeaconChainHandler {
     
     /// Current epoch (for DAA and other periodic updates)
     current_epoch: u64,
+
+    /// Governance epoch length of this network, from its genesis (never a process global).
+    epoch_length: u32,
     
 }
 
@@ -50,7 +53,13 @@ impl BeaconChainHandler {
         Self {
             handler,
             current_epoch: 0,
+            epoch_length: network_common::common::expand_voting::DEFAULT_EPOCH_LENGTH,
         }
+    }
+
+    /// Set the network's governance epoch length (from its genesis `shard_expansion.epoch_length`).
+    pub fn set_epoch_length(&mut self, epoch_length: u32) {
+        self.epoch_length = epoch_length.max(1);
     }
     
     /// Get current chain state
@@ -108,12 +117,9 @@ impl BeaconChainHandler {
     /// Update epoch based on current height
     fn update_epoch(&mut self) {
         let height = self.handler.state().height();
-        // The governance epoch length is the chain's `epoch_length()` (genesis
-        // parameter, shared by k-voting and expand-voting), NOT a Filament
-        // constant. The old hard-coded 1008 matched no network. A client on a
-        // non-default network must call `init_epoch_length` from its network
-        // profile at startup; otherwise the default (4096) applies.
-        let epoch_len = common_types::common::expand_voting::epoch_length().max(1) as u64;
+        // The governance epoch length is a genesis parameter of this network,
+        // set by the client at init (`set_epoch_length`); not a process global.
+        let epoch_len = self.epoch_length.max(1) as u64;
         let new_epoch = (height as u64) / epoch_len;
         
         if new_epoch != self.current_epoch {

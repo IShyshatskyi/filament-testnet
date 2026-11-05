@@ -42,7 +42,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use log::debug;
 
-use common_types::common::crypto::weighted_hash::{bag_peaks_weighted, WeightedHash};
+use network_common::common::crypto::weighted_hash::{bag_peaks_weighted, WeightedHash};
 
 // ============================================================================
 // CUSTOM SERIALIZATION FOR HashSet<(WeightedHash, u32)>
@@ -484,21 +484,25 @@ impl std::fmt::Display for WeightedCacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common_types::common::crypto::weighted_hash::WeightedHash;
+    use network_common::common::crypto::weighted_hash::WeightedHash;
 
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
 
+    /// Header-stamped rBits (what production leaves carry); the legacy nBits constructor
+    /// `from_leaf` is not part of the public types crate, so the tests do not use it.
+    const TEST_RBITS: u32 = 0x0300_0004;
+
     fn leaf(seed: u8) -> WeightedHash {
-        WeightedHash::from_leaf(&[seed; 32], 0x1d00ffff, 0)
+        WeightedHash::from_leaf_rbits(&[seed; 32], TEST_RBITS)
     }
 
     /// Build a `WeightedMMRLight` populated with blocks `0..n`.
     fn mmr_with_blocks(n: u32) -> WeightedMMRLight {
         let mut m = WeightedMMRLight::with_capacity(100);
         let blocks: Vec<(WeightedHash, u32)> = (0..n).map(|i| (leaf(i as u8 + 1), i)).collect();
-        let peaks = vec![WeightedHash::from_leaf(&[0xAAu8; 32], 0x1d00ffff, 0)];
+        let peaks = vec![WeightedHash::from_leaf_rbits(&[0xAAu8; 32], TEST_RBITS)];
         m.update_from_verified_proof(peaks, n, &blocks);
         m
     }
@@ -542,7 +546,7 @@ mod tests {
         let mut m  = WeightedMMRLight::with_anchor(anchor, 10);
         m.update_from_verified_proof(vec![peak], 1, &[(peak, 0)]);
 
-        use common_types::common::crypto::weighted_hash::bag_peaks_weighted;
+        use network_common::common::crypto::weighted_hash::bag_peaks_weighted;
         let expected = bag_peaks_weighted(&[peak], anchor);
         assert_eq!(m.get_root(), expected);
     }

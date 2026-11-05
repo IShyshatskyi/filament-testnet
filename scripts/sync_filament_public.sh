@@ -371,6 +371,49 @@ if not changed_any:
 PY
 }
 
+# Drop test functions that read the monorepo's config/ directory (../../config/...): the public
+# repo has no such directory, and the same genesis files are covered by the shared vectors.
+scrub_monorepo_config_tests() {
+  python3 - "$FILAMENT_DST" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+marker = '../../config'
+for path in sorted(root.rglob('*.rs')):
+    text = path.read_text()
+    changed = False
+    while marker in text:
+        i = text.index(marker)
+        # start of the enclosing fn: last "fn " at line start (after optional attributes) before i
+        fn_iter = list(re.finditer(r'(?m)^([ \t]*)((?:#\[[^\n]*\]\n[ \t]*)*)(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+\w+', text[:i]))
+        if not fn_iter:
+            print(f"error: {path}: '{marker}' outside a function", file=sys.stderr); sys.exit(1)
+        m = fn_iter[-1]
+        # include preceding doc comments
+        start = m.start()
+        lines = text[:start].splitlines(True)
+        while lines and lines[-1].lstrip().startswith('///'):
+            start -= len(lines.pop())
+        j = text.index('{', m.end())
+        depth = 0
+        k = j
+        while k < len(text):
+            if text[k] == '{': depth += 1
+            elif text[k] == '}':
+                depth -= 1
+                if depth == 0:
+                    k += 1
+                    break
+            k += 1
+        while k < len(text) and text[k] in '\r\n':
+            k += 1
+        text = text[:start] + text[k:]
+        changed = True
+    if changed:
+        path.write_text(text)
+        print(f"  scrubbed monorepo-config tests in {path.relative_to(root.parent.parent)}")
+PY
+}
+
 apply_filament_sync() {
   local sha="$1"
   local backup
@@ -462,6 +505,12 @@ PY2
 
   echo "  scrub denylist hits (WMMR test helpers, etc.)"
   if ! scrub_filament_denylist_hits; then
+    cleanup_on_fail
+    return 1
+  fi
+
+  echo "  scrub tests that read the monorepo config/ directory"
+  if ! scrub_monorepo_config_tests; then
     cleanup_on_fail
     return 1
   fi

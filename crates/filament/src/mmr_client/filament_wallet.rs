@@ -6,15 +6,16 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "full-node")]
+#[cfg(feature = "full-node")]
 use bitcoin::secp256k1::SecretKey;
 #[cfg(feature = "full-node")]
-use common_types::transaction::types::{Transaction, TxInput, TxOutput};
+use network_common::transaction::types::{Transaction, TxInput, TxOutput};
 #[cfg(feature = "full-node")]
 use crate::wallet::transaction_builder::SchnorrSigner;
 
 pub const ATOMS_PER_COIN: f64 = 100_000_000.0;
 
-/// The Testnet Portal auth domain tag. These bytes MUST stay
+/// TS-PORTAL-2f — the Testnet Portal auth domain tag. These bytes MUST stay
 /// **byte-identical** to `tools/testnet-portal-api` `auth::AUTH_DOMAIN` /
 /// `auth::auth_digest`: the portal API verifies the returned signature against
 /// exactly `BLAKE3(this || x_only_pubkey(32) || nonce(32))`. The trailing
@@ -32,8 +33,19 @@ pub struct PortalAuthSignature {
     pub address: String,
 }
 
-// Fallback fee: 10 000 atoms = 0.0001 SHISHA
-pub const DEFAULT_FEE_ATOMS: u64 = 10_000;
+/// TX-12 production floor mirrored for wallet estimates (atoms per 4 bytes).
+pub const MIN_FEE_PER_4_BYTES: u64 = 16;
+
+/// Minimum fee for `tx_size_bytes` under TX-12 (`ceil(size/4) × 16`).
+#[inline]
+pub fn min_fee_atoms_for_size(tx_size_bytes: u64) -> u64 {
+    let units = (tx_size_bytes + 3) / 4;
+    units.saturating_mul(MIN_FEE_PER_4_BYTES)
+}
+
+/// Legacy name kept for call sites — now the TX-12 floor for a 250-byte estimate
+/// (was a flat 10_000-atom placeholder).
+pub const DEFAULT_FEE_ATOMS: u64 = (250u64 + 3) / 4 * MIN_FEE_PER_4_BYTES;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeeEstimate {
@@ -79,6 +91,26 @@ pub struct TxHistoryEntry {
 pub struct BalanceResponse {
     pub confirmed: f64,
     pub unconfirmed: f64,
+    /// FIL-BALANCE-1: where `confirmed` comes from — `"indexer"` (Eratosthenes
+    /// `/explorer/balance`, all shard outputs) or `"utxos"` (sum of the wallet's UTXO list).
+    #[serde(default = "balance_source_utxos")]
+    pub source: String,
+    /// The indexer answered 413: the address has more unspent outputs than its
+    /// `balance_max_utxos`, so `confirmed` is the sum of the UTXO pages read and may be short.
+    #[serde(default)]
+    pub too_many_outputs: bool,
+}
+
+fn balance_source_utxos() -> String { "utxos".into() }
+
+/// FIL-BALANCE-1: the indexer's own answer to `/explorer/balance` for this wallet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexerBalance {
+    /// Sum of the address's shard outputs, in atoms (beacon rows are not wallet funds here,
+    /// same as the UTXO list).
+    Atoms(u64),
+    /// 413 — more outputs than the indexer will sum in one request.
+    TooManyOutputs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,9 +130,9 @@ pub struct SendResponse {
 
 // ── FilamentWallet ────────────────────────────────────────────────────────────
 
-/// Outcome of fanning a wallet-data refresh out to every configured
+/// MNT-7: outcome of fanning a wallet-data refresh out to every configured
 /// Keystone endpoint, rather than trusting whichever single endpoint used to
-/// be the only option.
+/// be the only option. See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
 #[derive(Debug, Clone, Default)]
 pub struct RefreshOutcome {
     /// Endpoints that returned a usable response.
@@ -119,10 +151,15 @@ pub struct FilamentWallet {
     address: String,
     utxos: Vec<UtxoEntry>,
     history: Vec<TxHistoryEntry>,
-    /// Every Keystone REST endpoint this wallet fans wallet-data
+    /// MNT-7: every Keystone REST endpoint this wallet fans wallet-data
     /// queries out to, rather than trusting a single configured node.
     /// Populated from `FilamentNodeConfig::all_keystone_endpoints()`.
     keystone_endpoints: Vec<String>,
+    /// Eratosthenes endpoints the wallet's UTXOs and history are read from
+    /// (`/explorer/*`; Keystone has no address index). FIL-REFRESH-1.
+    indexer_endpoints: Vec<String>,
+    /// Balance as the adopted indexer reported it on the last refresh (FIL-BALANCE-1).
+    indexer_balance: Option<IndexerBalance>,
     #[cfg(feature = "full-node")]
     http: reqwest::Client,
     /// Session F2F identity keypair (F2F-3).  Generated fresh on wallet
@@ -130,12 +167,101 @@ pub struct FilamentWallet {
     /// encrypt messages addressed to this wallet.
     f2f_seckey: [u8; 32],
     f2f_pubkey: [u8; 33],
-    /// Optional spending secret key. When set (via
+    /// TS-PORTAL-2f: optional spending secret key. When set (via
     /// `--signing-key-file` / `FILAMENT_SIGNING_KEY`), the local HTTP API can
     /// sign a domain-separated Testnet Portal auth challenge without the key
     /// ever leaving this process. Watch-only when `None`.
     #[cfg(feature = "full-node")]
     signing_key: Option<SecretKey>,
+}
+
+/// One indexer's view of `addr`: all unspent shard outputs (cursor-paged) and recent history,
+/// mapped to the wallet's types. `None` when the indexer does not answer the UTXO route.
+#[cfg(feature = "full-node")]
+async fn fetch_indexer_wallet(
+    http: &reqwest::Client,
+    ep: &str,
+    addr: &str,
+) -> Option<(Vec<UtxoEntry>, Vec<TxHistoryEntry>, Option<IndexerBalance>)> {
+    use serde_json::Value;
+    let base = ep.trim_end_matches('/');
+    // FIL-BALANCE-1: the indexer sums the address in one scan; 413 = too many outputs.
+    let balance = match http.get(format!("{base}/explorer/balance?address={addr}")).send().await {
+        Ok(r) if r.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE => Some(IndexerBalance::TooManyOutputs),
+        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok().and_then(|v| {
+            let rows = v.get("per_chain")?.as_array()?;
+            let mut total: u64 = 0;
+            for row in rows {
+                if row.get("chain").and_then(|c| c.as_str()) == Some("shard") {
+                    total = total.checked_add(row.get("balance_atoms")?.as_u64()?)?;
+                }
+            }
+            Some(IndexerBalance::Atoms(total))
+        }),
+        _ => None, // older indexer without the route: fall back to the UTXO sum
+    };
+    let shard_of = |v: &Value| -> Option<u16> {
+        (v.get("chain")?.as_str()? == "shard").then(|| v.get("shard_id")?.as_u64().map(|s| s as u16))?
+    };
+    let mut tips: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
+    let mut utxos = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..64 {
+        let mut url = format!("{base}/explorer/utxos?address={addr}");
+        if let Some(c) = &cursor {
+            url.push_str(&format!("&cursor={c}"));
+        }
+        let page: Value = http.get(&url).send().await.ok().filter(|r| r.status().is_success())?.json().await.ok()?;
+        for a in page.get("as_of").and_then(|v| v.as_array()).into_iter().flatten() {
+            if let (Some(s), Some(h)) = (shard_of(a), a.get("indexed_height").and_then(|v| v.as_u64())) {
+                tips.insert(s, h as u32);
+            }
+        }
+        for u in page.get("utxos")?.as_array()? {
+            let Some(shard_id) = shard_of(u) else { continue };
+            let height = u.get("height")?.as_u64()? as u32;
+            let tip = tips.get(&shard_id).copied().unwrap_or(height);
+            utxos.push(UtxoEntry {
+                height,
+                output_idx: u.get("output_idx")?.as_u64()? as u16,
+                value: u.get("value")?.as_u64()? as f64 / ATOMS_PER_COIN,
+                confirmations: tip.saturating_sub(height) + 1,
+                coinbase: false,
+                shard_id,
+            });
+        }
+        match (page.get("truncated").and_then(|v| v.as_bool()), page.get("next_cursor").and_then(|v| v.as_str())) {
+            (Some(true), Some(c)) => cursor = Some(c.to_string()),
+            _ => break,
+        }
+    }
+    let mut history = Vec::new();
+    let url = format!("{base}/explorer/history?address={addr}&n=100");
+    if let Ok(r) = http.get(&url).send().await {
+        if let Ok(v) = r.json::<Value>().await {
+            for (i, h) in v.get("history").and_then(|x| x.as_array()).into_iter().flatten().enumerate() {
+                let Some(shard_id) = shard_of(h) else { continue };
+                let height = h.get("height").and_then(|x| x.as_u64()).map(|x| x as u32);
+                let atoms = h.get("value").and_then(|x| x.as_u64()).unwrap_or(0) as f64 / ATOMS_PER_COIN;
+                let spend = h.get("kind").and_then(|x| x.as_str()) == Some("spend");
+                let tip = tips.get(&shard_id).copied();
+                history.push(TxHistoryEntry {
+                    id: i as u64,
+                    txid: String::new(), // the indexer keeps no txid
+                    kind: if spend { "send".into() } else { "receive".into() },
+                    value: if spend { -atoms } else { atoms },
+                    from: if spend { addr.to_string() } else { String::new() },
+                    to: if spend { String::new() } else { addr.to_string() },
+                    height,
+                    confirmations: match (tip, height) { (Some(t), Some(h)) => t.saturating_sub(h) + 1, _ => 0 },
+                    fee: 0.0,
+                    shard_id,
+                    ts_ms: 0,
+                });
+            }
+        }
+    }
+    Some((utxos, history, balance))
 }
 
 impl FilamentWallet {
@@ -155,6 +281,8 @@ impl FilamentWallet {
             utxos: Vec::new(),
             history: Vec::new(),
             keystone_endpoints: keystone_endpoint.into_iter().collect(),
+            indexer_endpoints: Vec::new(),
+            indexer_balance: None,
             #[cfg(feature = "full-node")]
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -187,8 +315,23 @@ impl FilamentWallet {
             .filter(|u| u.confirmations == 0)
             .map(|u| u.value)
             .sum();
-        BalanceResponse { confirmed, unconfirmed }
+        match self.indexer_balance {
+            // The indexer indexes only included outputs, so its total is the confirmed balance.
+            Some(IndexerBalance::Atoms(a)) => BalanceResponse {
+                confirmed: a as f64 / ATOMS_PER_COIN,
+                unconfirmed,
+                source: "indexer".into(),
+                too_many_outputs: false,
+            },
+            Some(IndexerBalance::TooManyOutputs) => BalanceResponse {
+                confirmed, unconfirmed, source: "utxos".into(), too_many_outputs: true,
+            },
+            None => BalanceResponse { confirmed, unconfirmed, source: "utxos".into(), too_many_outputs: false },
+        }
     }
+
+    /// Indexer balance adopted on the last refresh, if any (FIL-BALANCE-1).
+    pub fn indexer_balance(&self) -> Option<IndexerBalance> { self.indexer_balance }
 
     pub fn utxos(&self) -> &[UtxoEntry] { &self.utxos }
     pub fn history(&self) -> &[TxHistoryEntry] { &self.history }
@@ -199,12 +342,12 @@ impl FilamentWallet {
     /// Set a single Keystone endpoint, replacing the whole list. Kept for
     /// backward compatibility with callers that only know about one
     /// endpoint; prefer `set_keystone_endpoints` when multiple are
-    /// configured.
+    /// configured (MNT-7).
     pub fn set_keystone_endpoint(&mut self, ep: Option<String>) {
         self.keystone_endpoints = ep.into_iter().collect();
     }
 
-    /// Set the full list of Keystone REST endpoints this wallet fans
+    /// MNT-7: set the full list of Keystone REST endpoints this wallet fans
     /// queries out to. See `FilamentNodeConfig::all_keystone_endpoints()`.
     pub fn set_keystone_endpoints(&mut self, eps: Vec<String>) {
         self.keystone_endpoints = eps;
@@ -213,7 +356,12 @@ impl FilamentWallet {
     /// The configured Keystone REST endpoints, in priority order.
     pub fn keystone_endpoints(&self) -> &[String] { &self.keystone_endpoints }
 
-    /// Attach the wallet's spending secret key so the local HTTP
+    /// Eratosthenes endpoints for UTXO / history refresh (`FilamentNodeConfig::indexer_endpoints`).
+    pub fn set_indexer_endpoints(&mut self, eps: Vec<String>) {
+        self.indexer_endpoints = eps;
+    }
+
+    /// TS-PORTAL-2f: attach the wallet's spending secret key so the local HTTP
     /// API's `/wallet/sign-message` can sign a Testnet Portal auth challenge.
     /// The key is never returned by any route or accepted in any request body.
     #[cfg(feature = "full-node")]
@@ -227,13 +375,28 @@ impl FilamentWallet {
         self.signing_key.is_some()
     }
 
+    /// Attach an unlocked hot key (desktop app, `wallet::hot_key`). The wallet address becomes
+    /// the key's x-only public key when no address is set; a wallet already watching a
+    /// different address refuses the key instead of silently switching addresses.
+    #[cfg(feature = "full-node")]
+    pub fn attach_hot_key(&mut self, key: SecretKey) -> Result<(), String> {
+        use bitcoin::secp256k1::{Keypair, Secp256k1};
+        let pubkey = hex::encode(Keypair::from_secret_key(&Secp256k1::new(), &key).x_only_public_key().0.serialize());
+        if !self.address.is_empty() && !self.address.eq_ignore_ascii_case(&pubkey) {
+            return Err(format!("this wallet watches {}; the hot key is {}", self.address, pubkey));
+        }
+        self.address = pubkey;
+        self.signing_key = Some(key);
+        Ok(())
+    }
+
     /// Drop the spending key from memory (lock). The address stays.
     #[cfg(feature = "full-node")]
     pub fn detach_signing_key(&mut self) {
         self.signing_key = None;
     }
 
-    /// Run `f` with the wallet's spending key (escrow signing / hot key).
+    /// Run `f` with the wallet's spending key (escrow signing, IPP D10 hot key).
     /// The key stays inside the wallet; only `f`'s result leaves.
     #[cfg(feature = "full-node")]
     pub fn with_signing_key<R>(&self, f: impl FnOnce(&SecretKey) -> R) -> Result<R, String> {
@@ -244,10 +407,10 @@ impl FilamentWallet {
         Ok(f(sk))
     }
 
-    /// Sign the Testnet Portal auth challenge for `nonce`.
+    /// TS-PORTAL-2f: sign the Testnet Portal auth challenge for `nonce`.
     ///
     /// ```text
-    /// digest    = BLAKE3(PORTAL_AUTH_DOMAIN || x_only_pubkey(32) || nonce(32) )
+    /// digest    = BLAKE3( PORTAL_AUTH_DOMAIN || x_only_pubkey(32) || nonce(32) )
     /// signature = BIP-340 Schnorr(digest) with the wallet's spending key
     /// ```
     ///
@@ -281,11 +444,18 @@ impl FilamentWallet {
     }
 
     /// Refresh UTXOs + history via address-indexed **explorer** endpoints
-    /// (`GET /explorer/utxos?address=` / `GET /explorer/history?address=`;
-    /// not Keystone `/wallet/*`, which is local watch-wallet state without
-    /// `?address=`).
+    /// (Eratosthenes Path 4: `GET /explorer/utxos?address=` /
+    /// `GET /explorer/history?address=` — Jul 21 rename; not Keystone
+    /// `/wallet/*`, which is local watch-wallet state without `?address=`).
     ///
-    /// Queries every configured endpoint (fan-out) rather than trusting
+    /// FIL-REFRESH-1 (Oct 30, 2026): reads the configured **indexer** endpoints with the
+    /// indexer's real shapes (`{utxos, truncated, next_cursor, as_of}` paged by cursor,
+    /// `{history}`, values in atoms). It used to ask the Keystone endpoints, which do not
+    /// serve these routes, and parse bare arrays — so it never updated anything. Beacon rows
+    /// are skipped (wallet UTXOs are per shard). Confirmations come from the indexer's
+    /// indexed height for that chain.
+    ///
+    /// Queries every configured endpoint (MNT-7 fan-out) rather than trusting
     /// a single one, and cross-check their responses. Adopts the response
     /// reporting the greatest max UTXO height (the freshest view); flags
     /// `RefreshOutcome::disagreement` when responding endpoints materially
@@ -296,8 +466,8 @@ impl FilamentWallet {
     /// untouched rather than being cleared on a transient outage.
     #[cfg(feature = "full-node")]
     pub async fn refresh_from_keystone(&mut self) -> Result<RefreshOutcome, String> {
-        let endpoints = self.keystone_endpoints.clone();
-        if endpoints.is_empty() {
+        let endpoints = self.indexer_endpoints.clone();
+        if endpoints.is_empty() || self.address.is_empty() {
             return Ok(RefreshOutcome::default());
         }
         let addr = self.address.clone();
@@ -307,23 +477,10 @@ impl FilamentWallet {
             let http = http.clone();
             let addr = addr.clone();
             async move {
-                let utxo_url = format!("{}/explorer/utxos?address={}", ep, addr);
-                let utxos = match http.get(&utxo_url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        resp.json::<Vec<UtxoEntry>>().await.ok()
-                    }
-                    _ => None,
-                };
-
-                let hist_url = format!("{}/explorer/history?address={}&n=100", ep, addr);
-                let history = match http.get(&hist_url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        resp.json::<Vec<TxHistoryEntry>>().await.ok()
-                    }
-                    _ => None,
-                };
-
-                (ep, utxos, history)
+                match fetch_indexer_wallet(&http, &ep, &addr).await {
+                    Some((utxos, history, bal)) => (ep, Some(utxos), Some(history), bal),
+                    None => (ep, None, None, None),
+                }
             }
         });
 
@@ -333,14 +490,14 @@ impl FilamentWallet {
         let mut failed: Vec<String> = Vec::new();
         // (endpoint, utxos, history, max_utxo_height) for every endpoint
         // that returned at least a UTXO list.
-        let mut candidates: Vec<(String, Vec<UtxoEntry>, Vec<TxHistoryEntry>, u32)> = Vec::new();
+        let mut candidates: Vec<(String, Vec<UtxoEntry>, Vec<TxHistoryEntry>, u32, Option<IndexerBalance>)> = Vec::new();
 
-        for (ep, utxos, history) in results {
+        for (ep, utxos, history, bal) in results {
             match utxos {
                 Some(utxos) => {
                     let max_height = utxos.iter().map(|u| u.height).max().unwrap_or(0);
                     responded.push(ep.clone());
-                    candidates.push((ep, utxos, history.unwrap_or_default(), max_height));
+                    candidates.push((ep, utxos, history.unwrap_or_default(), max_height, bal));
                 }
                 None => failed.push(ep),
             }
@@ -365,9 +522,10 @@ impl FilamentWallet {
         };
 
         // Adopt the freshest (highest max-height) response.
-        if let Some((_, utxos, history, _)) = candidates.into_iter().max_by_key(|c| c.3) {
+        if let Some((_, utxos, history, _, bal)) = candidates.into_iter().max_by_key(|c| c.3) {
             self.utxos = utxos;
             self.history = history;
+            self.indexer_balance = bal;
         }
 
         Ok(RefreshOutcome { responded, failed, disagreement })
@@ -378,15 +536,16 @@ impl FilamentWallet {
         Ok(RefreshOutcome::default())
     }
 
-    /// Estimate fee from Keystone's `/chain/fee_filter`, falling back to DEFAULT_FEE_ATOMS.
-    /// FA-5: Tx fee estimation.
+    /// Estimate fee from Keystone's `/chain/fee_filter`, falling back to TX-12
+    /// (`ceil(size/4) × 16` atoms). FA-5.
     #[cfg(feature = "full-node")]
     pub async fn estimate_fee(&self, tx_size_bytes: u64) -> FeeEstimate {
+        let floor = min_fee_atoms_for_size(tx_size_bytes);
         let fallback = FeeEstimate {
-            atoms: DEFAULT_FEE_ATOMS,
-            coins: DEFAULT_FEE_ATOMS as f64 / ATOMS_PER_COIN,
-            source: "fallback".into(),
-            atoms_per_byte: DEFAULT_FEE_ATOMS / tx_size_bytes.max(200),
+            atoms: floor,
+            coins: floor as f64 / ATOMS_PER_COIN,
+            source: "fallback_tx12".into(),
+            atoms_per_byte: MIN_FEE_PER_4_BYTES.div_ceil(4),
         };
 
         let ep = match self.keystone_endpoints.first() {
@@ -404,7 +563,8 @@ impl FilamentWallet {
             if resp.status().is_success() {
                 if let Ok(ff) = resp.json::<FeeFilterResp>().await {
                     let atoms_per_byte = ff.min_fee_atoms_per_byte.max(1);
-                    let atoms = (atoms_per_byte * tx_size_bytes).max(DEFAULT_FEE_ATOMS);
+                    // Never recommend below the TX-12 floor for this size.
+                    let atoms = (atoms_per_byte * tx_size_bytes).max(floor);
                     return FeeEstimate {
                         atoms,
                         coins: atoms as f64 / ATOMS_PER_COIN,
@@ -418,18 +578,20 @@ impl FilamentWallet {
     }
 
     #[cfg(not(feature = "full-node"))]
-    pub async fn estimate_fee(&self, _tx_size_bytes: u64) -> FeeEstimate {
+    pub async fn estimate_fee(&self, tx_size_bytes: u64) -> FeeEstimate {
+        let floor = min_fee_atoms_for_size(tx_size_bytes.max(1));
         FeeEstimate {
-            atoms: DEFAULT_FEE_ATOMS,
-            coins: DEFAULT_FEE_ATOMS as f64 / ATOMS_PER_COIN,
-            source: "fallback".into(),
-            atoms_per_byte: DEFAULT_FEE_ATOMS / 200,
+            atoms: floor,
+            coins: floor as f64 / ATOMS_PER_COIN,
+            source: "fallback_tx12".into(),
+            atoms_per_byte: MIN_FEE_PER_4_BYTES.div_ceil(4),
         }
     }
 
-    /// Select UTXOs for a given spend amount across all shards (FA-6).
-    /// Returns UTXOs sufficient to cover `amount_atoms + fee_atoms`,
-    /// preferring `preferred_shard` first, then falling back to other shards.
+    /// Select UTXOs for a given spend amount (FA-6). With `Some(shard)` only that shard's
+    /// outputs are used: shards are independent ledgers (Anti-Patterns #33), so one
+    /// transaction can never spend outputs of two chains. (It used to fall back to other
+    /// shards, building transactions no node accepts — fixed Oct 30, 2026.)
     pub fn select_utxos_for_amount(
         &self,
         amount_atoms: u64,
@@ -439,23 +601,20 @@ impl FilamentWallet {
         let need = amount_atoms.checked_add(fee_atoms)
             .ok_or("Amount overflow")?;
 
-        // Sort order: preferred shard first, then by value descending (coin selection)
+        // That shard only, largest first.
         let mut sorted: Vec<&UtxoEntry> = self.utxos.iter()
             .filter(|u| u.confirmations >= 1)
+            .filter(|u| preferred_shard.map_or(true, |s| u.shard_id == s))
             .collect();
 
-        sorted.sort_by(|a, b| {
-            let a_pref = preferred_shard.map_or(false, |s| a.shard_id == s);
-            let b_pref = preferred_shard.map_or(false, |s| b.shard_id == s);
-            b_pref.cmp(&a_pref)
-                .then(b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        sorted.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut selected: Vec<&UtxoEntry> = Vec::new();
         let mut total: u64 = 0;
         for utxo in sorted {
             selected.push(utxo);
-            total += (utxo.value * ATOMS_PER_COIN) as u64;
+            // Round like the signer does (sighash v2 commits exact atoms).
+            total += (utxo.value * ATOMS_PER_COIN).round() as u64;
             if total >= need { break; }
         }
 
@@ -469,43 +628,38 @@ impl FilamentWallet {
     }
 
     /// Submit a signed transaction to every configured Keystone endpoint
-    ///. This is a propagation-reliability improvement, not a trust
+    /// (MNT-7). This is a propagation-reliability improvement, not a trust
     /// check — one successful accept is sufficient to consider the tx
     /// submitted, so the first endpoint to accept wins and the rest aren't
     /// waited on.
+    ///
+    /// FIL-SEND-1 (Oct 30, 2026): the transaction is built and signed here with the wallet's
+    /// held key and submitted as raw bytes to `POST /mempool/submit` (`keystone_submit`).
+    /// Keystone's `/wallet/send`, which this used to call, is a stub that answers a zero txid
+    /// and sends nothing. `current_height` is the shard's verified tip (TE-1 locktime, TE-2
+    /// expiry); the txid returned is the one the node reports.
     #[cfg(feature = "full-node")]
-    pub async fn submit_transaction(&self, req: &SendRequest) -> Result<SendResponse, String> {
-        if self.keystone_endpoints.is_empty() {
-            return Err("No Keystone endpoint configured".to_string());
-        }
-
-        let mut last_err: Option<String> = None;
-        for ep in &self.keystone_endpoints {
-            let url = format!("{}/wallet/send", ep);
-            match self.http.post(&url).json(req).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    return resp.json::<SendResponse>().await.map_err(|e| e.to_string());
-                }
-                Ok(resp) => {
-                    last_err = Some(format!("{} rejected (HTTP {})", ep, resp.status()));
-                }
-                Err(e) => {
-                    last_err = Some(format!("{} unreachable: {}", ep, e));
-                }
-            }
-        }
-
-        // Every configured endpoint failed. Report it rather than invent an id:
-        // a fabricated "txid" can never match what a node or the explorer
-        // reports, so `watch_tx` would wait on it forever (VF-3).
-        Err(format!(
-            "no Keystone endpoint accepted the transaction ({})",
-            last_err.unwrap_or_default(),
-        ))
+    pub async fn submit_transaction(&self, req: &SendRequest, current_height: u32) -> Result<SendResponse, String> {
+        let key = self
+            .signing_key
+            .ok_or("no signing key attached — unlock the hot key (desktop) or start Filament with --signing-key-file")?;
+        let selected = self.select_utxos_for_amount(req.amount_atoms, req.fee_atoms, Some(req.shard_id))?;
+        let (mut tx, witnesses) = self.build_signed_transaction_with_key(req, &selected, &key, current_height)?;
+        tx.witnesses = witnesses;
+        let txid = hex::encode(tx.txid(network_common::transaction::shard_chain_id(req.shard_id)).0);
+        let answer = crate::mmr_client::keystone_submit::submit_raw_tx(
+            &self.http,
+            &self.keystone_endpoints,
+            Some(req.shard_id),
+            tx.serialize_with_witnesses(),
+        )
+        .await?;
+        let status = answer.get("status").and_then(|v| v.as_str()).unwrap_or("accepted").to_string();
+        Ok(SendResponse { txid, status })
     }
 
     #[cfg(not(feature = "full-node"))]
-    pub async fn submit_transaction(&self, req: &SendRequest) -> Result<SendResponse, String> {
+    pub async fn submit_transaction(&self, req: &SendRequest, _current_height: u32) -> Result<SendResponse, String> {
         Err("Wallet submission requires full-node feature".to_string())
     }
 
@@ -522,7 +676,7 @@ impl FilamentWallet {
         utxos: &[&UtxoEntry],
         secret_key_hex: &str,
         current_height: u32,
-    ) -> Result<(Transaction, Vec<common_types::transaction::types::WitnessEntry>), String> {
+    ) -> Result<(Transaction, Vec<network_common::transaction::types::WitnessEntry>), String> {
         // Decode the 32-byte secret key from hex
         let key_bytes = hex::decode(secret_key_hex)
             .map_err(|e| format!("invalid key hex: {}", e))?;
@@ -531,7 +685,19 @@ impl FilamentWallet {
         }
         let secret_key = SecretKey::from_slice(&key_bytes)
             .map_err(|e| format!("invalid secret key: {}", e))?;
+        self.build_signed_transaction_with_key(req, utxos, &secret_key, current_height)
+    }
 
+    /// [`Self::build_signed_transaction`] with the key itself (the wallet's held key).
+    #[cfg(feature = "full-node")]
+    pub fn build_signed_transaction_with_key(
+        &self,
+        req: &SendRequest,
+        utxos: &[&UtxoEntry],
+        secret_key: &SecretKey,
+        current_height: u32,
+    ) -> Result<(Transaction, Vec<network_common::transaction::types::WitnessEntry>), String> {
+        let secret_key = *secret_key;
         // Decode recipient (32-byte positional address)
         let to_bytes = hex::decode(&req.to)
             .map_err(|e| format!("invalid recipient hex: {}", e))?;
@@ -577,7 +743,7 @@ impl FilamentWallet {
         }
 
         let tx = Transaction {
-            version: 1, // every spend is version 1 (one transaction version)
+            version: 1, // TX-11: every spend is version 2 (sighash v2)
             inputs,
             outputs,
             locktime: current_height,
@@ -588,9 +754,10 @@ impl FilamentWallet {
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)
         let keys: Vec<SecretKey> = (0..tx.inputs.len()).map(|_| secret_key).collect();
-        // chain_id = shard_id + 1. This used to pass `req.shard_id as u8`, so
-        // every signature was for the wrong chain and failed TX-5 on a node.
-        let chain_id = common_types::transaction::shard_chain_id(req.shard_id);
+        // chain_id = shard_id + 1 (Anti-Patterns #22). This used to pass
+        // `req.shard_id as u8`, so every signature was for the wrong chain and
+        // failed TX-5 on a real node.
+        let chain_id = network_common::transaction::shard_chain_id(req.shard_id);
         // Sighash v2 commits the spent outputs: our own key received every one.
         let own = bitcoin::secp256k1::Keypair::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &secret_key)
             .x_only_public_key().0.serialize();
@@ -661,5 +828,93 @@ mod portal_auth_tests {
     #[test]
     fn domain_constant_is_the_portal_api_bytes() {
         assert_eq!(PORTAL_AUTH_DOMAIN, b"shisha:testnet-portal:auth:v1\n");
+    }
+}
+
+#[cfg(all(test, feature = "full-node"))]
+mod indexer_refresh_tests {
+    use super::*;
+    use axum::{extract::Query, routing::get, Json, Router};
+    use std::collections::HashMap;
+
+    /// FIL-REFRESH-1: refresh reads Eratosthenes' real shapes, pages by cursor, skips beacon
+    /// rows, derives confirmations from the indexed height, maps history.
+    #[tokio::test]
+    async fn refresh_reads_the_indexer() {
+        let addr = "ab".repeat(32);
+        let app = Router::new()
+            .route("/explorer/utxos", get(|q: Query<HashMap<String, String>>| async move {
+                let as_of = serde_json::json!([
+                    { "chain": "beacon", "shard_id": null, "indexed_height": 900 },
+                    { "chain": "shard", "shard_id": 2, "indexed_height": 120 }
+                ]);
+                Json(if q.get("cursor").is_none() {
+                    serde_json::json!({ "utxos": [
+                        { "chain": "shard", "shard_id": 2, "height": 100, "output_idx": 0, "value": 150_000_000u64 },
+                        { "chain": "beacon", "shard_id": null, "height": 800, "output_idx": 1, "value": 7 }
+                    ], "truncated": true, "next_cursor": "k1", "as_of": as_of })
+                } else {
+                    serde_json::json!({ "utxos": [
+                        { "chain": "shard", "shard_id": 2, "height": 120, "output_idx": 3, "value": 25_000_000u64 }
+                    ], "truncated": false, "next_cursor": null, "as_of": as_of })
+                })
+            }))
+            .route("/explorer/balance", get(|| async {
+                Json(serde_json::json!({ "balance_atoms": 175_000_007u64, "utxo_count": 3, "per_chain": [
+                    { "chain": "shard", "shard_id": 2, "balance_atoms": 175_000_000u64, "utxo_count": 2 },
+                    { "chain": "beacon", "shard_id": null, "balance_atoms": 7, "utxo_count": 1 }
+                ]}))
+            }))
+            .route("/explorer/history", get(|| async {
+                Json(serde_json::json!({ "history": [
+                    { "kind": "receive", "chain": "shard", "shard_id": 2, "height": 100, "output_created_height": 100, "output_idx": 0, "value": 150_000_000u64 },
+                    { "kind": "spend", "chain": "shard", "shard_id": 2, "height": 110, "output_created_height": 90, "output_idx": 1, "value": 50_000_000u64 }
+                ]}))
+            }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ep = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+
+        let mut w = FilamentWallet::new(addr.clone(), None);
+        assert!(w.refresh_from_keystone().await.unwrap().responded.is_empty(), "no indexer configured → no-op");
+        w.set_indexer_endpoints(vec![ep.clone()]);
+        let out = w.refresh_from_keystone().await.unwrap();
+        assert_eq!(out.responded, vec![ep]);
+        let u: Vec<(u32, u16, u32, u16)> = w.utxos().iter().map(|u| (u.height, u.output_idx, u.confirmations, u.shard_id)).collect();
+        assert_eq!(u, vec![(100, 0, 21, 2), (120, 3, 1, 2)], "beacon row skipped, both pages read");
+        assert!((w.utxos()[0].value - 1.5).abs() < 1e-12);
+        let h = w.history();
+        assert_eq!((h[0].kind.as_str(), h[1].kind.as_str()), ("receive", "send"));
+        assert!((h[1].value + 0.5).abs() < 1e-12);
+        assert_eq!(h[1].confirmations, 11);
+        let b = w.balance();
+        assert_eq!((b.source.as_str(), b.too_many_outputs), ("indexer", false));
+        assert!((b.confirmed - 1.75).abs() < 1e-12, "shard rows of /explorer/balance, beacon skipped");
+    }
+
+    /// FIL-BALANCE-1: a 413 from `/explorer/balance` is reported, the UTXO sum is used.
+    #[tokio::test]
+    async fn balance_too_many_outputs_falls_back_to_utxo_sum() {
+        use axum::http::StatusCode;
+        let app = Router::new()
+            .route("/explorer/balance", get(|| async {
+                (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "too many" })))
+            }))
+            .route("/explorer/utxos", get(|| async {
+                Json(serde_json::json!({ "utxos": [
+                    { "chain": "shard", "shard_id": 0, "height": 5, "output_idx": 0, "value": 100_000_000u64 }
+                ], "truncated": false, "as_of": [] }))
+            }));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ep = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let mut w = FilamentWallet::new("cd".repeat(32), None);
+        w.set_indexer_endpoints(vec![ep]);
+        w.refresh_from_keystone().await.unwrap();
+        assert_eq!(w.indexer_balance(), Some(IndexerBalance::TooManyOutputs));
+        let b = w.balance();
+        assert!(b.too_many_outputs);
+        assert_eq!(b.source, "utxos");
+        assert!((b.confirmed - 1.0).abs() < 1e-12);
     }
 }

@@ -48,7 +48,7 @@
 use std::sync::OnceLock;
 use rayon::prelude::*;
 
-use common_types::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
+use network_common::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -193,4 +193,3 @@ pub fn verify_range_proofs_parallel(
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
-

@@ -1,9 +1,5 @@
 //! Thin beacon sync loop (`docs/plan/Filament_Thin_Sync_Design.md` §3, §9).
 //!
-//! Public packaging ships the **beacon** round only. Shard thin-sync stays in
-//! the monorepo until `FullShardHeader` / `verify_shard_id_and_mmn` are
-//! allowlisted into filament-types (no private engines).
-//!
 //! One round, run every sync tick for the beacon chain:
 //!
 //! 1. Ask every configured Keystone for `GET /chain/tip` (about 100 bytes).
@@ -30,11 +26,14 @@ use std::time::{Duration, Instant};
 use std::future::Future;
 use std::pin::Pin;
 
-use common_types::common::proofs::{ThinHeadersResponse, ThinSessionResponse, ThinTipResponse};
+use network_common::common::proofs::{
+    ThinHeadersResponse, ThinSessionResponse, ThinShardBlocksResponse, ThinShardSessionResponse, ThinTipResponse,
+};
 use futures_util::FutureExt;
 use serde::de::DeserializeOwned;
 
 use crate::mmr_client::thin_chain::{plan_sync, SyncAction, ThinBeaconState, ThinState, RECENT_HEADERS};
+use crate::mmr_client::thin_shard::{ShardAnchor, ThinShardParams, ThinShardState, RECENT_BLOCKS};
 
 /// A gap bigger than this is cheaper to close with a new session than with headers.
 pub const MAX_CATCH_UP_BLOCKS: u32 = 256;
@@ -65,6 +64,27 @@ impl<S> Default for ThinSlot<S> {
 }
 
 pub type ThinBeaconSlot = ThinSlot<ThinBeaconState>;
+pub type ThinShardSlot = ThinSlot<ThinShardState>;
+
+/// Everything Filament holds for one thin-synced shard.
+#[derive(Debug, Clone, Default)]
+pub struct ShardThin {
+    pub slot: ThinShardSlot,
+    /// Derived from verified beacon data; `None` until the beacon is far enough along.
+    pub anchor: Option<ShardAnchor>,
+    /// Why the shard cannot be followed (`unsupported_dynamic_shard`), or that it waits (`awaiting_anchor`).
+    pub note: Option<&'static str>,
+}
+
+impl ShardThin {
+    /// Status for the API: the slot's quorum status, or the reason the shard is not followed.
+    pub fn status(&self, now: Instant) -> &'static str {
+        match self.note {
+            Some("unsupported_dynamic_shard") => "unsupported",
+            _ => self.slot.status(now),
+        }
+    }
+}
 
 impl<S: ThinState> ThinSlot<S> {
     pub fn state(&self) -> Option<&S> {
@@ -184,6 +204,50 @@ impl ThinKind for BeaconKind<'_> {
     }
 }
 
+/// One shard, anchored at `anchor`.
+pub struct ShardKind<'p> {
+    pub params: &'p ThinShardParams,
+    pub anchor: ShardAnchor,
+}
+
+impl ThinKind for ShardKind<'_> {
+    type State = ThinShardState;
+
+    fn tip_path(&self) -> String {
+        format!("/shard/{}/chain/tip", self.params.shard_id)
+    }
+
+    fn new_session<'a>(&'a self, http: &'a reqwest::Client, base: &'a str) -> Fut<'a, Result<ThinShardState, String>> {
+        async move {
+            let id = self.params.shard_id;
+            let resp: ThinShardSessionResponse =
+                get_json(http, &format!("{base}/shard/{id}/chain/session?headers={RECENT_BLOCKS}")).await?;
+            ThinShardState::from_session(self.params.clone(), self.anchor, &resp).map_err(|e| e.to_string())
+        }
+        .boxed()
+    }
+
+    fn catch_up_step<'a>(
+        &'a self,
+        http: &'a reqwest::Client,
+        base: &'a str,
+        mut st: ThinShardState,
+    ) -> Fut<'a, Result<ThinShardState, String>> {
+        async move {
+            let id = self.params.shard_id;
+            let from = st.leaf_count();
+            let resp: ThinShardBlocksResponse =
+                get_json(http, &format!("{base}/shard/{id}/chain/headers/{from}")).await?;
+            if resp.from != from || resp.blocks_hex.is_empty() {
+                return Err("blocks response does not start where asked".into());
+            }
+            st.apply_blocks_hex(&resp.blocks_hex).map_err(|(_, e)| e.to_string())?;
+            Ok(st)
+        }
+        .boxed()
+    }
+}
+
 /// Extend `st` with blocks from `base` until it reaches `target_leaves`.
 async fn catch_up<K: ThinKind>(
     kind: &K,
@@ -237,7 +301,6 @@ async fn peer_outcome<K: ThinKind>(
 }
 
 /// GET `url` and decode the JSON body (10 s timeout).
-#[allow(dead_code)] // reserved for thin_shard catch-up once types-port lands
 pub(crate) async fn fetch_json<T: DeserializeOwned>(http: &reqwest::Client, url: &str) -> Result<T, String> {
     get_json(http, url).await
 }
@@ -299,6 +362,18 @@ pub async fn thin_round(
     run_round(&BeaconKind(p), http, urls, required, slot).await
 }
 
+/// Run one round of one shard against `urls`.
+pub async fn thin_shard_round(
+    http: &reqwest::Client,
+    urls: &[String],
+    params: &ThinShardParams,
+    anchor: ShardAnchor,
+    required: usize,
+    slot: &mut ThinShardSlot,
+) -> RoundReport {
+    run_round(&ShardKind { params, anchor }, http, urls, required, slot).await
+}
+
 /// One round for any chain kind: poll every Keystone, verify each answer, pick the state at least
 /// `required` Keystones contain.
 pub async fn run_round<K: ThinKind>(
@@ -344,7 +419,3 @@ pub async fn run_round<K: ThinKind>(
     }
     report
 }
-
-
-
-

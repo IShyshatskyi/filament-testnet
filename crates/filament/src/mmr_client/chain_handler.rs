@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use log::{info, debug};
 use serde::{Serialize, Deserialize};
 
-pub use common_types::common::types::ChainType;
-use common_types::common::crypto::hash_pair;
-use common_types::common::crypto::weighted_hash::WeightedHash;
-use common_types::common::proofs::{MMRChainSummary, MMRRangeProofBundle, BlockData};
+pub use network_common::common::types::ChainType;
+use network_common::common::crypto::hash_pair;
+use network_common::common::crypto::weighted_hash::WeightedHash;
+use network_common::common::proofs::{MMRChainSummary, MMRRangeProofBundle, BlockData};
 use crate::mmr_client::weighted_mmr_light::WeightedMMRLight;
 use crate::mmr_client::storage::{LightClientStorage, ChainId};
 
@@ -121,7 +121,7 @@ impl ChainState {
         expected_shard_id: Option<u32>,
         hash_sorting_bits: u32,
     ) -> Self {
-        use common_types::common::proofs::types::BeaconBlockData;
+        use network_common::common::proofs::types::BeaconBlockData;
 
         // Create placeholder tip pointing to anchor as a Beacon BlockData
         let placeholder_tip = BlockData::Beacon(BeaconBlockData {
@@ -773,7 +773,7 @@ impl ChainHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common_types::common::proofs::types::BeaconBlockData;
+    use network_common::common::proofs::types::BeaconBlockData;
     use crate::mmr_client::storage::InMemoryStorage;
 
     /// Helper to create a test beacon BlockData

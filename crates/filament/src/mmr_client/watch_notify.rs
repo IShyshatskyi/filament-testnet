@@ -8,7 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use common_types::common::proofs::WeightedMMRBatchProof;
+use network_common::common::proofs::WeightedMMRBatchProof;
 
 use super::invoice::{InvoiceStore, InvoiceError};
 

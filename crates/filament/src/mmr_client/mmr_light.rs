@@ -60,7 +60,7 @@ use std::collections::HashSet;
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use log::debug;
 
-use common_types::common::crypto::weighted_hash::{bag_peaks_weighted, WeightedHash};
+use network_common::common::crypto::weighted_hash::{bag_peaks_weighted, WeightedHash};
 
 // ============================================================================
 // CUSTOM SERIALIZATION FUNCTIONS

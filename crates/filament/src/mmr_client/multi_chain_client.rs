@@ -17,8 +17,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use log::{info, debug, warn};
 
-use common_types::common::proofs::types::BlockData;
-use common_types::common::proofs::MMRChainSummary;
+use network_common::common::proofs::types::BlockData;
+use network_common::common::proofs::MMRChainSummary;
 use crate::mmr_client::chain_handler::{ChainState, ChainType};
 use crate::mmr_client::beacon_handler::BeaconChainHandler;
 use crate::mmr_client::shard_handler::ShardChainHandler;
@@ -94,6 +94,15 @@ pub struct MultiChainClient {
     /// Event subscribers (for real-time updates)
     /// Apps/wallets subscribe to new blocks, transactions, etc.
     event_subscribers: Arc<RwLock<Vec<EventSubscriber>>>,
+
+    /// Thin beacon state (`Filament_Thin_Sync_Design.md`); `Some` once the thin
+    /// sync loop has run (config `thin_sync`).
+    #[cfg(feature = "full-node")]
+    thin_beacon: Option<super::thin_sync::ThinBeaconSlot>,
+
+    /// Thin shard states by shard id, for the shards the thin sync loop follows.
+    #[cfg(feature = "full-node")]
+    thin_shards: HashMap<u16, super::thin_sync::ShardThin>,
     
     /// Notification channels (tokio mpsc for async notifications)
     notification_tx: Option<tokio::sync::mpsc::UnboundedSender<ClientEvent>>,
@@ -116,6 +125,9 @@ pub struct MultiChainClient {
     
     /// Maximum number of shards to track simultaneously
     max_shards: usize,
+
+    /// Governance epoch length of the active network (genesis parameter); handlers get it at creation.
+    epoch_length: u32,
     
     /// Whether to automatically track new shards discovered on network
     auto_discover_shards: bool,
@@ -133,7 +145,7 @@ pub struct MultiChainClient {
     active_network: Option<String>,
 
     // ========================================================================
-    // ADDRESS WATCH
+    // ADDRESS WATCH (G-3)
     // ========================================================================
 
     /// Addresses registered for inclusion-notification watch.
@@ -154,7 +166,7 @@ pub struct MultiChainClient {
     /// silently when unset.
     relay_send_fn: Option<Arc<dyn Fn([u8; 32], Vec<u8>) + Send + Sync>>,
 
-    /// UTXOs learned from verified watch notifications.
+    /// FUD-5: UTXOs learned from verified watch notifications.
     watch_state: std::sync::Mutex<super::watch_notify::WatchNotifyState>,
 }
 
@@ -293,15 +305,16 @@ pub struct SyncConfiguration {
     /// Valid range: [0.0, 1.0]; values outside are clamped by `ProofSelector`.
     pub proof_density_threshold: f32,
 
-    /// Minimum number of connected, capability-matching, reputable
+    /// MNT-6: minimum number of connected, capability-matching, reputable
     /// peers required before a chain-summary reconciliation result (see
     /// `reconcile_beacon_summaries`/`reconcile_shard_summaries`) is trusted
     /// enough to report as "synced". Below this floor,
     /// `get_trusted_sync_status` reports `ChainSyncStatus::InsufficientPeers`
-    /// instead of silently falling back to single-peer trust.
+    /// instead of silently falling back to single-peer trust. See
+    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-6.
     pub min_peers_for_trust: usize,
 
-    /// Height spread (in blocks) tolerated between independently-
+    /// MNT-4: height spread (in blocks) tolerated between independently-
     /// verified peer chain-summary responses before they're flagged as
     /// disagreeing. A small tolerance absorbs ordinary network propagation
     /// lag between honest peers; anything wider than this is a possible
@@ -348,7 +361,7 @@ pub enum ChainSyncStatus {
     /// Syncing paused
     Paused,
 
-    /// The underlying chain state may be current, but fewer than
+    /// MNT-6: the underlying chain state may be current, but fewer than
     /// `SyncConfiguration::min_peers_for_trust` reputable peers are
     /// connected — not enough independent sources to trust a chain-summary
     /// result the way `reconcile_beacon_summaries`/`reconcile_shard_summaries`
@@ -477,7 +490,7 @@ pub enum ClientEvent {
         payload:   Vec<u8>,
     },
 
-    /// Transaction inclusion notification from the full node.
+    /// Transaction inclusion notification from the full node (G-3 / FUD-5).
     /// Emitted when a `ShishaMessage::TxInclusionNotif` arrives from a peer.
     TxInclusionReceived {
         shard_id:       u16,
@@ -488,7 +501,7 @@ pub enum ClientEvent {
         mmr_proof_bytes: Vec<u8>,
     },
 
-    /// Watched UTXO spent in a later block.
+    /// FUD-5: watched UTXO spent in a later block.
     TxSpentReceived {
         shard_id:       u16,
         spend_height:   u32,
@@ -496,14 +509,14 @@ pub enum ClientEvent {
         output_idx:     u16,
     },
 
-    /// Prior inclusion reverted by chain reorg.
+    /// FUD-5: prior inclusion reverted by chain reorg.
     TxRevertReceived {
         shard_id:   u16,
         height:     u32,
         output_idx: u16,
     },
 
-    /// Two or more independently-verified peers disagree on chain
+    /// MNT-4: two or more independently-verified peers disagree on chain
     /// state by more than `SyncConfiguration::disagreement_height_tolerance`
     /// during a multi-peer reconciliation round (see
     /// `reconcile_beacon_summaries`/`reconcile_shard_summaries`). A possible
@@ -610,7 +623,15 @@ impl MultiChainClient {
         info!("  Network: {:?}", network_id);
         info!("  Max shards: {}", max_shards);
         info!("  Sync mode: Fast");
-        
+        Self::build(storage, sync_config, network_id, max_shards)
+    }
+
+    fn build(
+        storage: Box<dyn LightClientStorage>,
+        sync_config: SyncConfiguration,
+        network_id: NetworkId,
+        max_shards: usize,
+    ) -> Self {
         let (notification_tx, _notification_rx) = tokio::sync::mpsc::unbounded_channel();
         
         Self {
@@ -627,12 +648,17 @@ impl MultiChainClient {
             metrics: Arc::new(RwLock::new(ClientMetrics::default())),
             proof_cache: Arc::new(RwLock::new(ProofCache::new(1000))),
             event_subscribers: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "full-node")]
+            thin_beacon: None,
+            #[cfg(feature = "full-node")]
+            thin_shards: HashMap::new(),
             notification_tx: Some(notification_tx),
             cross_chain_tracker: CrossChainTracker {
                 active_txs: HashMap::new(),
             },
             pending_cross_chain_ops: HashMap::new(),
             max_shards,
+            epoch_length: network_common::common::expand_voting::DEFAULT_EPOCH_LENGTH,
             auto_discover_shards: false,
             network_id,
             client_version: "0.1.0".to_string(),
@@ -645,14 +671,22 @@ impl MultiChainClient {
         }
     }
     
-    /// Create simple client (basic configuration)
+    /// Create simple client (basic configuration). The network is not known yet: it is
+    /// taken from the genesis file (`init_from_genesis_file`), so nothing is logged about it
+    /// here (FIL-GENESIS-3: this used to log `Network: Mainnet` whatever was configured).
     pub fn new(storage: Box<dyn LightClientStorage>) -> Self {
-        Self::new_with_config(
+        info!("Creating multi-chain light client (network set by the genesis file)");
+        Self::build(
             storage,
             SyncConfiguration::default(),
             NetworkId::Mainnet,
             100, // max 100 shards
         )
+    }
+
+    /// Network this client follows (from the genesis file once one is loaded).
+    pub fn network_id(&self) -> NetworkId {
+        self.network_id
     }
 
     /// Load client from configuration file
@@ -664,23 +698,15 @@ impl MultiChainClient {
         
         info!("Loading light client config from {:?}", config_path.as_ref());
         
+        // Load config
         let config = FilamentBootstrapConfig::from_file(config_path)?;
-        Self::from_config(config, storage)
-    }
-
-    /// Build a client from an already-loaded [`FilamentBootstrapConfig`] (no file I/O).
-    ///
-    /// Shared by `from_config_file` and the standalone `filament` binary, which embeds
-    /// `light_client_config.toml` at compile time via `FilamentBootstrapConfig::from_embedded()`
-    /// rather than reading a runtime path.
-    pub fn from_config(
-        config: crate::mmr_client::light_client_config::FilamentBootstrapConfig,
-        storage: Box<dyn LightClientStorage>,
-    ) -> Result<Self, String> {
+        
+        // Determine which network is configured
         let network_id = Self::detect_network_id(&config)?;
-
+        
         info!("Detected network: {:?}", network_id);
-
+        
+        // Convert SyncSettings to SyncConfiguration
         let sync_config = SyncConfiguration {
             poll_interval_secs: config.sync.poll_interval_secs,
             max_concurrent_requests: config.sync.max_concurrent_requests,
@@ -691,16 +717,18 @@ impl MultiChainClient {
             // SyncSettings has no proof_density_threshold; use the tuned default.
             ..SyncConfiguration::default()
         };
-
+        
+        // Create client
         let mut client = Self::new_with_config(
             storage,
-            sync_config,
+            sync_config,  // ← Now correct type
             network_id,
             100, // max_shards
         );
-
+        
+        // Store config
         client.config = Some(config);
-
+        
         Ok(client)
     }
     
@@ -739,11 +767,6 @@ impl MultiChainClient {
         if config.mainnet.genesis_hash != zero {
             Ok(NetworkId::Mainnet)
         } else if config.testnet1.genesis_hash != zero {
-            Ok(NetworkId::Testnet)
-        } else if config.testnet_stress.genesis_hash != zero {
-            // No dedicated NetworkId variant for testnet-stress; this field is
-            // cosmetic (logged once, never read elsewhere — see multi_chain_client.rs
-            // module notes), so Testnet is the closest real match.
             Ok(NetworkId::Testnet)
         } else if config.devnet.genesis_hash != zero {
             Ok(NetworkId::Devnet)
@@ -788,7 +811,7 @@ impl MultiChainClient {
         self.shards.keys().copied().collect()
     }
 
-    // ── Address watch ────────────────────────────────────────────────────
+    // ── G-3: address watch ────────────────────────────────────────────────────
 
     /// Install the callback that physically sends `WatchAddress` over the
     /// ShishaNet / P2P transport.  Call this once the P2P layer is live.
@@ -811,7 +834,7 @@ impl MultiChainClient {
         if let Some(ref f) = self.send_watch_fn {
             f(address, shard_id);
         }
-        debug!("watching address {} on shard {}", hex::encode(address), shard_id);
+        debug!("G-3: watching address {} on shard {}", hex::encode(address), shard_id);
     }
 
     /// Snapshot of locally registered watches (for P2P reconnect replay).
@@ -854,7 +877,7 @@ impl MultiChainClient {
         }).await;
     }
 
-    /// `TxSpentNotif` from a full-node peer or HTTP poll.
+    /// FUD-5: `TxSpentNotif` from a full-node peer or HTTP poll.
     pub async fn handle_tx_spent_notif(
         &self,
         shard_id:       u16,
@@ -870,7 +893,7 @@ impl MultiChainClient {
         }).await;
     }
 
-    /// `TxRevertNotif` from a full-node peer or HTTP poll.
+    /// FUD-5: `TxRevertNotif` from a full-node peer or HTTP poll.
     pub async fn handle_tx_revert_notif(
         &self,
         shard_id:   u16,
@@ -882,6 +905,66 @@ impl MultiChainClient {
             height,
             output_idx,
         }).await;
+    }
+
+    /// Thin beacon slot (a copy), `None` until the thin sync loop has run.
+    #[cfg(feature = "full-node")]
+    pub fn thin_beacon_slot(&self) -> Option<super::thin_sync::ThinBeaconSlot> {
+        self.thin_beacon.clone()
+    }
+
+    /// Store the thin beacon slot after a sync round.
+    #[cfg(feature = "full-node")]
+    pub fn set_thin_beacon_slot(&mut self, slot: super::thin_sync::ThinBeaconSlot) {
+        self.thin_beacon = Some(slot);
+    }
+
+    /// What thin sync holds for `shard_id` (a copy), `None` if it never followed that shard.
+    #[cfg(feature = "full-node")]
+    pub fn thin_shard(&self, shard_id: u16) -> Option<super::thin_sync::ShardThin> {
+        self.thin_shards.get(&shard_id).cloned()
+    }
+
+    /// Store a shard's thin state after a sync round.
+    #[cfg(feature = "full-node")]
+    pub fn set_thin_shard(&mut self, shard_id: u16, entry: super::thin_sync::ShardThin) {
+        self.thin_shards.insert(shard_id, entry);
+    }
+
+    /// Shard ids thin sync follows, ascending.
+    #[cfg(feature = "full-node")]
+    pub fn thin_shard_ids(&self) -> Vec<u16> {
+        let mut ids: Vec<u16> = self.thin_shards.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The shard's genesis anchor as derived from verified beacon data (never from a Keystone's word).
+    #[cfg(feature = "full-node")]
+    pub fn thin_shard_anchor(&self, shard_id: u16) -> Option<[u8; 32]> {
+        self.thin_shards.get(&shard_id)?.anchor.map(|a| <[u8; 32]>::from(a.root))
+    }
+
+    /// Thin sync saw two Keystones on different chains for a shard.
+    #[cfg(feature = "full-node")]
+    pub async fn report_shard_disagreement(&self, verified_peers: Vec<(String, u128, u32)>) {
+        self.emit_event(ClientEvent::PeerDisagreement { chain_type: ChainType::Shard, verified_peers }).await;
+    }
+
+    /// Beacon tip height: the thin state when thin sync is running, else the
+    /// old full-summary handler's tip.
+    pub async fn beacon_tip_height(&self) -> u32 {
+        #[cfg(feature = "full-node")]
+        if let Some(slot) = &self.thin_beacon {
+            return slot.tip_height();
+        }
+        self.get_beacon_state().await.map(|st| st.tip.height()).unwrap_or(0)
+    }
+
+    /// Thin sync saw two Keystones on different chains (same event the
+    /// full-summary reconcile emits).
+    pub async fn report_beacon_disagreement(&self, verified_peers: Vec<(String, u128, u32)>) {
+        self.emit_event(ClientEvent::PeerDisagreement { chain_type: ChainType::Beacon, verified_peers }).await;
     }
 
     /// Bitcoin anchor hash used to verify inclusion proofs (beacon genesis).
@@ -971,13 +1054,14 @@ impl MultiChainClient {
         candidates.last().map(|(peer_id, _)| (*peer_id).clone())
     }
 
-    /// Select up to `k` connected, capability-matching peers for a
+    /// MNT-2: select up to `k` connected, capability-matching peers for a
     /// chain-summary fan-out request, sorted by reputation (highest first).
     /// This is the multi-peer replacement for `get_best_peer`'s single-peer
     /// pick — callers fetch a `MMRChainSummary` from every returned peer
     /// (the actual network I/O is the caller's responsibility, same as
     /// `send_watch_fn`/`relay_send_fn` elsewhere in this type) and pass the
     /// responses to `reconcile_beacon_summaries`/`reconcile_shard_summaries`.
+    /// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-2.
     pub async fn get_top_peers(&self, chain_type: ChainType, k: usize) -> Vec<String> {
         let peers = self.peers.read().await;
 
@@ -1006,7 +1090,7 @@ impl MultiChainClient {
             .collect()
     }
 
-    /// Like `get_top_peers`, but
+    /// MNT-6 (shard precision fix, Jul 14, 2026): like `get_top_peers`, but
     /// for `ChainType::Shard` additionally requires the peer's own
     /// `capabilities.tracked_shards` to include `shard_id`. `get_top_peers`
     /// only checks the blanket `shard_proofs` flag, so a peer that has only
@@ -1042,7 +1126,7 @@ impl MultiChainClient {
             .collect()
     }
 
-    /// Mark an already-registered peer as
+    /// MNT-6 (shard precision fix): mark an already-registered peer as
     /// having proven capable of serving `shard_id` — call this only after a
     /// real, successful chain-summary fetch for that specific shard, not as
     /// a blanket assumption. Upgrades `capabilities.shard_proofs`/
@@ -1059,7 +1143,7 @@ impl MultiChainClient {
         }
     }
 
-    /// Whether enough connected, capability-matching, reputable peers
+    /// MNT-6: whether enough connected, capability-matching, reputable peers
     /// exist to trust a chain-summary reconciliation result for `chain_type`
     /// — i.e. at least `SyncConfiguration::min_peers_for_trust`. Callers
     /// should treat a "false" result as "insufficient peers for trust", not
@@ -1071,20 +1155,20 @@ impl MultiChainClient {
             >= self.sync_config.min_peers_for_trust
     }
 
-    /// The configured minimum peer count from
+    /// MNT-5: the configured minimum peer count from
     /// `SyncConfiguration::min_peers_for_trust`, for UI surfacing (e.g. "2 of
     /// 2 required peers connected").
     pub fn min_peers_for_trust(&self) -> usize {
         self.sync_config.min_peers_for_trust
     }
 
-    /// A connected peer's reputation score (0-100), or the neutral
+    /// MNT-5: a connected peer's reputation score (0-100), or the neutral
     /// default (50) if unknown. For UI surfacing alongside `get_top_peers`.
     pub fn peer_score(&self, peer_id: &str) -> u8 {
         self.peer_reputation.get(peer_id).map(|r| r.score).unwrap_or(50)
     }
 
-    /// Sync status for `chain_id`, downgraded to
+    /// MNT-6: sync status for `chain_id`, downgraded to
     /// `ChainSyncStatus::InsufficientPeers` when fewer than
     /// `SyncConfiguration::min_peers_for_trust` reputable peers are
     /// connected for `chain_type` — even if the underlying chain state
@@ -1100,7 +1184,7 @@ impl MultiChainClient {
     /// count toward shard 1's trust floor too. Use
     /// `get_trusted_sync_status_for_shard` for shard callers instead; kept
     /// here unchanged (rather than made shard-aware) so existing beacon call
-    /// sites and the tests referencing this exact signature don't need
+    /// sites and the MNT-9 tests referencing this exact signature don't need
     /// to change.
     pub async fn get_trusted_sync_status(
         &self,
@@ -1118,7 +1202,7 @@ impl MultiChainClient {
         status
     }
 
-    /// Shard-aware counterpart to
+    /// MNT-6 (shard precision fix, Jul 14, 2026): shard-aware counterpart to
     /// `get_trusted_sync_status` — counts only peers proven capable of
     /// *this* `shard_id` specifically (via `get_top_peers_for_shard`,
     /// checking `tracked_shards`), not any peer with the blanket
@@ -1231,6 +1315,71 @@ impl MultiChainClient {
             .map(|info| info.status.clone())
     }
 
+    /// True once the beacon handler exists (genesis anchor installed).
+    pub fn has_beacon_chain(&self) -> bool {
+        self.beacon.is_some()
+    }
+
+    /// Initialise the beacon chain from a network genesis file — the same
+    /// `genesis_<network>.toml` (`NetworkGenesisConfig`) Keystone and Kameniar load. Block 0 is
+    /// generated with the nodes' own `GenesisGenerator`, so Filament cannot disagree with them
+    /// about it. Mainnet / testnet genesis files are produced right before each launch; there
+    /// is deliberately no built-in fallback. Returns the genesis block's weighted hash (the
+    /// chain identity peers advertise at the handshake).
+    pub async fn init_from_genesis_file(&mut self, path: &Path) -> Result<[u8; 32], String> {
+        use network_common::common::genesis::genesis::GenesisGenerator;
+        use network_common::common::genesis::genesis_config::NetworkGenesisConfig;
+        use network_common::common::proofs::types::{BeaconBlockData, BlockData};
+
+        let cfg = NetworkGenesisConfig::from_file(path)
+            .map_err(|e| format!("genesis file {}: {e}", path.display()))?;
+        let block = GenesisGenerator::generate_beacon_genesis(&cfg.beacon)
+            .map_err(|e| format!("genesis file {}: {e}", path.display()))?;
+        let hash: [u8; 32] = block.hash.into();
+        {
+            use network_common::common::genesis::genesis_config::NetworkId as GenesisNetwork;
+            self.network_id = match cfg.beacon.network_id {
+                GenesisNetwork::Mainnet => NetworkId::Mainnet,
+                GenesisNetwork::Devnet | GenesisNetwork::Custom => NetworkId::Devnet,
+                _ => NetworkId::Testnet,
+            };
+            info!("Network: {:?} (genesis file network {:?})", self.network_id, cfg.beacon.network_id);
+        }
+        self.set_epoch_length(cfg.beacon.shard_expansion.epoch_length);
+        self.init_beacon_chain(BlockData::Beacon(BeaconBlockData::from_beacon_block(&block))).await?;
+        Ok(hash)
+    }
+
+    /// Read a network genesis file without touching any client: its chain identity (the
+    /// beacon genesis hash, generated by the nodes' own `GenesisGenerator`) and network name.
+    /// FIL-GENESIS-2 uses it to show a file's identity before importing it.
+    pub fn genesis_file_identity(path: &Path) -> Result<([u8; 32], String), String> {
+        use network_common::common::genesis::genesis::GenesisGenerator;
+        use network_common::common::genesis::genesis_config::NetworkGenesisConfig;
+        let cfg = NetworkGenesisConfig::from_file(path)
+            .map_err(|e| format!("genesis file {}: {e}", path.display()))?;
+        let hash = GenesisGenerator::beacon_genesis_hash(&cfg.beacon)
+            .map_err(|e| format!("genesis file {}: {e}", path.display()))?;
+        Ok((hash, format!("{:?}", cfg.beacon.network_id)))
+    }
+
+    /// Set the network's governance epoch length (genesis `shard_expansion.epoch_length`).
+    /// Call before `init_beacon_chain`; already-created handlers are updated too.
+    pub fn set_epoch_length(&mut self, epoch_length: u32) {
+        self.epoch_length = epoch_length.max(1);
+        if let Some(b) = self.beacon.as_mut() {
+            b.set_epoch_length(self.epoch_length);
+        }
+        for h in self.shards.values_mut() {
+            h.set_epoch_length(self.epoch_length);
+        }
+    }
+
+    /// Governance epoch length this client uses.
+    pub fn epoch_length(&self) -> u32 {
+        self.epoch_length
+    }
+
     /// Initialize beacon chain with genesis block
     pub async fn init_beacon_chain(
         &mut self,
@@ -1244,7 +1393,8 @@ impl MultiChainClient {
         let beacon_storage = Box::new(InMemoryStorage::new());
 
         // Create beacon handler
-        let handler = BeaconChainHandler::new(genesis, beacon_storage);
+        let mut handler = BeaconChainHandler::new(genesis, beacon_storage);
+        handler.set_epoch_length(self.epoch_length);
 
         self.beacon = Some(handler);
         self.sync_status.insert(0, ChainSyncStatus::Synced);
@@ -1280,7 +1430,8 @@ impl MultiChainClient {
         let shard_storage = Box::new(InMemoryStorage::new());
 
         // Create shard handler with shard ID validation
-        let handler = ShardChainHandler::new(shard_id, genesis, shard_storage, hash_sorting_bits);
+        let mut handler = ShardChainHandler::new(shard_id, genesis, shard_storage, hash_sorting_bits);
+        handler.set_epoch_length(self.epoch_length);
 
         self.shards.insert(shard_id, handler);
         // Use chain_id as key instead of ChainType
@@ -1381,10 +1532,10 @@ impl MultiChainClient {
     }
 
     // ========================================================================
-    // MULTI-PEER RECONCILIATION
+    // MULTI-PEER RECONCILIATION (MNT-2/3/4, MULTI_NODE_TRUST_PLAN.md)
     // ========================================================================
 
-    /// Reconcile chain-summary responses fetched from multiple
+    /// MNT-2/3/4: reconcile chain-summary responses fetched from multiple
     /// peers (see `get_top_peers`) for the beacon chain. Every response is
     /// verified independently — a response can't be trusted just because it
     /// answered first or claims a higher weight than another — and only the
@@ -1461,7 +1612,7 @@ impl MultiChainClient {
         Ok(outcome)
     }
 
-    /// Same as `reconcile_beacon_summaries`, for a specific shard
+    /// MNT-2/3/4: same as `reconcile_beacon_summaries`, for a specific shard
     /// chain. `ShardChainHandler::sync_from_summary` is synchronous (unlike
     /// the beacon handler's), so this doesn't `.await` the apply step.
     pub async fn reconcile_shard_summaries(
@@ -1530,7 +1681,7 @@ impl MultiChainClient {
     }
 }
 
-/// Shared reconciliation math over already independently-verified
+/// MNT-3/4: shared reconciliation math over already independently-verified
 /// candidates — picks the max-weight winner (by index into the input slice)
 /// and flags disagreement when verified peers' tip heights spread wider than
 /// `disagreement_height_tolerance`. Kept as a free function (not a method on
@@ -1561,7 +1712,7 @@ fn pick_reconciliation_winner(
 }
 
 /// One peer's chain-summary response, paired with the peer that sent it
-///. Callers build these from `get_top_peers` + their own network
+/// (MNT-2/3). Callers build these from `get_top_peers` + their own network
 /// fetch, then pass them to `reconcile_beacon_summaries`/
 /// `reconcile_shard_summaries`.
 #[derive(Debug, Clone)]
@@ -1571,7 +1722,7 @@ pub struct PeerChainSummaryResponse {
 }
 
 /// Outcome of reconciling chain-summary responses from multiple peers
-///.
+/// (MNT-3/4). See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
 #[derive(Debug, Clone, Default)]
 pub struct ReconciliationOutcome {
     /// Peer whose independently-verified summary had the max chain weight
@@ -1598,8 +1749,52 @@ pub struct ReconciliationOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common_types::common::proofs::types::BeaconBlockData;
-    use common_types::common::proofs::{MMRChainSummary, WeightedMMRBatchProof};
+    use network_common::common::proofs::types::BeaconBlockData;
+    use network_common::common::proofs::{MMRChainSummary, WeightedMMRBatchProof};
+
+    /// FIL-GENESIS-1 (client half): block 0 comes from the network genesis file the nodes load, the
+    /// epoch length is that network's own genesis parameter, and it can only be done once. The
+    /// summary-on-top half needs the node-side prover and lives in `crates/filament-tests`.
+    #[tokio::test]
+    async fn init_from_genesis_file_sets_block_zero_and_epoch_length() {
+        use network_common::common::genesis::genesis::GenesisGenerator;
+        use network_common::common::genesis::genesis_config::NetworkGenesisConfig;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/genesis_devnet.toml");
+        let cfg = NetworkGenesisConfig::from_file(&path).unwrap();
+        let node_genesis = GenesisGenerator::generate_beacon_genesis(&cfg.beacon).unwrap();
+
+        let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
+        let hash = client.init_from_genesis_file(&path).await.unwrap();
+        assert_eq!(hash, <[u8; 32]>::from(node_genesis.hash), "same block 0 as the nodes");
+        assert_eq!(hash, GenesisGenerator::beacon_genesis_hash(&cfg.beacon).unwrap(), "chain identity");
+        assert_eq!(client.get_beacon_state().await.unwrap().tip.height(), 0);
+        assert_eq!(client.epoch_length(), cfg.beacon.shard_expansion.epoch_length);
+        assert_eq!(client.network_id(), NetworkId::Devnet, "FIL-GENESIS-3: network from the file");
+        assert_eq!(MultiChainClient::genesis_file_identity(&path).unwrap(), (hash, "Devnet".to_string()));
+        assert!(client.init_from_genesis_file(&path).await.is_err(), "only once");
+    }
+
+    /// Every genesis file a live network uses today loads (testnet-stress has a pinned hash).
+    #[tokio::test]
+    async fn repo_genesis_files_load() {
+        for f in ["genesis_devnet.toml", "genesis_testnet_stress.toml", "genesis_crash_recovery.toml", "genesis_devnet_15.toml"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config").join(f);
+            let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
+            client.init_from_genesis_file(&path).await.unwrap_or_else(|e| panic!("{f}: {e}"));
+            // Devnet and Custom (local soak) files follow a dev network; testnet-stress a testnet.
+            let want = if f == "genesis_testnet_stress.toml" { NetworkId::Testnet } else { NetworkId::Devnet };
+            assert_eq!(client.network_id(), want, "{f}");
+        }
+    }
+
+    #[tokio::test]
+    async fn init_from_genesis_file_reports_bad_files() {
+        let mut client = MultiChainClient::new(Box::new(InMemoryStorage::new()));
+        let err = client.init_from_genesis_file(std::path::Path::new("/nonexistent/genesis.toml")).await.unwrap_err();
+        assert!(err.contains("/nonexistent/genesis.toml"), "{err}");
+        assert!(client.get_beacon_state().await.is_err(), "nothing initialised");
+    }
 
     /// Helper to create a test beacon BlockData
     fn test_beacon_block(height: u32, block_hash: [u8; 32], prev_mmr_root: [u8; 32], difficulty: u64) -> BlockData {
@@ -1643,7 +1838,8 @@ mod tests {
         assert_eq!(handler.state().height(), 0);
     }
 
-    // ── multi-node trust reconciliation tests ──────────────────────
+    // ── MNT-9: multi-node trust reconciliation tests ──────────────────────
+    // See filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
 
     fn test_peer(id: &str) -> PeerConnection {
         PeerConnection {
@@ -1740,7 +1936,7 @@ mod tests {
         client.init_beacon_chain(genesis).await.unwrap();
 
         // Chain state is "Synced", but zero peers connected — must not be
-        // reported as trustworthy synced (this is the exact gap
+        // reported as trustworthy synced (this is the exact gap MNT-6
         // closes: a lone connected peer, or none at all, was previously
         // indistinguishable from a properly cross-checked sync).
         let status = client.get_trusted_sync_status(ChainType::Beacon, 0).await;

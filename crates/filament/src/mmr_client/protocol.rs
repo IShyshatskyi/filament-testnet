@@ -14,7 +14,7 @@ use crate::mmr_client::proof_selector::{
     ProofStrategy,
     DEFAULT_DENSITY_THRESHOLD,
 };
-use common_types::common::proofs::{
+use network_common::common::proofs::{
     MMRChainSummary,
     MMRRangeProofBundle,
     WeightedMMRBatchProof,

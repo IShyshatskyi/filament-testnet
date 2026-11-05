@@ -356,7 +356,7 @@ pub fn new_msg_id() -> [u8; 8] {
 /// relay_store.rs needed it and can't depend back on mmr_client (would
 /// recreate the cycle Gap 10 broke). Re-exported here so every existing
 /// `crate::mmr_client::f2f::relay_id` call site keeps resolving unchanged.
-pub use common_types::common::relay_hash::relay_id;
+pub use network_common::common::relay_hash::relay_id;
 
 #[cfg(test)]
 mod tests {
