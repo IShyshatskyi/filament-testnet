@@ -62,7 +62,7 @@ impl FilamentP2p {
 }
 
 /// Build the light-client protocol for `network`, attaching the embedded
-/// genesis hash when the bootstrap config has a real (non-zero) one.
+/// genesis hash derived from the network's preset.
 pub fn protocol_for_network(network: &str) -> ShishaProtocol {
     let mut protocol = ShishaProtocol::new(network.to_string());
     if let Some(hash) = genesis_hash_for_network(network) {
@@ -71,16 +71,21 @@ pub fn protocol_for_network(network: &str) -> ShishaProtocol {
     protocol
 }
 
+/// The beacon genesis hash of a known network, derived from its preset (never from a stored
+/// copy of the hash). `None` for a network without a preset.
 fn genesis_hash_for_network(network: &str) -> Option<[u8; 32]> {
-    use crate::mmr_client::light_client_config::FilamentBootstrapConfig;
-    let cfg = FilamentBootstrapConfig::from_embedded();
-    let info = cfg.get_network(network)?;
-    let hash = info.genesis_hash_bytes().ok()?;
-    if hash.iter().all(|&b| b == 0) {
-        None
-    } else {
-        Some(hash)
-    }
+    use network_common::common::genesis::genesis::GenesisGenerator;
+    use network_common::common::genesis::genesis_config::BeaconGenesisConfig;
+    let cfg = match network {
+        "mainnet" => BeaconGenesisConfig::mainnet(),
+        "testnet1" => BeaconGenesisConfig::testnet1(),
+        "testnet2" => BeaconGenesisConfig::testnet2(),
+        "testnet3" => BeaconGenesisConfig::testnet3(),
+        "devnet" => BeaconGenesisConfig::devnet(),
+        "testnet-stress" => BeaconGenesisConfig::testnet_stress(),
+        _ => return None,
+    };
+    GenesisGenerator::beacon_genesis_hash(&cfg).ok()
 }
 
 /// Resolve a single host:port to a [`SocketAddr`] (first result wins).

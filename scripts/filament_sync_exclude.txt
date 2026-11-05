@@ -1,5 +1,0 @@
-# Removed after upstream rsync — not shippable without further types-port.
-src/mmr_client/thin_shard.rs
-src/mmr_client/chain_views.rs
-src/mmr_client/README.md
-examples/
