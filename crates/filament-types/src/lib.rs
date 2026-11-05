@@ -53,11 +53,23 @@ pub mod common {
             pub use crate::beacon_wire_header::*;
         }
         pub use crate::genesis_network::BeaconBlock;
+        pub mod shard_block {
+            pub use crate::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
+            pub use crate::shard_header::{BeaconHeader, Block, FullShardHeader};
+        }
+    }
+
+    pub mod pow_check {
+        pub use crate::pow_check::*;
+    }
+
+    pub mod merged_mining_check {
+        pub use crate::merged_mining_check::*;
     }
 
     pub mod genesis {
         pub mod genesis_config {
-            pub use crate::genesis::{BeaconGenesisConfig, SHARD_CALIBRATION_CONSTANT};
+            pub use crate::genesis::{BeaconGenesisConfig, NetworkId, PremineOutput, ShardGenesisConfig, SHARD_CALIBRATION_CONSTANT};
             pub use crate::genesis_network::NetworkGenesisConfig;
         }
         pub mod genesis {

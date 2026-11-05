@@ -142,3 +142,36 @@ pub fn verify_shard_id_and_mmn_with_ref_s(
     }
     Ok(())
 }
+
+/// [`verify_shard_id_and_mmn_with_ref_s`] for a [`Block`] with one exact expected chain count
+/// (`None` skips the count check) and no reference width.
+pub fn verify_shard_id_and_mmn(
+    block: &crate::shard_header::Block,
+    tree_depth: usize,
+    expected_active_shard_count: Option<u16>,
+    initial_target: &[u8; 32],
+    genesis_asserted_s_bits: u32,
+) -> Result<(), MergedMiningError> {
+    verify_shard_id_and_mmn_with_ref_s(
+        &block.header,
+        tree_depth,
+        expected_active_shard_count.map(|c| (c, c)),
+        None,
+        initial_target,
+        genesis_asserted_s_bits,
+    )
+}
+
+impl std::fmt::Display for MergedMiningError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRbits(r) => write!(f, "invalid rBits: {r}"),
+            Self::ChainCountAboveMaximum(c) => write!(f, "chain count {c} above the protocol maximum"),
+            Self::InsufficientProofOfWork => write!(f, "insufficient proof of work"),
+            Self::HashSorting(r) => write!(f, "hash sorting: {r}"),
+            Self::ProofInvalid(r) => write!(f, "merged-mining proof invalid: {r}"),
+        }
+    }
+}
+
+impl std::error::Error for MergedMiningError {}

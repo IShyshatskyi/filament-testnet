@@ -85,6 +85,10 @@ pub struct FullShardBlockData {
     pub tx_merkle_root: [u8; 32],
     pub difficulty: u32,
     pub chain_weight: u128,
+    /// The beacon candidate the shard block was merge-mined with (its PoW is the shard's PoW).
+    pub beacon_header: crate::shard_header::BeaconHeader,
+    /// Sibling path from the shard's leaf to the beacon header's `merged_mining_root`.
+    pub merged_mining_proof: Vec<crate::merged_mining_hash::MergedMiningHash>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

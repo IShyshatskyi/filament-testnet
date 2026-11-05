@@ -8,7 +8,7 @@
 /// Largest chain count the 12-bit field holds.
 pub const MAX_CHAIN_COUNT: u16 = 0x0FFF;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MergedMiningHash([u8; 32]);
 
 impl MergedMiningHash {

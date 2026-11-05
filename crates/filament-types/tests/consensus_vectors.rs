@@ -12,6 +12,10 @@ use filament_types::genesis::{BeaconGenesisConfig, ShardGenesisConfig};
 use filament_types::genesis_network::{GenesisGenerator, NetworkGenesisConfig};
 use filament_types::hash::{hash_pair, sha256d};
 use filament_types::merged_mining_check::{verify_shard_id_and_mmn_with_ref_s, MergedMiningError};
+use filament_types::proofs::{
+    decode_shard_blocks, encode_shard_blocks, BlockData, ThinHeaderProofResponse, ThinHeadersResponse,
+    ThinSessionResponse, ThinShardBlocksResponse, ThinShardSessionResponse, ThinTipResponse,
+};
 use filament_types::shard_header::{BeaconHeader, FullShardHeader};
 use filament_types::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
 use filament_types::transaction_impl::{ExtensionHeader, ExtensionRecord, FlatInput, FlatOutput, WitnessEntry};
@@ -349,6 +353,34 @@ fn every_shared_vector_matches() {
         let m = mm_case_from_json(c);
         let res = mm_class(verify_shard_id_and_mmn_with_ref_s(&m.header, m.tree_depth, m.expected, m.ref_s, &m.initial, m.genesis_s));
         assert_eq!(res, c["result"].as_str().unwrap());
+    }
+    let w = &v["wire"];
+    for c in w["shard_blocks"].as_array().unwrap() {
+        let hexs = c["hex"].as_str().unwrap();
+        let decoded = decode_shard_blocks(hexs).unwrap();
+        assert_eq!(decoded.len() as u64, c["count"].as_u64().unwrap());
+        assert_eq!(encode_shard_blocks(&decoded).unwrap(), hexs);
+    }
+    for c in w["block_data"].as_array().unwrap() {
+        let bytes = hv(&c["hex"]);
+        let (bd, used): (BlockData, usize) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(bincode::serde::encode_to_vec(&bd, bincode::config::standard()).unwrap(), bytes);
+    }
+    let thin = w["thin"].as_array().unwrap();
+    let rt = |i: usize| -> Value {
+        let j = &thin[i];
+        match i {
+            0 | 1 => serde_json::to_value(serde_json::from_value::<ThinTipResponse>(j.clone()).unwrap()).unwrap(),
+            2 => serde_json::to_value(serde_json::from_value::<ThinHeadersResponse>(j.clone()).unwrap()).unwrap(),
+            3 | 4 => serde_json::to_value(serde_json::from_value::<ThinSessionResponse>(j.clone()).unwrap()).unwrap(),
+            5 => serde_json::to_value(serde_json::from_value::<ThinShardBlocksResponse>(j.clone()).unwrap()).unwrap(),
+            6 => serde_json::to_value(serde_json::from_value::<ThinShardSessionResponse>(j.clone()).unwrap()).unwrap(),
+            _ => serde_json::to_value(serde_json::from_value::<ThinHeaderProofResponse>(j.clone()).unwrap()).unwrap(),
+        }
+    };
+    for i in 0..thin.len() {
+        assert_eq!(rt(i), thin[i], "thin response {i}");
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {

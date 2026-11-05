@@ -20,7 +20,7 @@ fn commitment_hash_from_parts(height: u32, tx_merkle_root: [u8; 32], merged_mini
 }
 
 /// The beacon candidate a shard block was mined against.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BeaconHeader {
     pub version: u32,
     pub delta: i32,
@@ -31,6 +31,7 @@ pub struct BeaconHeader {
     pub beacon_height: u32,
     pub beacon_merkle_root: [u8; 32],
     /// All zero for the legacy commitment; the real beacon coinbase hash otherwise.
+    #[serde(default)]
     pub coinbase_hash: [u8; 32],
 }
 
@@ -159,5 +160,18 @@ impl FullShardHeader {
     /// MMR leaf form of the identity hash, carrying the shard difficulty.
     pub fn hash_weighted(&self) -> WeightedHash {
         WeightedHash::from_leaf_rbits(&self.hash, self.difficulty)
+    }
+}
+
+/// A shard block as the light client holds it: the header and (usually no) transactions.
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub header: FullShardHeader,
+    pub transactions: Vec<crate::transaction_impl::Transaction>,
+}
+
+impl Block {
+    pub fn new(header: FullShardHeader, transactions: Vec<crate::transaction_impl::Transaction>) -> Self {
+        Self { header, transactions }
     }
 }
