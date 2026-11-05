@@ -4,7 +4,12 @@
 //! Never edit the file by hand: a mismatch means this crate drifted from the node.
 
 use filament_types::beacon_wire_header::WireBeaconHeader;
+use filament_types::expand_voting::{
+    admissible_s_bits_range, checked_s_bits_for_chain_count, compute_step_with, count_after_steps,
+    s_bits_for_chain_count, shard_admissible_count_range, shard_reference_s_bits,
+};
 use filament_types::hash::{hash_pair, sha256d};
+use filament_types::pow_check::{validate_one_wire_beacon_chunk, validate_wire_beacon_headers_pow_seq};
 use filament_types::merged_mining_hash::MergedMiningHash;
 use filament_types::pow_target::{hash_meets_target, rbits_to_target};
 use filament_types::hash_sorting::{extract_sorting_bits, find_eligible_shard};
@@ -152,6 +157,41 @@ fn every_shared_vector_matches() {
     }
     for c in v["pow_target"]["meets"].as_array().unwrap() {
         assert_eq!(hash_meets_target(&from_h32(&c["hash"]), &from_h32(&c["target"])), c["out"].as_bool().unwrap());
+    }
+    let ev = &v["expand_voting"];
+    for c in ev["s_bits"].as_array().unwrap() {
+        let count = c["count"].as_u64().unwrap() as u16;
+        assert_eq!(checked_s_bits_for_chain_count(count).map(u64::from), c["checked"].as_u64());
+        if count <= 4095 {
+            assert_eq!(Some(s_bits_for_chain_count(count) as u64), c["s"].as_u64());
+        }
+    }
+    for c in ev["steps"].as_array().unwrap() {
+        let (count, num, den) = (c["count"].as_u64().unwrap() as u16, c["num"].as_u64().unwrap() as u16, c["den"].as_u64().unwrap() as u16);
+        assert_eq!(compute_step_with(count, num, den) as u64, c["step"].as_u64().unwrap());
+        let got: Vec<u64> = [0u32, 1, 2, 5].iter().map(|k| count_after_steps(count, *k, num, den) as u64).collect();
+        let want: Vec<u64> = c["after"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        assert_eq!(got, want);
+    }
+    for c in ev["ranges"].as_array().unwrap() {
+        let table: Vec<u16> = c["table"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u16).collect();
+        let range = shard_admissible_count_range(c["epoch"].as_u64().unwrap() as u32, |e| table.get(e as usize).copied(), c["num"].as_u64().unwrap() as u16, c["den"].as_u64().unwrap() as u16);
+        let want = c["range"].as_array().map(|a| (a[0].as_u64().unwrap() as u16, a[1].as_u64().unwrap() as u16));
+        assert_eq!(range, want);
+        assert_eq!(range.map(shard_reference_s_bits).map(u64::from), c["s_ref"].as_u64());
+        let sr = range.map(admissible_s_bits_range);
+        let want_sr = c["s_range"].as_array().map(|a| (a[0].as_u64().unwrap() as u8, a[1].as_u64().unwrap() as u8));
+        assert_eq!(sr, want_sr);
+    }
+    for c in v["wire_pow"]["chunks"].as_array().unwrap() {
+        let res = validate_one_wire_beacon_chunk(&hv(&c["chunk"]), &from_h32(&c["initial"]), c["genesis_s"].as_u64().unwrap() as u32);
+        assert_eq!(res.is_ok(), c["ok"].as_bool().unwrap());
+        assert_eq!(res.err(), c["err"].as_str());
+    }
+    for c in v["wire_pow"]["sequences"].as_array().unwrap() {
+        let res = validate_wire_beacon_headers_pow_seq(&hv(&c["chunks"]), &from_h32(&c["initial"]), c["genesis_s"].as_u64().unwrap() as u32);
+        let want = c["err"].as_array().map(|a| (a[0].as_u64().unwrap() as usize, a[1].as_str().unwrap().to_string()));
+        assert_eq!(res.err().map(|(i, e)| (i, e.to_string())), want);
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {

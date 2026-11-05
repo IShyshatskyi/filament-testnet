@@ -19,6 +19,7 @@ pub mod weighted_mmr_peaks;
 pub mod mmr_math;
 pub mod merged_mining_hash;
 pub mod pow_target;
+pub mod pow_check;
 pub mod crypto_escrow;
 pub mod ipp;
 
