@@ -8,6 +8,8 @@ use filament_types::expand_voting::{
     admissible_s_bits_range, checked_s_bits_for_chain_count, compute_step_with, count_after_steps,
     s_bits_for_chain_count, shard_admissible_count_range, shard_reference_s_bits,
 };
+use filament_types::genesis::{BeaconGenesisConfig, ExpandVotingConfig, ShardGenesisConfig};
+use filament_types::genesis_network::NetworkGenesisConfig;
 use filament_types::hash::{hash_pair, sha256d};
 use filament_types::pow_check::{validate_one_wire_beacon_chunk, validate_wire_beacon_headers_pow_seq};
 use filament_types::merged_mining_hash::MergedMiningHash;
@@ -27,6 +29,22 @@ use filament_types::weighted_mmr_peaks::WeightedMMR;
 use serde_json::Value;
 
 const VECTORS: &str = include_str!("vectors/consensus_v1.json");
+
+/// The slice of a beacon genesis the light client needs (everything else may differ freely).
+fn genesis_summary(g: &BeaconGenesisConfig) -> Value {
+    let e = &g.shard_expansion;
+    serde_json::json!({
+        "bits": g.bits, "bitcoin_anchor_hash": hex::encode(g.bitcoin_anchor_hash), "max_target": hex::encode(g.max_target),
+        "asserted_s_bits": g.asserted_s_bits, "minimum_difficulty": g.minimum_difficulty.to_string(),
+        "tree_depth": g.tree_depth, "shard_calibration": g.shard_calibration,
+        "expansion": {
+            "initial_shard_count": e.initial_shard_count, "initial_s_bits": e.initial_s_bits,
+            "threshold_numerator": e.threshold_numerator, "threshold_denominator": e.threshold_denominator,
+            "step_numerator": e.step_numerator, "step_denominator": e.step_denominator,
+            "activation_delay": e.activation_delay, "epoch_length": e.epoch_length,
+        },
+    })
+}
 
 fn h(b: &[u8]) -> String {
     hex::encode(b)
@@ -192,6 +210,26 @@ fn every_shared_vector_matches() {
         let res = validate_wire_beacon_headers_pow_seq(&hv(&c["chunks"]), &from_h32(&c["initial"]), c["genesis_s"].as_u64().unwrap() as u32);
         let want = c["err"].as_array().map(|a| (a[0].as_u64().unwrap() as usize, a[1].as_str().unwrap().to_string()));
         assert_eq!(res.err().map(|(i, e)| (i, e.to_string())), want);
+    }
+    for c in v["genesis"]["presets"].as_array().unwrap() {
+        let g = match c["name"].as_str().unwrap() {
+            "mainnet" => BeaconGenesisConfig::mainnet(),
+            "testnet1" => BeaconGenesisConfig::testnet1(),
+            "testnet2" => BeaconGenesisConfig::testnet2(),
+            "testnet3" => BeaconGenesisConfig::testnet3(),
+            "devnet" => BeaconGenesisConfig::devnet(),
+            "testnet_stress" => BeaconGenesisConfig::testnet_stress(),
+            other => panic!("unknown preset {other}"),
+        };
+        assert_eq!(genesis_summary(&g), c["genesis"], "preset {}", c["name"]);
+    }
+    for c in v["genesis"]["files"].as_array().unwrap() {
+        let cfg: NetworkGenesisConfig = toml::from_str(c["text"].as_str().unwrap()).unwrap();
+        assert_eq!(genesis_summary(&cfg.beacon), c["genesis"], "file {}", c["name"]);
+    }
+    for c in v["genesis"]["shard_bits"].as_array().unwrap() {
+        let got = ShardGenesisConfig::bits_from_beacon_nbits(c["beacon_rbits"].as_u64().unwrap() as u32, c["calibration"].as_u64().unwrap() as u32);
+        assert_eq!(got as u64, c["out"].as_u64().unwrap());
     }
     let m = &v["mmr_math"];
     for c in m["peak_descriptors"].as_array().unwrap() {
