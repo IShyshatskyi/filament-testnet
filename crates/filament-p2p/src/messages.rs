@@ -105,7 +105,7 @@ pub struct VersionMessage {
     pub beacon_tip: Option<crate::tip_identity::ChainTipIdentity>,
     /// v16+: per-shard tip identities.
     pub shard_tips: Vec<(u16, crate::tip_identity::ChainTipIdentity)>,
-    /// v17+: optional packed WireBeaconHeader (150 B); light clients leave None.
+    /// v17+: optional packed WireBeaconHeader (148 B); light clients leave None.
     pub beacon_tip_header: Option<Vec<u8>>,
     /// v17+: per-shard packed LightShardHeader (136 B each).
     pub shard_tip_headers: Vec<(u16, Vec<u8>)>,

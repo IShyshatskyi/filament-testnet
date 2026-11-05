@@ -1,6 +1,11 @@
 // filament-types/src/genesis.rs — minimal genesis config for the light client.
 
-pub const GENESIS_DEFAULT_BITS: u32 = 0x0300_0040;
+/// Compact rBits of the default starting difficulty (D = 128, the epoch-0 floor of a 3-chain
+/// network; Nov 2026). The 15-chain `testnet2` starts at D = 512 (`0x0300_0200`).
+pub const GENESIS_DEFAULT_BITS: u32 = 0x0300_0080;
+
+/// Compact rBits of the 15-chain `testnet2` starting difficulty (D = 512).
+pub const GENESIS_TESTNET2_BITS: u32 = 0x0300_0200;
 
 pub mod bitcoin_anchors {
     pub const DEVNET_ANCHOR_HASH: [u8; 32] = [
@@ -14,11 +19,14 @@ pub mod bitcoin_anchors {
         0x2b, 0xbe, 0xd8, 0x1f, 0xed, 0x12, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
     ];
-    pub const TESTNET2_ANCHOR_HASH: [u8; 32] = [
+    /// `testnet3` (the former `testnet2`, Nov 2026 rename): its own Bitcoin block.
+    pub const TESTNET3_ANCHOR_HASH: [u8; 32] = [
         0x29, 0xd5, 0xd4, 0x23, 0xd7, 0xcb, 0x7e, 0xa3, 0xee, 0x94, 0x45, 0x2d, 0x61, 0x0a, 0xcb,
         0x93, 0x13, 0xa3, 0x8f, 0xf9, 0xfd, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00,
     ];
+    /// `testnet2` (15 chains) shares the `testnet1` anchor.
+    pub const TESTNET2_ANCHOR_HASH: [u8; 32] = TESTNET1_ANCHOR_HASH;
 }
 
 pub const SHARD_CALIBRATION_CONSTANT: u64 = 16;
@@ -71,7 +79,12 @@ impl BeaconGenesisConfig {
         Self::with_anchor(bitcoin_anchors::TESTNET1_ANCHOR_HASH)
     }
     pub fn testnet2() -> Self {
-        Self::with_anchor(bitcoin_anchors::TESTNET2_ANCHOR_HASH)
+        let mut cfg = Self::with_anchor(bitcoin_anchors::TESTNET2_ANCHOR_HASH);
+        cfg.bits = GENESIS_TESTNET2_BITS;
+        cfg
+    }
+    pub fn testnet3() -> Self {
+        Self::with_anchor(bitcoin_anchors::TESTNET3_ANCHOR_HASH)
     }
     pub fn devnet() -> Self {
         Self::with_anchor(bitcoin_anchors::DEVNET_ANCHOR_HASH)

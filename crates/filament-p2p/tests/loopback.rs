@@ -150,7 +150,7 @@ fn node_version(version: u32, genesis: [u8; GENESIS_HASH_LEN]) -> impl FnOnce(&V
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn client_speaks_v15_with_the_network_magic_and_trailers() {
+async fn client_speaks_the_current_version_with_the_network_magic_and_trailers() {
     let (addr, node) = scripted_node("devnet", node_version(WIRE_VERSION, [0u8; GENESIS_HASH_LEN])).await;
     let (mgr, shutdown) = client("devnet", None);
     mgr.connect(addr).await;
@@ -158,7 +158,7 @@ async fn client_speaks_v15_with_the_network_magic_and_trailers() {
 
     assert_eq!(&first_frame[0..4], b"SHDV", "frame starts with the devnet magic");
     assert_eq!(&first_frame[4..11], b"version");
-    assert_eq!(version.version, 15);
+    assert_eq!(version.version, WIRE_VERSION);
     assert_eq!(version.genesis_hash, [0u8; GENESIS_HASH_LEN], "a client that does not know the chain says so");
     assert_eq!(version.subscription_mask, [0u8; 128]);
     // The payload must carry every trailer: mask (128) and genesis hash (32) at the end.
