@@ -200,6 +200,13 @@ path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 orig = text
 
+# Nov 2026: the monorepo split common-types into network-common (network-wide) and common-types
+# (node-side). The synced crate names the network-wide one; the alias keeps `network_common::`
+# paths in source resolving to the clean-room filament-types.
+text = text.replace(
+    'network-common = { path = "../network-common" }',
+    'network_common = { package = "filament-types", path = "../filament-types" }',
+)
 text = text.replace(
     'common-types = { path = "../common-types" }',
     'common_types = { package = "filament-types", path = "../filament-types" }',
@@ -224,7 +231,7 @@ if text == orig:
     print("warning: remap_filament_cargo: no substitutions applied — check Cargo.toml shape", file=sys.stderr)
     sys.exit(2)
 
-needles = ['../common-types', '../p2p-proto', 'p2p-proto/full-node']
+needles = ['../common-types', '../network-common', '../p2p-proto', 'p2p-proto/full-node']
 local = path.parents[2] / 'scripts' / 'local' / 'extra_denylist.txt'
 if local.exists():
     section = ''
@@ -427,10 +434,16 @@ apply_filament_sync() {
       fi
     done < "$EXCLUDE_LIST"
     # Drop mod declarations for excluded basenames from mod.rs files
-    python3 - "$FILAMENT_DST" <<'PY2'
+    python3 - "$FILAMENT_DST" "$EXCLUDE_LIST" <<'PY2'
 import pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
-removed = {"thin_shard","escrow_api","chain_views","keystone_submit","escrow","hot_key"}
+# The mod declarations to drop are exactly the basenames of the excluded .rs files (was a hardcoded
+# set that kept dropping modules after they stopped being excluded).
+removed = set()
+for raw in pathlib.Path(sys.argv[2]).read_text().splitlines():
+    raw = raw.strip()
+    if raw and not raw.startswith('#') and raw.endswith('.rs'):
+        removed.add(pathlib.Path(raw).stem)
 for modrs in root.rglob("mod.rs"):
     text = modrs.read_text()
     lines = []
