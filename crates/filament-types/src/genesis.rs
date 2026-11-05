@@ -108,7 +108,27 @@ impl Default for ExpandVotingConfig {
 /// every preset and every checked-in genesis file against the node's parse.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct BeaconGenesisConfig {
+    #[serde(default = "default_network_id")]
+    pub network_id: NetworkId,
+    #[serde(default = "default_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub timestamp: u64,
+    #[serde(default)]
+    pub difficulty: u64,
     pub bits: u32,
+    #[serde(default)]
+    pub bitcoin_anchor_height: u32,
+    #[serde(default)]
+    pub bitcoin_anchor_timestamp: u64,
+    #[serde(default)]
+    pub premine: Vec<PremineOutput>,
+    #[serde(default)]
+    pub genesis_message: String,
+    #[serde(default, deserialize_with = "opt_hash::deserialize")]
+    pub expected_hash: Option<[u8; 32]>,
+    #[serde(default)]
+    pub nonce: Option<u64>,
     #[serde(default, deserialize_with = "anchor::deserialize")]
     pub bitcoin_anchor_hash: [u8; 32],
     #[serde(default = "default_max_target")]
@@ -127,6 +147,37 @@ pub struct BeaconGenesisConfig {
 
 fn default_max_target() -> [u8; 32] {
     GENESIS_MAX_TARGET_CPU
+}
+fn default_network_id() -> NetworkId { NetworkId::Custom }
+fn default_version() -> u32 { 1 }
+
+/// Network identifier of a genesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+pub enum NetworkId {
+    Mainnet,
+    Testnet1,
+    Testnet2,
+    Testnet3,
+    Devnet,
+    TestnetStress,
+    Custom,
+}
+
+/// One premine entry: an address label or `0x` + 64 hex (a real key), and an amount in atoms.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PremineOutput {
+    pub address: String,
+    pub amount: u64,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+mod opt_hash {
+    use serde::de::{Deserialize, Deserializer};
+    /// The pinned hash is written as 32 integers in the genesis files.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        Option::<[u8; 32]>::deserialize(d)
+    }
 }
 fn default_asserted_s_bits() -> u32 { 2 }
 fn default_minimum_difficulty() -> u64 { 128 }
@@ -166,19 +217,36 @@ mod anchor {
 impl BeaconGenesisConfig {
     #[allow(clippy::too_many_arguments)]
     fn preset(
+        network_id: NetworkId,
         anchor: [u8; 32],
+        anchor_height: u32,
+        anchor_timestamp: u64,
+        timestamp: u64,
+        difficulty: u64,
         bits: u32,
         max_target: [u8; 32],
         asserted_s_bits: u32,
         tree_depth: u32,
         shard_expansion: ExpandVotingConfig,
+        premine: Vec<PremineOutput>,
+        genesis_message: &str,
     ) -> Self {
         Self {
+            network_id,
+            version: 1,
+            timestamp,
+            difficulty,
             bits,
+            bitcoin_anchor_height: anchor_height,
+            bitcoin_anchor_timestamp: anchor_timestamp,
+            premine,
+            genesis_message: genesis_message.to_string(),
+            expected_hash: None,
+            nonce: None,
             bitcoin_anchor_hash: anchor,
             max_target,
             asserted_s_bits,
-            minimum_difficulty: 128,
+            minimum_difficulty: difficulty.max(128),
             tree_depth,
             shard_calibration: SHARD_CALIBRATION_CONSTANT as u32,
             shard_expansion,
@@ -189,11 +257,23 @@ impl BeaconGenesisConfig {
         ExpandVotingConfig { activation_delay, ..ExpandVotingConfig::default() }
     }
 
+    fn one(address: &str, amount: u64) -> Vec<PremineOutput> {
+        vec![PremineOutput { address: address.to_string(), amount, description: None }]
+    }
+
     pub fn mainnet() -> Self {
-        Self::preset(bitcoin_anchors::MAINNET_ANCHOR_HASH, GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_ASIC, 2, 2, Self::delayed(4))
+        Self::preset(
+            NetworkId::Mainnet, bitcoin_anchors::MAINNET_ANCHOR_HASH, 0, 1704067200, 1704067200, 128,
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_ASIC, 2, 2, Self::delayed(4),
+            Self::one("bc1q...", 2_100_000_000_000_000), "The Times 01/Jan/2024 Shisha Network Launch",
+        )
     }
     pub fn testnet1() -> Self {
-        Self::preset(bitcoin_anchors::TESTNET1_ANCHOR_HASH, GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2, Self::delayed(4))
+        Self::preset(
+            NetworkId::Testnet1, bitcoin_anchors::TESTNET1_ANCHOR_HASH, 935092, 1704067200, 1704067200, 128,
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2, Self::delayed(4),
+            Self::one("test1q...", 10_000_000_000), "Shisha Network Testnet 1",
+        )
     }
     /// 15 chains at s = 4, starting difficulty 512.
     pub fn testnet2() -> Self {
@@ -203,21 +283,61 @@ impl BeaconGenesisConfig {
             activation_delay: 4,
             ..ExpandVotingConfig::default()
         };
-        let mut cfg = Self::preset(bitcoin_anchors::TESTNET2_ANCHOR_HASH, GENESIS_TESTNET2_BITS, GENESIS_MAX_TARGET_CPU, 4, 4, expansion);
-        cfg.minimum_difficulty = 512;
-        cfg
+        Self::preset(
+            NetworkId::Testnet2, bitcoin_anchors::TESTNET2_ANCHOR_HASH, 935092, 1704067200, 1704067200, 512,
+            GENESIS_TESTNET2_BITS, GENESIS_MAX_TARGET_CPU, 4, 4, expansion,
+            Self::one("testnet-faucet", 10_000_000_000), "Shisha Network Testnet2 - Public 15-shard network",
+        )
     }
     pub fn testnet3() -> Self {
-        Self::preset(bitcoin_anchors::TESTNET3_ANCHOR_HASH, GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_TESTNET3, 2, 2, Self::delayed(4))
+        Self::preset(
+            NetworkId::Testnet3, bitcoin_anchors::TESTNET3_ANCHOR_HASH, 935091, 1704067200, 1704067200, 128,
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_TESTNET3, 2, 2, Self::delayed(4),
+            Self::one("test2q...", 10_000_000_000), "Shisha Network Testnet 3",
+        )
     }
     pub fn devnet() -> Self {
-        Self::preset(bitcoin_anchors::DEVNET_ANCHOR_HASH, GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2, Self::delayed(1))
+        Self::preset(
+            NetworkId::Devnet, bitcoin_anchors::DEVNET_ANCHOR_HASH, 935093, 1704067200, 1704067200, 128,
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2, Self::delayed(1), Vec::new(),
+            "Shisha Network Devnet",
+        )
     }
-    /// The local stress profile: 3 chains, a 16-leaf tree, epochs of 256 blocks.
+    /// The local stress profile: 3 chains, a 16-leaf tree, epochs of 256 blocks, a pinned genesis hash.
     pub fn testnet_stress() -> Self {
         let expansion = ExpandVotingConfig { activation_delay: 1, epoch_length: 256, step_denominator: 2, ..ExpandVotingConfig::default() };
-        Self::preset(bitcoin_anchors::TESTNET_STRESS_ANCHOR_HASH, GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 4, expansion)
+        let premine = [
+            ("0xd5c98a0cd803f46579317eeda18c965d225959f9c4e6d027b82725e7fa95cd0f", 100_000_000_000_000),
+            ("teststress1-producer-a-treasury", 50_000_000_000_000),
+            ("teststress1-producer-b-treasury", 25_000_000_000_000),
+            ("0x0dc31d5ee594bd2cc3d99fc27065d986edf574fcf8d16d8ba2955ce50d2b47d2", 5_000_000_000_000),
+            ("0x5beebbf8c70cd026ee2730511e98514870e78e59ad36b7844c06c220a08a4882", 5_000_000_000_000),
+            ("0x809a55c2a4cc37497f86d7174dd29cc04ab44bc7578d887ca666eb9998e28563", 5_000_000_000_000),
+            ("0x97e3ea6ab9e673f66e92656b7f3a4de00c45a6d464468c37ed07cacacc68f16a", 5_000_000_000_000),
+            ("0x740595e7f8c275a516631134698fed3bd288b17d386d5aa9802605915bde5d9e", 5_000_000_000_000),
+            ("0x76f26eb10684ace464fc39b74030267e6f322980d6645073af9788c51ebf113a", 5_000_000_000_000),
+            ("0x4b91a5253bd70d2459cc271ba768662cafc14059ced18efb6cad6b2cd981fdf1", 5_000_000_000_000),
+            ("0x95208050262701824f919a94ca509d130b1f3a13ad349ea638004d50bcc57072", 5_000_000_000_000),
+            ("teststress1-filament-demo", 10_000_000_000_000)
+        ]
+        .iter()
+        .map(|(a, v)| PremineOutput { address: a.to_string(), amount: *v, description: None })
+        .collect();
+        let mut cfg = Self::preset(
+            NetworkId::TestnetStress, bitcoin_anchors::TESTNET_STRESS_ANCHOR_HASH, 964050, 1787689496, 1787689496, 128,
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 4, expansion, premine,
+            "Shisha Network Testnet-Stress - 30-day stress launch",
+        );
+        cfg.nonce = Some(89721);
+        cfg.expected_hash = Some(hex_hash("000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080"));
+        cfg
     }
+}
+
+fn hex_hash(s: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hex::decode(s).expect("hex"));
+    out
 }
 
 /// Shard genesis arithmetic.

@@ -9,7 +9,7 @@ use filament_types::expand_voting::{
     s_bits_for_chain_count, shard_admissible_count_range, shard_reference_s_bits,
 };
 use filament_types::genesis::{BeaconGenesisConfig, ShardGenesisConfig};
-use filament_types::genesis_network::NetworkGenesisConfig;
+use filament_types::genesis_network::{GenesisGenerator, NetworkGenesisConfig};
 use filament_types::hash::{hash_pair, sha256d};
 use filament_types::merged_mining_check::{verify_shard_id_and_mmn_with_ref_s, MergedMiningError};
 use filament_types::shard_header::{BeaconHeader, FullShardHeader};
@@ -41,6 +41,12 @@ fn genesis_summary(g: &BeaconGenesisConfig) -> Value {
         "bits": g.bits, "bitcoin_anchor_hash": hex::encode(g.bitcoin_anchor_hash), "max_target": hex::encode(g.max_target),
         "asserted_s_bits": g.asserted_s_bits, "minimum_difficulty": g.minimum_difficulty.to_string(),
         "tree_depth": g.tree_depth, "shard_calibration": g.shard_calibration,
+        "network_id": format!("{:?}", g.network_id), "version": g.version, "timestamp": g.timestamp,
+        "difficulty": g.difficulty.to_string(), "bitcoin_anchor_height": g.bitcoin_anchor_height,
+        "bitcoin_anchor_timestamp": g.bitcoin_anchor_timestamp, "genesis_message": g.genesis_message,
+        "premine": g.premine.iter().map(|p| serde_json::json!([p.address, p.amount])).collect::<Vec<_>>(),
+        "nonce": g.nonce, "expected_hash": g.expected_hash.map(|x| hex::encode(x)),
+        "genesis_hash": GenesisGenerator::beacon_genesis_hash(g).ok().map(|x| hex::encode(x)),
         "expansion": {
             "initial_shard_count": e.initial_shard_count, "initial_s_bits": e.initial_s_bits,
             "threshold_numerator": e.threshold_numerator, "threshold_denominator": e.threshold_denominator,

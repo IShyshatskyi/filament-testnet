@@ -848,7 +848,10 @@
         "genesis": {
           "asserted_s_bits": 5,
           "bitcoin_anchor_hash": "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000",
+          "bitcoin_anchor_height": 935093,
+          "bitcoin_anchor_timestamp": 1787779736,
           "bits": 50331712,
+          "difficulty": "64",
           "expansion": {
             "activation_delay": 1,
             "epoch_length": 4096,
@@ -859,10 +862,18 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "9a2808f61e973c4f8d26be1d0d9a540955eee0e60e998f9466eaea2c03000040",
+          "genesis_message": "Shisha Network crash-recovery dry-run (E3)",
           "max_target": "1000000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "64",
+          "network_id": "Custom",
+          "nonce": null,
+          "premine": [],
           "shard_calibration": 1,
-          "tree_depth": 5
+          "timestamp": 1787779736,
+          "tree_depth": 5,
+          "version": 1
         },
         "name": "genesis_crash_recovery.toml",
         "text": "# Shisha Network — crash-recovery dry-run profile (archive/rustmmrdb_phase5_plan.md E3)\n#\n# Same wire identity as devnet (network_magic 0xFFFFFFFF, NetworkId::Devnet) —\n# derived from config/genesis_devnet_15.toml. Two differences from that file:\n#\n#   1. `bits`/`max_target` set to a near-trivial target (mines in ~1-2\n#      attempts on average) instead of devnet_15's already-easy-but-real\n#      0x1e0fffff, so the very first blocks — before the DAA's own\n#      adjustment window has any history to work from — don't stall.\n#   2. 15 active shards at genesis (raised 2->15, Aug 27, 2026, for the\n#      mesh-cross soak's bidirectional-recovery scenario — with 15 shards\n#      and asymmetric worker allocation across producers A/B, different\n#      shards progress at different relative rates, so after a partition\n#      some shards are ahead on one side and some on the other, forcing\n#      genuinely bidirectional catch-up on cross-heal instead of a single\n#      \"loser always recovers from winner\" direction. Was raised 1->2 on\n#      Aug 20, 2026 (NC-82 follow-up) for the original, narrower reason of\n#      exercising more than one shard's P1DB open/crash-recovery path; see\n#      docs/plan/Correctness_and_Validation_Plan.md NC-82.\n#\n# `shard_calibration` stays `1` here — tried raising it to `16` (matching\n# every other real network preset) on Aug 20, 2026 and found a hard,\n# fail-fast reason it can't be: `runner.rs` enforces\n# `shard_calibration == beacon_interval / shard_interval` at startup (\"NC-19\n# shard_calibration vs intervals\" check) — a real consistency invariant, not\n# an oversight — and `config/crash_recovery_daa.toml` deliberately keeps\n# that ratio at 1:1 (not the usual 1:16), exactly so every mined block\n# advances height fast in this soak. Raising `shard_calibration` alone\n# without also un-doing that deliberate 1:1 ratio makes the producer refuse\n# to start outright. Left at `1`, matching the DAA config it's paired with.\n# `shard_calibration` was never the thing gating NC-82 exposure anyway —\n# NC-82 reproduces whenever `epoch_length() x shard_calibration !=\n# SHARD_EPOCH_BLOCKS (65536)`, which the soak's own `EPOCH_LENGTH=8`\n# override already guarantees regardless of calibration value.\n#\n# Paired with config/crash_recovery_daa.toml (1s beacon / 1s shard interval —\n# see that file's own header for why shard isn't kept at devnet's normal\n# 1:16 beacon:shard ratio). Used by scripts/soak/crash_recovery_dry_run.sh.\n\nnetwork_magic = [0xFF, 0xFF, 0xFF, 0xFF]\nprotocol_version = 1\n\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\n# Overwritten to (now - beacon_interval) at config-generation time by\n# gen_crash_recovery_config.sh, same pattern as patch_devnet_15_genesis_time.sh.\ntimestamp = 1787779736\ndifficulty = 64\n# Near-trivial PoW for E3 crash-recovery dry-run. Beacon floor = 2^asserted_s_bits.\n# Raised 4->64 (Aug 27, 2026, s: 2->5 for 15 shards) -- floor is now 2^5=32,\n# so difficulty=4 no longer validates (\"D must be >= 2^s\"); 64 keeps clear margin.\nbits = 0x03000040  # compact rBits for difficulty=64 (u128_to_rbits(64))\nmax_target = [16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 5\n# MM tree depth == s (32 leaves address space; 15 active shards at genesis + headroom).\n# Raised 2->5 (Aug 27, 2026, mesh soak): 15 shards need 2^s-1 > 15 -> s>=5.\ntree_depth = 5\nshard_calibration = 1\nminimum_difficulty = 64\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1787779736\ngenesis_message = \"Shisha Network crash-recovery dry-run (E3)\"\npremine = []\n\n[beacon.shard_expansion]\ninitial_shard_count = 15\n# initial_s_bits must satisfy count < 2^s - 1 (see genesis_devnet_15.toml's\n# own comment on this same constraint) -- 2^5-1=31 > 15.\ninitial_s_bits = 5\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1  # Universal lag (2026-07-31): soak/fast-network minimal grace window; see docs/plan/Epoch_Alignment_Reference.md §6\nepoch_length = 4096  # S12: sized to keep a 3h run inside epoch 0 (EPOCH-256-K6) yet fit the 8GB disk\n\n[shards]\n\n\n"
@@ -871,7 +882,10 @@
         "genesis": {
           "asserted_s_bits": 4,
           "bitcoin_anchor_hash": "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000",
+          "bitcoin_anchor_height": 935093,
+          "bitcoin_anchor_timestamp": 1783544872,
           "bits": 50332160,
+          "difficulty": "512",
           "expansion": {
             "activation_delay": 1,
             "epoch_length": 256,
@@ -882,10 +896,18 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "077d8331b0944c8750d42dd5883bfd47a1c01947413d4f8fc3edc7d403000200",
+          "genesis_message": "Shisha Network Devnet 15-shard soak",
           "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "512",
+          "network_id": "Custom",
+          "nonce": null,
+          "premine": [],
           "shard_calibration": 16,
-          "tree_depth": 4
+          "timestamp": 1783544872,
+          "tree_depth": 4,
+          "version": 1
         },
         "name": "genesis_devnet_15.toml",
         "text": "# Shisha Network Devnet — 15-shard soak profile\n#\n# Operator soak under NetworkId::Custom (derived P2P magic from network name\n# `devnet-15` / pack scripts — not public Testnet SHTN, not stress SHTS, and\n# not the local 3-shard Devnet SHDV preset). Activates shard IDs 0–14 at\n# genesis. Pair with network_type = \"devnet-15\" (maps to this file) or an\n# explicit genesis_config_file. Generated packs: scripts/gen_devnet_15_config.sh.\n#\n# The public announced network lives in genesis_testnet2.toml (NetworkId::Testnet2).\n\nnetwork_magic = [0xFF, 0xFF, 0xFF, 0xFF]  # informational; live nodes use [shishanet] network name\nprotocol_version = 1\n\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\n# Overwritten to (now - 600s) when soak runs with FRESH_CHAIN=1 (patch_devnet_15_genesis_time.sh).\ntimestamp = 1783544872\ndifficulty = 512\n# Soft max_target for soak; D=512 meets the epoch-0 beacon floor cal×2^s_ref0 = 16×32 = 512 (15 chains + 1 step = 18 -> s_ref0 = 5).\nbits = 0x03000200  # compact rBits for difficulty=512 (u128_to_rbits(512))\n# Raised ×16 (Jul 22, 2026, user request): devnet's beacon interval is already\n# 4× tighter than mainnet/testnet1 (150s vs 600s), and soak sizing further\n# biases toward a shorter effective interval (×3/4) — this ceiling is the\n# headroom `lib_soak_difficulty.sh`'s D-sizing works within before its own\n# \"raise max_target further\" fallback needs to trigger. A more relaxed\n# baseline here means that fallback engages less often across a wider range\n# of assumed/real worker hashrates. Does not change the floor (still 256 —\n# a pure function of shard_calibration×2^asserted_s, independent of\n# max_target) or `difficulty`/`bits` — raising max_target alone uniformly\n# eases the real PoW target at any given D (T_eff = max_target/D × 2^s).\nmax_target = [0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n# Must equal shard_expansion.initial_s_bits (G-6). With 15 shards, s=4 fills\n# capacity exactly (count = 2^4 − 1) — in optimal band.\nasserted_s_bits = 4\n# MM tree depth == s (2^4 = 16 leaves → room for 15 shards).\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1783544872\ngenesis_message = \"Shisha Network Devnet 15-shard soak\"\npremine = []\n\n# 15 active shards. initial_s_bits = 4 fills capacity 2^4 − 1.\n[beacon.shard_expansion]\ninitial_shard_count = 15\ninitial_s_bits = 4\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1  # Universal lag (2026-07-31): soak/fast-network minimal grace window; see docs/plan/Epoch_Alignment_Reference.md §6\nepoch_length = 256\n\n[shards]\n"
@@ -894,7 +916,10 @@
         "genesis": {
           "asserted_s_bits": 4,
           "bitcoin_anchor_hash": "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000",
+          "bitcoin_anchor_height": 935092,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50332160,
+          "difficulty": "512",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -905,10 +930,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200",
+          "genesis_message": "Shisha Network Testnet2 - Public 15-shard network",
           "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "512",
+          "network_id": "Testnet2",
+          "nonce": null,
+          "premine": [
+            [
+              "testnet-faucet",
+              10000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 4
+          "timestamp": 1704067200,
+          "tree_depth": 4,
+          "version": 1
         },
         "name": "genesis_testnet2.toml",
         "text": "# Shisha Network — Testnet2 genesis (renamed from `testnet` on Nov 5, 2026)\n#\n# Announced community network. Distinct from:\n#   - Testnet1 / Testnet3 (3-shard presets)\n#   - testnet-stress (short-lived 3-shard load cell, magic SHTS)\n#   - Devnet (local 3-shard, magic SHDV) and genesis_devnet_15 (Custom soak)\n#\n# Layout: 15 shards / s=4 / tree_depth=4 (fills capacity 2^4 − 1).\n# P2P magic: SHT2 (see network_identity.rs). Remine expected_hash before launch.\n\nnetwork_magic = [0x53, 0x48, 0x54, 0x32]  # ASCII \"SHT2\"\nprotocol_version = 1\n\n[beacon]\nnetwork_id = \"Testnet2\"\nversion = 1\ntimestamp = 1704067200\ndifficulty = 512\n# Worker target ceiling 2^240 (CPU-oriented, 2^16 hashes per difficulty unit, ~30 ms of one\n# MacBook thread; same as testnet-stress). D=512 = cal×2^s_ref0 = 16×32 (15 chains + 1 step of lag = 18 -> s_ref0 = 5).\nbits = 0x03000200  # compact rBits for difficulty=512 (u128_to_rbits(512))\nmax_target = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 4\n# MM tree depth == s (2^4 = 16 leaves → room for 15 shards).\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\n# Bootstrap pin = Testnet1's Bitcoin block 935092. Remine with a fresh\n# recent Bitcoin block before public announcement.\n# Display hash: 00000000000000000000c112ed1fd8be2b68298e4466566acf87ebdc669c2246\nbitcoin_anchor_hash = [70, 34, 156, 102, 220, 235, 135, 207, 106, 86, 102, 68, 142, 41, 104, 43, 190, 216, 31, 237, 18, 193, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935092\nbitcoin_anchor_timestamp = 1704067200\ngenesis_message = \"Shisha Network Testnet2 - Public 15-shard network\"\npremine = [\n    { address = \"testnet-faucet\", amount = 10_000_000_000, description = \"Public testnet faucet (replace with real key before launch)\" },\n]\ncredit_premine_to_shard_genesis = false\n# expected_hash / nonce: unset until `cargo run --release --bin genesis_miner -- --network testnet2`\n\n# 15 active shards. initial_s_bits = 4 fills capacity 2^4 − 1.\n[beacon.shard_expansion]\ninitial_shard_count   = 15\ninitial_s_bits        = 4\nthreshold_numerator   = 5\nthreshold_denominator = 8\nstep_numerator         = 1\nstep_denominator       = 4\nactivation_delay       = 4  # standard-network grace (~40 min at 600s pacing)\nepoch_length           = 4096\n\n[beacon.k_voting]\nactivation_height = 4096\n# 2^16 atoms per difficulty unit (k = 2^16), as testnet-stress.\nk_initial_kbits = 0x09010000\n\n[shards]\n"
@@ -917,7 +955,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "29d5d423d7cb7ea3ee94452d610acb9313a38ff9fd5200000000000000000000",
+          "bitcoin_anchor_height": 935091,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -928,10 +969,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "d6180680892cf1da0266435ace905c2a35a21882791e4be45c66497c03000080",
+          "genesis_message": "Shisha Network Testnet 3",
           "max_target": "0000000001000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "Testnet3",
+          "nonce": null,
+          "premine": [
+            [
+              "test2q...",
+              10000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 2
+          "timestamp": 1704067200,
+          "tree_depth": 2,
+          "version": 1
         },
         "name": "genesis_testnet3.toml",
         "text": "# Shisha Network Testnet 3 Genesis Configuration (renamed from `testnet2` on Nov 5, 2026)\n#\n# ASIC-oriented 3-shard testnet: worker target ceiling 2^216, i.e. 2^40 hashes per difficulty unit.\n# Launch TEMPLATE: scripts/deploy/regen_genesis.sh re-stamps the anchor and mines the nonce.\n\n# Network-level configuration (must be at root level, before sections)\nnetwork_magic = [0x53, 0x48, 0x54, 0x33]  # ASCII \"SHT3\"\nprotocol_version = 1\n\n[beacon]\nnetwork_id = \"Testnet3\"\nversion = 1\ntimestamp = 1704067200\ndifficulty = 128\n# Worker target ceiling 2^216 (ASIC-oriented, 2^40 hashes per difficulty unit). Starting hardness is D=128 (the epoch-0 beacon floor, cal 16 x 2^3).\n# NC-19 (docs/plan/Correctness_and_Validation_Plan.md): shard genesis derivation\n# widens beacon target × shard_calibration in target space — no ×16 headroom here.\nbits = 0x03000080  # compact rBits for difficulty=128 (u128_to_rbits(128))\nmax_target = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 2\n# MM tree depth == s (2^2 = 4 leaves → room for 3 shards).\ntree_depth = 2\nshard_calibration = 16\nminimum_difficulty = 128\n# Bitcoin block 935091 (little-endian / internal byte order).\n# Display hash: 0000000000000000000052fdf98fa31393cb0a612d4594eea37ecbd723d4d529\n# Must match TESTNET3_ANCHOR_HASH in genesis_config.rs::bitcoin_anchors.\nbitcoin_anchor_hash = [41, 213, 212, 35, 215, 203, 126, 163, 238, 148, 69, 45, 97, 10, 203, 147, 19, 163, 143, 249, 253, 82, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935091\nbitcoin_anchor_timestamp = 1704067200\ngenesis_message = \"Shisha Network Testnet 3\"\npremine = [\n    { address = \"test2q...\", amount = 10_000_000_000, description = \"Testnet2 faucet\" },\n]\ncredit_premine_to_shard_genesis = false\n\n# Explicit ExpandVotingConfig (matches ExpandVotingConfig::default() / Rust preset).\n# Listed so TOML ↔ Rust is not \"trust the serde default.\"\n[beacon.shard_expansion]\ninitial_shard_count   = 3\ninitial_s_bits        = 2\nthreshold_numerator   = 5\nthreshold_denominator = 8\nstep_numerator         = 1\nstep_denominator       = 4\nactivation_delay       = 4  # Universal lag (2026-07-31): standard-network grace window; see docs/plan/Epoch_Alignment_Reference.md §6\nepoch_length           = 4096\n\n[beacon.k_voting]\nactivation_height = 4096\n# 2^16 atoms per difficulty unit (k = 2^16) on every network, as testnet-stress.\nk_initial_kbits = 0x09010000\n\n# Shards configuration (empty HashMap for initial launch)\n[shards]\n"
@@ -942,7 +996,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "bitcoin_anchor_height": 0,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -953,10 +1010,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "838e0d64fdee4246554c241ae801e1094fbcec0ad62404d74a0d0c2b03000080",
+          "genesis_message": "The Times 01/Jan/2024 Shisha Network Launch",
           "max_target": "0000000000100000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "Mainnet",
+          "nonce": null,
+          "premine": [
+            [
+              "bc1q...",
+              2100000000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 2
+          "timestamp": 1704067200,
+          "tree_depth": 2,
+          "version": 1
         },
         "name": "mainnet"
       },
@@ -964,7 +1034,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000",
+          "bitcoin_anchor_height": 935092,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -975,10 +1048,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "0fe5fab91a058d92f826041cc53b694376aa1a767d5dbf52a261255d03000080",
+          "genesis_message": "Shisha Network Testnet 1",
           "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "Testnet1",
+          "nonce": null,
+          "premine": [
+            [
+              "test1q...",
+              10000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 2
+          "timestamp": 1704067200,
+          "tree_depth": 2,
+          "version": 1
         },
         "name": "testnet1"
       },
@@ -986,7 +1072,10 @@
         "genesis": {
           "asserted_s_bits": 4,
           "bitcoin_anchor_hash": "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000",
+          "bitcoin_anchor_height": 935092,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50332160,
+          "difficulty": "512",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -997,10 +1086,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200",
+          "genesis_message": "Shisha Network Testnet2 - Public 15-shard network",
           "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "512",
+          "network_id": "Testnet2",
+          "nonce": null,
+          "premine": [
+            [
+              "testnet-faucet",
+              10000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 4
+          "timestamp": 1704067200,
+          "tree_depth": 4,
+          "version": 1
         },
         "name": "testnet2"
       },
@@ -1008,7 +1110,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "29d5d423d7cb7ea3ee94452d610acb9313a38ff9fd5200000000000000000000",
+          "bitcoin_anchor_height": 935091,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 4,
             "epoch_length": 4096,
@@ -1019,10 +1124,23 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "d6180680892cf1da0266435ace905c2a35a21882791e4be45c66497c03000080",
+          "genesis_message": "Shisha Network Testnet 3",
           "max_target": "0000000001000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "Testnet3",
+          "nonce": null,
+          "premine": [
+            [
+              "test2q...",
+              10000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 2
+          "timestamp": 1704067200,
+          "tree_depth": 2,
+          "version": 1
         },
         "name": "testnet3"
       },
@@ -1030,7 +1148,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000",
+          "bitcoin_anchor_height": 935093,
+          "bitcoin_anchor_timestamp": 1704067200,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 1,
             "epoch_length": 4096,
@@ -1041,10 +1162,18 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": null,
+          "genesis_hash": "2240f8752353043270ffe5d41e867b6dba8a7aa7b1b52abdd007524303000080",
+          "genesis_message": "Shisha Network Devnet",
           "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "Devnet",
+          "nonce": null,
+          "premine": [],
           "shard_calibration": 16,
-          "tree_depth": 2
+          "timestamp": 1704067200,
+          "tree_depth": 2,
+          "version": 1
         },
         "name": "devnet"
       },
@@ -1052,7 +1181,10 @@
         "genesis": {
           "asserted_s_bits": 2,
           "bitcoin_anchor_hash": "6974209176d5a4b1fdb1a2a146ae8265dfbd30b2f2b300000000000000000000",
+          "bitcoin_anchor_height": 964050,
+          "bitcoin_anchor_timestamp": 1787689496,
           "bits": 50331776,
+          "difficulty": "128",
           "expansion": {
             "activation_delay": 1,
             "epoch_length": 256,
@@ -1063,10 +1195,67 @@
             "threshold_denominator": 8,
             "threshold_numerator": 5
           },
+          "expected_hash": "000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080",
+          "genesis_hash": "000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080",
+          "genesis_message": "Shisha Network Testnet-Stress - 30-day stress launch",
           "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
+          "network_id": "TestnetStress",
+          "nonce": 89721,
+          "premine": [
+            [
+              "0xd5c98a0cd803f46579317eeda18c965d225959f9c4e6d027b82725e7fa95cd0f",
+              100000000000000
+            ],
+            [
+              "teststress1-producer-a-treasury",
+              50000000000000
+            ],
+            [
+              "teststress1-producer-b-treasury",
+              25000000000000
+            ],
+            [
+              "0x0dc31d5ee594bd2cc3d99fc27065d986edf574fcf8d16d8ba2955ce50d2b47d2",
+              5000000000000
+            ],
+            [
+              "0x5beebbf8c70cd026ee2730511e98514870e78e59ad36b7844c06c220a08a4882",
+              5000000000000
+            ],
+            [
+              "0x809a55c2a4cc37497f86d7174dd29cc04ab44bc7578d887ca666eb9998e28563",
+              5000000000000
+            ],
+            [
+              "0x97e3ea6ab9e673f66e92656b7f3a4de00c45a6d464468c37ed07cacacc68f16a",
+              5000000000000
+            ],
+            [
+              "0x740595e7f8c275a516631134698fed3bd288b17d386d5aa9802605915bde5d9e",
+              5000000000000
+            ],
+            [
+              "0x76f26eb10684ace464fc39b74030267e6f322980d6645073af9788c51ebf113a",
+              5000000000000
+            ],
+            [
+              "0x4b91a5253bd70d2459cc271ba768662cafc14059ced18efb6cad6b2cd981fdf1",
+              5000000000000
+            ],
+            [
+              "0x95208050262701824f919a94ca509d130b1f3a13ad349ea638004d50bcc57072",
+              5000000000000
+            ],
+            [
+              "teststress1-filament-demo",
+              10000000000000
+            ]
+          ],
           "shard_calibration": 16,
-          "tree_depth": 4
+          "timestamp": 1787689496,
+          "tree_depth": 4,
+          "version": 1
         },
         "name": "testnet_stress"
       }
