@@ -1,4 +1,4 @@
-//! Thin beacon sync loop (`docs/plan/Filament_Thin_Sync_Design.md` §3, §9).
+//! Thin beacon sync loop (the thin sync design).
 //!
 //! One round, run every sync tick for the beacon chain:
 //!

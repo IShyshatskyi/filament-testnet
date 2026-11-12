@@ -1,8 +1,8 @@
 // src/mmr_client/escrow_api.rs
 //
 // Escrow commands (IPP D14) shared by the local HTTP API (`filament_server.rs`,
-// `/escrow/*`) and the Tauri commands (`filament_app/src-tauri/src/commands.rs`).
-// Library: `crate::wallet::escrow`. Protocol: `filament_app/docs/IPP_PROTOCOL_AND_MUSIG2.md`.
+// `/escrow/*`) and the desktop app's commands.
+// Library: `crate::wallet::escrow`. Protocol: the IPP protocol spec.
 //
 // * Heights come from the light client's own verified chain state (`local_tip`), never
 //   from the request: H checks (open, pay, recover) must not trust the UI.

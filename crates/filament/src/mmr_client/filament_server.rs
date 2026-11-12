@@ -1,6 +1,6 @@
 // src/mmr_client/filament_server.rs — Filament HTTP API server (port 7380)
 //
-// All 14+ endpoints described in docs/plan/Filament_App_Plan.md.
+// All 14+ endpoints described in the app plan.
 // Only compiled when the `full-node` feature is active (axum, tower-http).
 
 #![cfg(feature = "full-node")]
@@ -45,7 +45,7 @@ pub struct FilamentNodeConfig {
     /// backward compatibility with existing config files — see
     /// `all_keystone_endpoints()` for the merged, de-duplicated list
     /// actually used by the wallet). See
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` Track B.
+    /// the multi-node trust design.
     #[serde(default)]
     pub keystone_rest_endpoints: Vec<String>,
     pub data_dir: String,
@@ -64,7 +64,7 @@ pub struct FilamentNodeConfig {
     /// different port (Keystone's `mmr_light_client.port`, default 8080 on
     /// the Keystone side; matches `default_light_client_summary_port` here).
     /// See `light_client_summary_url` and
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+    /// the multi-node trust design.
     #[serde(default = "default_light_client_summary_port")]
     pub light_client_summary_port: u16,
     /// Keystone wallet REST port used when converting discovery `(host, port)`
@@ -111,7 +111,7 @@ pub struct FilamentNodeConfig {
     /// needs two distinct Keystones to agree on the tip.
     #[serde(default)]
     pub allow_single_keystone: bool,
-    /// Thin beacon sync (`docs/plan/Filament_Thin_Sync_Design.md`): follow the
+    /// Thin beacon sync (the thin sync design): follow the
     /// beacon chain with a tip poll, one 16-header session summary and
     /// incremental headers instead of the 30 s full `GET /chain/summary`.
     /// Default off until it has run on a fleet.
@@ -2650,7 +2650,7 @@ async fn sync_status(State(s): State<FilamentAppState>) -> impl IntoResponse {
 /// `MultiChainClient` tracks (MNT-2/6) for the beacon chain — how many
 /// reputable, capability-matching peers are connected, whether that meets
 /// the configured minimum, and each qualifying peer's own reputation.
-/// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// See the multi-node trust design.
 async fn sync_trust(State(s): State<FilamentAppState>) -> impl IntoResponse {
     let snapshot = beacon_peer_trust_snapshot(&*s.client.read().await).await;
     Json(json!({
@@ -3551,7 +3551,7 @@ fn sync_status_parts(status: &ChainSyncStatus, tip: u32) -> (String, u32, f64) {
 /// every shard chain Filament already tracks locally (`client.shard_ids()`)
 /// — Keystone's light-client API now serves both
 /// (`GET /chain/summary` and `GET /shard/{id}/chain/summary`). See
-/// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// the multi-node trust design.
 ///
 /// Each endpoint that answers the beacon fetch is registered as a peer
 /// (MNT-2's `get_top_peers` candidate pool) if not already known, using the

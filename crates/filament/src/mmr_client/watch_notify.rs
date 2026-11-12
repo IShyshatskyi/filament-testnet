@@ -3,7 +3,7 @@
 // FUD-5 / LC-45..LC-47c — Filament-side processing of Keystone watch notifications
 // (TxInclusionNotif / TxSpentNotif / TxRevertNotif).
 //
-// Design reference: `docs/plan/P2P_Phase10_Plan.md` §6.2
+// Design reference: the light-client protocol design
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;

@@ -1,4 +1,4 @@
-//! Thin shard chain state for the light client (`docs/plan/Filament_Thin_Sync_Design.md` §5).
+//! Thin shard chain state for the light client (the thin sync design).
 //!
 //! Same idea as [`ThinBeaconState`](crate::mmr_client::thin_chain::ThinBeaconState): MMR peaks, the
 //! leaf count, the last [`RECENT_BLOCKS`] records, and a weight computed locally. What differs:

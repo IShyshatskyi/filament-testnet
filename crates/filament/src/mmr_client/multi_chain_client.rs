@@ -311,7 +311,7 @@ pub struct SyncConfiguration {
     /// enough to report as "synced". Below this floor,
     /// `get_trusted_sync_status` reports `ChainSyncStatus::InsufficientPeers`
     /// instead of silently falling back to single-peer trust. See
-    /// `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-6.
+    /// the multi-node trust design.
     pub min_peers_for_trust: usize,
 
     /// MNT-4: height spread (in blocks) tolerated between independently-
@@ -1059,7 +1059,7 @@ impl MultiChainClient {
     /// (the actual network I/O is the caller's responsibility, same as
     /// `send_watch_fn`/`relay_send_fn` elsewhere in this type) and pass the
     /// responses to `reconcile_beacon_summaries`/`reconcile_shard_summaries`.
-    /// See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md` MNT-2.
+    /// See the multi-node trust design.
     pub async fn get_top_peers(&self, chain_type: ChainType, k: usize) -> Vec<String> {
         let peers = self.peers.read().await;
 
@@ -1720,7 +1720,7 @@ pub struct PeerChainSummaryResponse {
 }
 
 /// Outcome of reconciling chain-summary responses from multiple peers
-/// (MNT-3/4). See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// (MNT-3/4). See the multi-node trust design.
 #[derive(Debug, Clone, Default)]
 pub struct ReconciliationOutcome {
     /// Peer whose independently-verified summary had the max chain weight
@@ -1801,7 +1801,7 @@ mod tests {
     }
 
     // ── MNT-9: multi-node trust reconciliation tests ──────────────────────
-    // See filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
+    // See the multi-node trust design.
 
     fn test_peer(id: &str) -> PeerConnection {
         PeerConnection {

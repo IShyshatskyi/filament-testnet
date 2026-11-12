@@ -132,7 +132,7 @@ pub struct SendResponse {
 
 /// MNT-7: outcome of fanning a wallet-data refresh out to every configured
 /// Keystone endpoint, rather than trusting whichever single endpoint used to
-/// be the only option. See `filament_app/docs/MULTI_NODE_TRUST_PLAN.md`.
+/// be the only option. See the multi-node trust design.
 #[derive(Debug, Clone, Default)]
 pub struct RefreshOutcome {
     /// Endpoints that returned a usable response.
@@ -589,7 +589,7 @@ impl FilamentWallet {
     }
 
     /// Select UTXOs for a given spend amount (FA-6). With `Some(shard)` only that shard's
-    /// outputs are used: shards are independent ledgers (Anti-Patterns #33), so one
+    /// outputs are used: shards are independent ledgers, so one
     /// transaction can never spend outputs of two chains. (It used to fall back to other
     /// shards, building transactions no node accepts — fixed Oct 30, 2026.)
     pub fn select_utxos_for_amount(
@@ -754,7 +754,7 @@ impl FilamentWallet {
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)
         let keys: Vec<SecretKey> = (0..tx.inputs.len()).map(|_| secret_key).collect();
-        // chain_id = shard_id + 1 (Anti-Patterns #22). This used to pass
+        // chain_id = shard_id + 1. This used to pass
         // `req.shard_id as u8`, so every signature was for the wrong chain and
         // failed TX-5 on a real node.
         let chain_id = network_common::transaction::shard_chain_id(req.shard_id);

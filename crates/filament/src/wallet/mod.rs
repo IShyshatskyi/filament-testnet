@@ -6,7 +6,7 @@
 // callers and predates the FV-3 flat-vector migration that made raw 32-byte
 // recipients (and the unrelated `mmr_client::shisha_uri`/`filament_wallet`
 // address scheme) canonical. See
-// docs/reports/RF-19_RF-20_Completion_Report.md §3.
+// the extraction notes
 
 pub mod transaction_builder;
 pub mod escrow;

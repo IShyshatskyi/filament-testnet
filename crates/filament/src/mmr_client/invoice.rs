@@ -14,7 +14,7 @@
 //                 ↘                ↗                    ↘
 //               Expired                              ReorgReverted
 //
-// Design reference: `docs/plan/P2P_Phase10_Plan.md` §2
+// Design reference: the light-client protocol design
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -120,7 +120,7 @@ impl InvoiceState {
 
 /// A receiver-initiated payment request.
 ///
-/// See `docs/plan/P2P_Phase10_Plan.md` §2.1 for the full field descriptions.
+/// See the light-client protocol design for the full field descriptions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invoice {
     /// 16-byte UUID v4 (random), unique per payment.

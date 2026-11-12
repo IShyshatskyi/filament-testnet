@@ -7,7 +7,7 @@
 // bagged root and chain weight) after one more leaf, and which nodes a fork
 // path reads.
 //
-// MMR access is positional (Anti-Patterns Registry): nothing here searches a
+// MMR access is positional: nothing here searches a
 // peak list or rebuilds a tree; every function is arithmetic on indexes.
 
 use crate::weighted_hash::{

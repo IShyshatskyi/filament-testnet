@@ -5,7 +5,7 @@
 // Storage: `contacts.json` in the app's data directory.  Writes are atomic
 // (write to `.contacts.json.tmp`, then `rename`).  Same pattern as `InvoiceStore`.
 //
-// Design reference: `filament_app/docs/ADDRESS_BOOK_PLAN.md`
+// Design reference: the address book design
 
 use serde::{Deserialize, Serialize};
 use std::fs;

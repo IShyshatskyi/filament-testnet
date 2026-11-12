@@ -7,6 +7,6 @@
 // assumed — which is why it had to move alongside common/transaction rather
 // than wait for a later mmr_client extraction. This is a compatibility shim
 // so every existing `crate::mmr_client::verification::X` call site keeps
-// resolving unchanged. See docs/plan/Crate_Split_Plan.md §Gap 9.
+// resolving unchanged. See the crate split notes.
 
 pub use network_common::common::verification::*;

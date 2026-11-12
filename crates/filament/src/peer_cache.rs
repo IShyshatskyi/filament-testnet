@@ -6,7 +6,7 @@
 // nodes).  Entries that haven't been seen in 7 days are silently dropped
 // on the next load.
 //
-// Design reference: `filament_app/docs/PEER_DISCOVERY_PLAN.md` §2
+// Design reference: the peer discovery design
 
 use serde::{Deserialize, Serialize};
 use std::fs;

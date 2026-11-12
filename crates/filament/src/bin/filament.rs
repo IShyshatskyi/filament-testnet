@@ -5,7 +5,7 @@
 //
 // Moved here from `shisha-core` `src/bin/filament.rs` once Gap 9 made a
 // sole `filament` + `common-types` dependency feasible (no monolith).
-// The Tauri desktop binary uses this crate via `filament_app/`.
+// The desktop app uses this crate.
 //
 // Usage:
 //   filament [--network <testnet|testnet1|testnet2|mainnet|devnet|testnet-stress>]
@@ -32,7 +32,7 @@
 // MNT-1: --keystone-extra may be passed multiple times to configure
 // additional Keystone endpoints alongside --keystone; wallet ops fan out to
 // all of them rather than trusting a single node. See
-// filament_app/docs/MULTI_NODE_TRUST_PLAN.md.
+// the multi-node trust design.
 //
 // Path-2 P2P dial sources:
 //   • --keystone / REST endpoints → host + --keystone-p2p-port (default 18334;

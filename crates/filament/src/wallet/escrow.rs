@@ -1,8 +1,8 @@
 // src/wallet/escrow.rs
 //
 // Wallet side of the escrow policy-hash output (D14, consensus ESC-1..ESC-9).
-// Spec: docs/plan/Escrow_Policy_Hash_Consensus_Spec.md §5 (wallet obligations);
-// protocol: filament_app/docs/IPP_PROTOCOL_AND_MUSIG2.md §3.
+// Spec: the escrow policy spec (wallet obligations);
+// protocol: the IPP protocol spec
 //
 // * `EscrowStore` keeps every escrow policy (68 bytes, not secret) in
 //   `<base_dir>/escrows.json` (atomic write, same pattern as `ContactStore`),
@@ -85,7 +85,7 @@ impl std::error::Error for EscrowError {}
 
 // ─── Records ──────────────────────────────────────────────────────────────────
 
-/// One funding output of an escrow (a payment slot), positional (Anti-Patterns #13).
+/// One funding output of an escrow (a payment slot), positional.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EscrowOutpoint {
     pub height: u32,

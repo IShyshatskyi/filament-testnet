@@ -8,7 +8,7 @@
 //      is absent or does not specify a port.
 //   3. Resolve A/AAAA addresses and return `(ip, port)` tuples for PeerCache.
 //
-// Design reference: `filament_app/docs/PEER_DISCOVERY_PLAN.md` PD-INT-2
+// Design reference: the peer discovery design
 
 use crate::peer_cache::PeerCache;
 
