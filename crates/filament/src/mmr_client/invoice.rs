@@ -160,6 +160,12 @@ pub struct Invoice {
     /// tips, payment not proved). Not part of the wire codec.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assurance: Option<String>,
+    /// The shard's tip height when this invoice was created, from Filament's own verified state
+    /// or a Keystone quorum. A payment mined well before it is not this invoice's (an address
+    /// reused earlier), so the indexer backfill of late payments ignores outputs below it (minus
+    /// a small slack). `None` (older invoices, tip unknown): no backfill. Not part of the wire codec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_tip: Option<u32>,
 }
 
 /// Confirmed against Filament's own verified shard chain (strongest).
@@ -302,6 +308,7 @@ impl Invoice {
             relay_node: None,
             mmr_proof_bytes: None,
             assurance: None,
+            created_tip: None,
         })
     }
 
@@ -318,7 +325,7 @@ impl Invoice {
     }
 
     /// Sender or a prior inclusion recorded a specific outpoint.
-    fn has_outpoint_hints(&self) -> bool {
+    pub(crate) fn has_outpoint_hints(&self) -> bool {
         self.height_hint.is_some() && self.idx_hint.is_some()
     }
 
@@ -469,6 +476,7 @@ impl InvoiceStore {
             relay_node: None,
             mmr_proof_bytes: None,
             assurance: None,
+            created_tip: None,
         };
         self.write(&inv)?;
         Ok(invoice_id)
@@ -523,6 +531,13 @@ impl InvoiceStore {
     }
 
     /// Record how strongly a confirmed invoice was checked (see [`Invoice::assurance`]).
+    /// Record the shard tip seen when the invoice was created (see [`Invoice::created_tip`]).
+    pub fn set_created_tip(&self, invoice_id: &[u8; 16], tip: u32) -> Result<(), InvoiceError> {
+        let mut inv = self.load(invoice_id)?;
+        inv.created_tip = Some(tip);
+        self.write(&inv)
+    }
+
     pub fn set_assurance(&self, invoice_id: &[u8; 16], assurance: &str) -> Result<(), InvoiceError> {
         let mut inv = self.load(invoice_id)?;
         inv.assurance = Some(assurance.to_string());
@@ -883,6 +898,7 @@ mod tests {
             relay_node:     None,
             mmr_proof_bytes: None,
             assurance: None,
+            created_tip: None,
         }
     }
 

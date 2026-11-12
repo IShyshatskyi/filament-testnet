@@ -185,6 +185,7 @@ impl ShishaUri {
             relay_node:      self.relay_node.clone(),
             mmr_proof_bytes: None,
             assurance: None,
+            created_tip: None,
         }
     }
 

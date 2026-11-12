@@ -89,6 +89,33 @@ pub struct FullShardBlockData {
     pub beacon_header: crate::shard_header::BeaconHeader,
     /// Sibling path from the shard's leaf to the beacon header's `merged_mining_root`.
     pub merged_mining_proof: Vec<crate::merged_mining_hash::MergedMiningHash>,
+    /// The beacon coinbase record the block's PoW commits to (`FullShardHeader::beacon_coinbase`:
+    /// empty, or exactly one coinbase record). It is part of the block hash when non-empty, so a
+    /// client that rebuilds the header from this record (and so the MMR leaf) must have it.
+    /// Trailing, like the header field. Blocks mined since Nov 5, 2026 carry it.
+    pub beacon_coinbase: Vec<u8>,
+}
+
+impl FullShardBlockData {
+    /// The block header this record describes, rebuilt as the node holds it, so that `.hash()`
+    /// is the node's block hash. `shard_id` is not on the wire.
+    pub fn to_header(&self, shard_id: u16) -> crate::shard_header::FullShardHeader {
+        let header = crate::shard_header::FullShardHeader::new(
+            self.height,
+            self.prev_mmr_root,
+            self.current_mmr_root,
+            self.tx_merkle_root,
+            self.difficulty,
+            self.merged_mining_proof.clone(),
+            shard_id,
+            self.beacon_header.clone(),
+        );
+        if self.beacon_coinbase.is_empty() {
+            header
+        } else {
+            header.with_beacon_coinbase(self.beacon_coinbase.clone())
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

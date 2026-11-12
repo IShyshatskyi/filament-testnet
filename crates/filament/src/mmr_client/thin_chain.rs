@@ -219,8 +219,16 @@ impl ThinBeaconState {
         if hex::encode(<[u8; 32]>::from(proof.root)) != resp.root_hex {
             return Err(bad("response root differs from the proof root"));
         }
-        if !proof.verify_with_anchor(bitcoin_anchor_hash) {
-            return Err(bad("range proof does not verify against the anchor"));
+        if let Err(why) = proof.check_with_anchor(bitcoin_anchor_hash) {
+            // One message used to cover every cause; name the failing check and the inputs.
+            return Err(bad(&format!(
+                "range proof does not verify against the anchor: {why} (range {}..{}, leaf_count {}, {} peaks, anchor {})",
+                proof.start,
+                proof.end,
+                proof.leaf_count,
+                proof.peaks.len(),
+                hex::encode(bitcoin_anchor_hash),
+            )));
         }
         if first > proof.start {
             return Err(bad("headers do not cover the proof range"));

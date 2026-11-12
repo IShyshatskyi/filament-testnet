@@ -14,9 +14,10 @@
 //!   test fixtures).
 //!
 //! Limits (stated, not hidden): the check covers the work a block claims, not that the claim equals
-//! the shard DAA's expected difficulty; and the aux header's `committed_chain_count` is the miner's
-//! claim, checked only against its own sibling path (Anti-Patterns #8/#17), not against the beacon's
-//! epoch parameters. A cheap fake chain still has to be lighter than the real one and lose the
+//! the shard DAA's expected difficulty; and the chain count (packed in `merged_mining_root`, D7) is
+//! the miner's claim, checked only against its own sibling path, not against
+//! the beacon's epoch parameters (the admissible-range check, V7, needs epoch tables Filament does
+//! not have; an open design question). A cheap fake chain still has to be lighter than the real one and lose the
 //! comparison between Keystones.
 
 use std::collections::VecDeque;
@@ -205,16 +206,9 @@ impl ThinShardState {
         if b.merged_mining_proof.is_empty() {
             return Err(ThinSyncError::BadPow("empty merged-mining sibling path"));
         }
-        let header = FullShardHeader::new(
-            b.height,
-            b.prev_mmr_root,
-            b.current_mmr_root,
-            b.tx_merkle_root,
-            b.difficulty,
-            b.merged_mining_proof.clone(),
-            self.params.shard_id,
-            b.beacon_header.clone(),
-        );
+        // The record carries `beacon_coinbase`, which is part of the block hash: rebuild the header
+        // with it, or every block that has one hashes to a different leaf than the node's.
+        let header = b.to_header(self.params.shard_id);
         let hash = header.hash();
         let block = Block::new(header, Vec::new());
         verify_shard_id_and_mmn(
@@ -373,33 +367,57 @@ pub async fn bind_inclusion(
     height: u32,
     notif_proof_bytes: &[u8],
 ) -> Binding {
+    match bound_leaf(http, endpoints, st, shard_id, height, notif_proof_bytes).await {
+        Ok(_) => Binding::Bound,
+        Err(why) => Binding::Unbound(why),
+    }
+}
+
+/// The leaf of the block at `height` in the chain `st` verified itself, or why it cannot be shown.
+///
+/// `notif_proof_bytes` is the stored inclusion notification's batch proof. It may be EMPTY: an
+/// invoice claimed from an indexer's answer has no notification (late-payment backfill). Nothing is
+/// then claimed by a third party, and the leaf comes from `st` alone (a held record) or from a fresh
+/// range proof that verifies against the shard anchor and ends at exactly `st`'s root. With a proof,
+/// it must agree with that leaf.
+async fn bound_leaf(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    notif_proof_bytes: &[u8],
+) -> Result<WeightedHash, String> {
     use network_common::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
     let anchor = <[u8; 32]>::from(st.anchor().root);
-    let Ok((proof, _)) = bincode::serde::decode_from_slice::<WeightedMMRBatchProof, _>(
-        notif_proof_bytes,
-        bincode::config::standard(),
-    ) else {
-        return Binding::Unbound("the stored inclusion proof does not decode".into());
+    let claimed: Option<WeightedHash> = if notif_proof_bytes.is_empty() {
+        None
+    } else {
+        let Ok((proof, _)) = bincode::serde::decode_from_slice::<WeightedMMRBatchProof, _>(
+            notif_proof_bytes,
+            bincode::config::standard(),
+        ) else {
+            return Err("the stored inclusion proof does not decode".into());
+        };
+        if !proof.verify_with_anchor(anchor) {
+            return Err("the inclusion proof does not verify against the shard anchor".into());
+        }
+        let Some(pos) = proof.leaf_indices.iter().position(|&i| i == height) else {
+            return Err("the inclusion proof does not cover the paying block".into());
+        };
+        Some(proof.leaf_hashes[pos])
     };
-    if !proof.verify_with_anchor(anchor) {
-        return Binding::Unbound("the inclusion proof does not verify against the shard anchor".into());
-    }
-    let Some(pos) = proof.leaf_indices.iter().position(|&i| i == height) else {
-        return Binding::Unbound("the inclusion proof does not cover the paying block".into());
-    };
-    let claimed = proof.leaf_hashes[pos];
     if height >= st.leaf_count() {
-        return Binding::Unbound("the paying block is above our verified tip".into());
+        return Err("the paying block is above our verified tip".into());
     }
     if let Some(local) = st.leaf_at(height) {
-        return if local == claimed {
-            Binding::Bound
-        } else {
-            Binding::Unbound("the paying block is not the block in our verified chain".into())
+        return match claimed {
+            Some(c) if c != local => Err("the paying block is not the block in our verified chain".into()),
+            _ => Ok(local),
         };
     }
     if height == 0 {
-        return Binding::Unbound("the genesis block can only be bound while it is a held record".into());
+        return Err("the genesis block can only be bound while it is a held record".into());
     }
     let mut last = String::from("no Keystone answered");
     for ep in endpoints {
@@ -419,37 +437,17 @@ pub async fn bind_inclusion(
             last = format!("{ep}: its proof does not verify");
             continue;
         }
-        return if range.leaves[0] == claimed {
-            Binding::Bound
-        } else {
-            Binding::Unbound("the paying block is not the block in our verified chain".into())
+        return match claimed {
+            Some(c) if c != range.leaves[0] => Err("the paying block is not the block in our verified chain".into()),
+            _ => Ok(range.leaves[0]),
         };
     }
-    Binding::Unbound(last)
+    Err(last)
 }
 
 /// A shard block record's own block hash, as the node computes it.
 pub(crate) fn record_block_hash(shard_id: u16, b: &FullShardBlockData) -> [u8; 32] {
-    FullShardHeader::new(
-        b.height,
-        b.prev_mmr_root,
-        b.current_mmr_root,
-        b.tx_merkle_root,
-        b.difficulty,
-        b.merged_mining_proof.clone(),
-        shard_id,
-        b.beacon_header.clone(),
-    )
-    .hash()
-}
-
-/// The leaf the stored inclusion notification's batch proof claims for `height`.
-fn notif_leaf(notif_proof_bytes: &[u8], height: u32) -> Option<WeightedHash> {
-    use network_common::common::proofs::WeightedMMRBatchProof;
-    let (proof, _): (WeightedMMRBatchProof, usize) =
-        bincode::serde::decode_from_slice(notif_proof_bytes, bincode::config::standard()).ok()?;
-    let pos = proof.leaf_indices.iter().position(|&i| i == height)?;
-    proof.leaf_hashes.get(pos).copied()
+    b.to_header(shard_id).hash()
 }
 
 /// Design §6, the part that ties the *payment* to the block: `proof` must show that the output at
@@ -500,17 +498,14 @@ pub async fn bind_payment(
     amount_atoms: u64,
     notif_proof_bytes: &[u8],
 ) -> Binding {
-    match bind_inclusion(http, endpoints, st, shard_id, height, notif_proof_bytes).await {
-        Binding::Bound => {}
-        other => return other,
-    }
+    let claimed = match bound_leaf(http, endpoints, st, shard_id, height, notif_proof_bytes).await {
+        Ok(leaf) => leaf,
+        Err(why) => return Binding::Unbound(why),
+    };
     // The block record whose hash is the verified chain's leaf at `height`.
     let root = if let Some(b) = st.recent().find(|b| b.height == height) {
         b.tx_merkle_root
     } else {
-        let Some(claimed) = notif_leaf(notif_proof_bytes, height) else {
-            return Binding::Unbound("the stored inclusion proof does not cover the paying block".into());
-        };
         let mut last = String::from("no Keystone answered");
         let mut found = None;
         for ep in endpoints {
