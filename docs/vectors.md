@@ -1,6 +1,6 @@
 # Shared consensus vectors
 
-This repository re-implements a slice of the Shisha node's consensus code (`filament-types`,
+This repository re-implements a slice of the node's consensus code (`filament-types`,
 `filament-p2p`) instead of depending on it. Two implementations of one consensus function are only
 safe when they produce **the same bytes**. The guarantee is one file that both repositories run.
 

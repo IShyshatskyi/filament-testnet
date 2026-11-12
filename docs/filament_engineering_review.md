@@ -36,7 +36,7 @@
 mmr-light-client/
   crates/filament-types/ # WeightedHash, proofs, genesis, verification (clean-room)
   crates/filament/       # library + `filament` binary (feature full-node/server)
-  crates/filament-p2p/   # PeerManager / ShishaNet codec (Path-2, clean-room)
+  crates/filament-p2p/   # PeerManager / node P2P codec (Path-2, clean-room)
   scripts/sync_filament_public.sh
   archive/2026-04-sha256/  # frozen classic SHA-256 source only
 ```
@@ -97,7 +97,7 @@ Binary: `cargo build -p filament --features full-node --bin filament`
 
 - Heaviest-chain rule via cumulative work in Weighted MMR / proofs  
 - Multi-Keystone / multi-peer where configured (MNT)  
-- No ZK light-client dependency  
+- No ZK light-client dependency, by design (see the README's critique of ZK)  
 - Trust still requires correct genesis and at least one honest proof server among those queried  
 
 See root [README.md](../README.md) and [DISCLAIMER.md](../DISCLAIMER.md).

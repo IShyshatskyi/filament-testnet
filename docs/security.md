@@ -31,10 +31,19 @@ byte-for-byte equal by a shared test file ([vectors.md](vectors.md)).
 
 ## No zero-knowledge proofs
 
-Every proof is a hash-based inclusion or weight proof. This is a design position, not an omission:
-fork choice must be checkable from independent peers, a zero-knowledge argument is only a
-probabilistic claim, and long-studied hash and Merkle structure plus proof of work is preferred over
-newer assumptions or trusted setups.
+Every proof is a hash-based inclusion or weight proof, and no zero-knowledge scheme will be added. This is
+a position of mathematics, not an omission and not fashion:
+
+* A ZK "proof" is a probabilistic argument, not an absolute proof, and its security proofs are incomplete in a
+  trustless setting.
+* Its assumptions are old assumptions pushed beyond their valid domain (pairing-based constructions used where they
+  were never proven), and a trusted setup violates "trustless" by definition: you trust the ceremony.
+* In a trustless setting only mathematics is trusted: not cryptography PhDs, not ceremonies, not assumptions without
+  proof, not constructions without decades of cryptanalysis.
+* Fork choice must be checkable from independent peers; it must not collapse onto one data provider.
+
+Filament uses long-studied hash and Merkle structure with proof of work instead. The full argument is in the
+repository README. No outside authority or consultancy is needed to hold this position.
 
 ## Trust assumptions
 

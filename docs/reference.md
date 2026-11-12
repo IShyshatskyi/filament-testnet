@@ -13,7 +13,7 @@ instructions, read the repository `README.md` first.
 
 ## 1. What Filament is
 
-Filament follows the Shisha Network's chains **without trusting a single node and without storing
+Filament follows the chains of the Heaviest Chain Rule Network (HCRN) **without trusting a single node and without storing
 the chains**. Per chain it keeps the Merkle Mountain Range (MMR) **peaks**, the leaf count and the
 last 16 headers: a few kilobytes, independent of chain length. Full nodes (**Keystone**) serve the
 data; Filament checks it.
@@ -42,7 +42,7 @@ rules, mine, or hold a UTXO set. It trusts the network's proof of work, like eve
 |---|---|
 | `filament` | The client: `MultiChainClient`, thin sync, HTTP server (`:7380`), wallet, invoices, escrow, address book, Path-2 P2P adapter. A library plus the `filament` binary (feature `full-node`). |
 | `filament-types` | Clean-room types and verification: `WeightedHash`, MMR peak maths, proofs, genesis, shard header and body, merged-mining check, wire types. |
-| `filament-p2p` | ShishaNet codec and `PeerManager` for the light-client handshake (clean-room). |
+| `filament-p2p` | node P2P codec and `PeerManager` for the light-client handshake (clean-room). |
 
 In the node's repository the types crate is called `network-common`. The public repository maps
 that name to `filament-types`, so source written as `network_common::common::…` compiles in both.
@@ -216,8 +216,8 @@ cargo build --release -p filament --features full-node --bin filament
 | `--genesis-file PATH` (`--genesis`) | The genesis file the nodes load. Required for anything but a preset. |
 | `--keystone URL`, `--keystone-extra URL` (repeatable) | Keystone REST endpoints. Wallet operations fan out to all of them. |
 | `--keystone-summary-port N` | Port of the light-client API on each Keystone host (default 8080) |
-| `--keystone-p2p-port N` | ShishaNet port on each Keystone host (default 18334; 0 skips the dial) |
-| `--manual-peer HOST:PORT` (repeatable) | An explicit ShishaNet peer |
+| `--keystone-p2p-port N` | node P2P port on each Keystone host (default 18334; 0 skips the dial) |
+| `--manual-peer HOST:PORT` (repeatable) | An explicit P2P peer |
 | `--disable-p2p`, `--p2p-listen HOST:PORT` | Path-2 P2P off, or the listen address |
 | `--thin-sync`, `--thin-shard N` (repeatable) | Thin sync for the beacon, and for shard N |
 | `--allow-single-keystone` | Accept a quorum of one |
@@ -252,7 +252,7 @@ wallet port off the public internet.
 
 ## 9. Path-2 P2P
 
-`filament-p2p` speaks ShishaNet wire **v17** and negotiates `min(ours, theirs)`. A Keystone pushes
+`filament-p2p` speaks the node P2P wire protocol **v17** and negotiates `min(ours, theirs)`. A Keystone pushes
 `TxInclusionNotif`, `TxSpentNotif` and `TxRevertNotif` for the addresses Filament watches
 (`WatchAddress`). Identity is checked at the handshake: first the 4-byte network magic (for example
 `SHTS` for testnet-stress, `SHT2` for testnet2), then the genesis hash. When both sides send a
@@ -282,9 +282,12 @@ Probe a node: `scripts/p2p_handshake_probe.sh HOST:18334 testnet2`.
 
 ## 11. Security model
 
-* **No zero-knowledge proofs.** Every proof is a hash-based inclusion or weight proof. Fork choice
-  must be checkable from independent peers, and a ZK argument is only probabilistic. This is a design
-  position, not an omission.
+* **No zero-knowledge proofs, and none will be.** Every proof is a hash-based inclusion or weight proof.
+  A ZK "proof" is a probabilistic argument, not an absolute proof; its security rests on assumptions
+  pushed beyond the domain they were established for, and a trusted setup defeats "trustless" by
+  definition. In a trustless setting only mathematics is trusted. Fork choice must be checkable from
+  independent peers. This is a design position, not an omission, and it needs no outside sign-off.
+  The full argument is in the repository README.
 * **Trust assumptions.** The genesis config is correct (it is derived locally, so a wrong preset is a
   build-time bug the vectors catch). At least one of the Keystones you query is honest; with a quorum
   of two, a single liar is outvoted. The network's proof-of-work and hash assumptions hold.
