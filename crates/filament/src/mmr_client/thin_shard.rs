@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 
 use network_common::common::blocks::beacon_wire_header::WireBeaconHeader;
-use network_common::common::blocks::shard_block::{Block, FullShardHeader};
+use network_common::common::blocks::shard_block::Block;
 use network_common::common::crypto::weighted_hash::{bag_peaks_weighted_u128, WeightedHash};
 use network_common::common::genesis::genesis_config::{BeaconGenesisConfig, ShardGenesisConfig};
 use network_common::common::blocks::shard_block::TxInclusionProof;
