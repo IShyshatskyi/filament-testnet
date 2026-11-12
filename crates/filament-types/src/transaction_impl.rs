@@ -34,6 +34,34 @@ pub struct ExtensionRecord {
     pub payload: Vec<u8>,
 }
 
+impl ExtensionRecord {
+    /// Wire size of the header: type u16, version u16, payload length u32 (little endian).
+    pub const HEADER_SIZE: usize = 8;
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::HEADER_SIZE + self.payload.len());
+        out.extend_from_slice(&self.header.extension_type.to_le_bytes());
+        out.extend_from_slice(&self.header.version.to_le_bytes());
+        out.extend_from_slice(&self.header.payload_length.to_le_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+
+    /// Deserialize one record. Returns `(record, bytes_consumed)`.
+    pub fn from_bytes(data: &[u8]) -> Result<(Self, usize), &'static str> {
+        if data.len() < Self::HEADER_SIZE { return Err("extension header too short"); }
+        let extension_type = u16::from_le_bytes(data[0..2].try_into().unwrap());
+        let version = u16::from_le_bytes(data[2..4].try_into().unwrap());
+        let payload_length = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        let end = Self::HEADER_SIZE.checked_add(payload_length).ok_or("extension payload too long")?;
+        if data.len() < end { return Err("extension payload too short"); }
+        Ok((Self {
+            header: ExtensionHeader { extension_type, version, payload_length: payload_length as u32 },
+            payload: data[Self::HEADER_SIZE..end].to_vec(),
+        }, end))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Txid(pub [u8; 32]);
 

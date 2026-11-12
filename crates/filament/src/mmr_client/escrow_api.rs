@@ -67,7 +67,7 @@ pub async fn local_tip(client: &MultiChainClient, shard_id: Option<u16>) -> Opti
     state.ok().map(|st| st.tip.height())
 }
 
-async fn require_tip(client: &MultiChainClient, shard_id: Option<u16>) -> Result<u32> {
+pub(crate) async fn require_tip(client: &MultiChainClient, shard_id: Option<u16>) -> Result<u32> {
     local_tip(client, shard_id).await.ok_or_else(|| {
         EscrowApiError::Unavailable(match shard_id {
             None => "beacon chain not synced yet — escrow heights need a verified tip".into(),
@@ -100,7 +100,7 @@ pub struct EscrowView {
     pub backed_up: bool,
 }
 
-fn view(record: EscrowRecord, tip: Option<u32>) -> EscrowView {
+pub(crate) fn view(record: EscrowRecord, tip: Option<u32>) -> EscrowView {
     let value_atoms = record.outpoints.iter().map(|o| o.value_atoms).sum();
     let state = match tip {
         _ if record.outpoints.is_empty() => "empty",
@@ -150,7 +150,7 @@ fn on_chain(chain: &str, shard: Option<u16>, want: Option<u16>) -> bool {
 
 /// Unspent outputs paying `p_hex` on the escrow's chain, from the first indexer that
 /// answers, plus that indexer's indexed height for the chain.
-async fn indexer_outputs(
+pub(crate) async fn indexer_outputs(
     http: &reqwest::Client,
     endpoints: &[String],
     p_hex: &str,
@@ -239,6 +239,65 @@ pub async fn sync_outpoints(store: &EscrowStore, http: &reqwest::Client, endpoin
         }
     }
     warnings
+}
+
+// ─── Funding-output watch (Path-2 `WatchAddress`) ─────────────────────────────
+//
+// IPP-WATCH-1, the half for users without an indexer: Keystone pushes a `TxInclusionNotif`
+// for every output paying a watched address, with an inclusion proof that Filament verifies
+// against its own shard anchor (`watch_notify`, FUD-5) before anything below runs. So an
+// output added here was proved inside a block of the shard chain; the indexer path
+// (`sync_outpoints`) trusts the indexer's answer. `TxInclusionNotif` is a shard message:
+// a beacon-chain escrow cannot be watched this way and still needs an indexer or manual
+// outpoints.
+
+/// `(policy hash P, shard)` of every shard escrow: the addresses to register with `WatchAddress`.
+pub fn watch_targets(store: &EscrowStore) -> Vec<([u8; 32], u16)> {
+    store
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| Some((hex32(&r.policy_hash_hex, "policy hash").ok()?, r.shard_id?)))
+        .collect()
+}
+
+/// A verified inclusion of an output paying `address` on `shard_id`: if `address` is the policy
+/// hash of one of this wallet's escrows on that shard, record the output (idempotent). Returns
+/// the escrow ids that gained it (empty when the address is not an escrow's, or the output was
+/// already known).
+pub fn apply_verified_inclusion(
+    store: &EscrowStore,
+    shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    value_atoms: u64,
+    address: &[u8; 32],
+) -> Result<Vec<String>> {
+    let mut added = Vec::new();
+    for rec in store.list()? {
+        if rec.shard_id != Some(shard_id) || hex32(&rec.policy_hash_hex, "policy hash").ok().as_ref() != Some(address) {
+            continue;
+        }
+        if rec.outpoints.iter().any(|o| o.height == height && o.output_idx == output_idx) {
+            continue;
+        }
+        store.add_outpoint(&rec.id, EscrowOutpoint { height, output_idx, value_atoms })?;
+        added.push(rec.id);
+    }
+    Ok(added)
+}
+
+/// An output of an escrow was spent (`TxSpentNotif`: a payment or a recovery in a block) or its
+/// block was reverted (`TxRevertNotif`): forget it. Returns the escrow ids that lost it.
+pub fn apply_outpoint_gone(store: &EscrowStore, shard_id: u16, height: u32, output_idx: u16) -> Result<Vec<String>> {
+    let mut gone = Vec::new();
+    for rec in store.list()? {
+        if rec.shard_id == Some(shard_id) && rec.outpoints.iter().any(|o| o.height == height && o.output_idx == output_idx) {
+            store.remove_outpoint(&rec.id, height, output_idx)?;
+            gone.push(rec.id);
+        }
+    }
+    Ok(gone)
 }
 
 pub async fn list(store: &EscrowStore, client: &MultiChainClient) -> Result<Vec<EscrowView>> {
@@ -396,9 +455,21 @@ pub async fn pay(
     req: &PayRequest,
 ) -> Result<PayResponse> {
     let record = store.get(id)?;
+    let tip = require_tip(client, record.shard_id).await?;
+    pay_at_tip(store, wallet, id, req, tip)
+}
+
+/// [`pay`] with the verified tip given (the caller got it from the light client).
+pub fn pay_at_tip(
+    store: &EscrowStore,
+    wallet: &FilamentWallet,
+    id: &str,
+    req: &PayRequest,
+    tip: u32,
+) -> Result<PayResponse> {
+    let record = store.get(id)?;
     let to = hex32(&req.to_hex, "to_hex")?;
     let outpoints = pick(&record, &req.outpoints)?;
-    let tip = require_tip(client, record.shard_id).await?;
     let left = req.min_blocks_left.unwrap_or(DEFAULT_MIN_BLOCKS_LEFT);
     let pay = wallet
         .with_signing_key(|k| build_payment(&record, &outpoints, k, to, req.amount_atoms, req.fee_atoms, tip, left))
@@ -507,6 +578,8 @@ mod tests {
             outpoints,
             created_at_ms: 0,
             backed_up_at_ms: None,
+            provider_url: None,
+            session_id: None,
         }
     }
 
@@ -582,5 +655,40 @@ mod tests {
         assert_eq!(pick(&r, &None).unwrap().len(), 1);
         assert_eq!(pick(&r, &Some(vec![OutpointRef { height: 5, output_idx: 1 }])).unwrap().len(), 1);
         assert!(pick(&r, &Some(vec![OutpointRef { height: 5, output_idx: 0 }])).is_err());
+    }
+
+    /// IPP-WATCH-1: Path-2 watch targets and notifications feed the escrow's outputs.
+    #[test]
+    fn path2_watch_adds_and_forgets_escrow_outputs() {
+        use secp256k1::SecretKey;
+        let dir = tempfile::tempdir().unwrap();
+        let store = EscrowStore::open(dir.path()).unwrap();
+        let payer = SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let provider_pk = crate::wallet::escrow::own_xonly(&SecretKey::from_slice(&[0x11; 32]).unwrap());
+        let policy = new_policy(&payer, provider_pk, 5000, 100, 144).unwrap();
+        let shard_rec = store.add(&policy, Some(2), "shard escrow").unwrap();
+        let beacon_policy = new_policy(&payer, provider_pk, 6000, 100, 144).unwrap();
+        let beacon_rec = store.add(&beacon_policy, None, "beacon escrow").unwrap();
+
+        // Only the shard escrow can be watched.
+        assert_eq!(watch_targets(&store), vec![(policy.hash(), 2)]);
+
+        // A verified output paying P on the right shard is recorded once.
+        let p = policy.hash();
+        assert_eq!(apply_verified_inclusion(&store, 2, 120, 0, 777, &p).unwrap(), vec![shard_rec.id.clone()]);
+        assert!(apply_verified_inclusion(&store, 2, 120, 0, 777, &p).unwrap().is_empty(), "idempotent");
+        // The same address on another shard, or an address that is no escrow's, is ignored.
+        assert!(apply_verified_inclusion(&store, 3, 121, 0, 5, &p).unwrap().is_empty());
+        assert!(apply_verified_inclusion(&store, 2, 122, 0, 5, &[9u8; 32]).unwrap().is_empty());
+        assert!(apply_verified_inclusion(&store, 0, 123, 0, 5, &beacon_policy.hash()).unwrap().is_empty());
+        let rec = store.get(&shard_rec.id).unwrap();
+        assert_eq!(rec.outpoints.len(), 1);
+        assert_eq!(rec.outpoints[0].value_atoms, 777);
+        assert!(store.get(&beacon_rec.id).unwrap().outpoints.is_empty());
+
+        // Spent or reverted: forgotten, and a second notice finds nothing.
+        assert_eq!(apply_outpoint_gone(&store, 2, 120, 0).unwrap(), vec![shard_rec.id.clone()]);
+        assert!(store.get(&shard_rec.id).unwrap().outpoints.is_empty());
+        assert!(apply_outpoint_gone(&store, 2, 120, 0).unwrap().is_empty());
     }
 }

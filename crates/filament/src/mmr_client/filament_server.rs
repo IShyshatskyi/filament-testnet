@@ -1007,6 +1007,16 @@ pub async fn restore_invoice_watch_registrations(
     }
 }
 
+/// IPP-WATCH-1: register `WatchAddress` for every shard escrow's policy hash, so Keystone pushes
+/// the funding outputs (with inclusion proofs) without an indexer. Idempotent.
+pub fn register_escrow_watches(client: &mut MultiChainClient, data_dir: &std::path::Path) {
+    if let Ok(store) = crate::wallet::escrow::EscrowStore::open(data_dir) {
+        for (p, shard_id) in escrow_api::watch_targets(&store) {
+            client.watch_address(p, shard_id);
+        }
+    }
+}
+
 /// Highest tip that at least `required` of the reported tips reach (the
 /// `required`-th largest value). `None` when fewer than `required` reports.
 pub(crate) fn quorum_tip(reports: &[u32], required: usize) -> Option<u32> {
@@ -1152,6 +1162,178 @@ async fn confirm_from_thin_state(
             }
         }
     }
+}
+
+/// Blocks below an invoice's creation tip that the late-payment backfill still accepts (the tip
+/// recorded at creation can lag the chain by a block or two).
+pub const BACKFILL_SLACK_BLOCKS: u32 = 2;
+
+/// Seconds between two indexer backfill rounds.
+const BACKFILL_MIN_INTERVAL_SECS: u64 = 30;
+
+/// The shard's tip now, for [`crate::mmr_client::invoice::Invoice::created_tip`]: Filament's own
+/// verified tip when thin sync follows the shard and is synced, otherwise the highest tip at least
+/// `required` Keystones reach. `None` when neither is available.
+pub async fn current_shard_tip(
+    client: &Arc<RwLock<MultiChainClient>>,
+    keystone_endpoints: &[String],
+    shard_id: u16,
+    required: usize,
+) -> Option<u32> {
+    use crate::mmr_client::thin_chain::ThinState;
+    if let Some(entry) = client.read().await.thin_shard(shard_id) {
+        if entry.slot.status(Instant::now()) == "synced" {
+            if let Some(h) = entry.slot.state().and_then(|st| st.height()) {
+                return Some(h);
+            }
+        }
+    }
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+    let mut reports: Vec<u32> = Vec::new();
+    for ep in keystone_endpoints {
+        let url = format!("{ep}/shard/{shard_id}/tip");
+        let Ok(resp) = http.get(&url).send().await else { continue };
+        let Ok(body) = resp.json::<serde_json::Value>().await else { continue };
+        if let Some(h) = body.get("height").and_then(|v| v.as_u64()) {
+            reports.push(h as u32);
+        }
+    }
+    quorum_tip(&reports, required.min(reports.len()).max(1))
+}
+
+/// Late-payment backfill from an indexer. A payment mined while Filament was not watching (the
+/// app was closed for more than the Keystone's 64-block replay window, or the invoice was created
+/// on another device) is never pushed to it. For every open invoice with a known creation tip, ask
+/// the indexer which outputs already pay its address (`/explorer/utxos`; unspent ones only), and
+/// claim the oldest at or after the creation tip, but only once the payment is PROVED:
+///
+/// * thin sync follows the shard and is synced: [`bind_payment`], i.e. the block is the one in the
+///   chain Filament verified itself and a Keystone-supplied output proof shows the output in it,
+///   paying the recipient at least the invoice amount;
+/// * otherwise: [`quorum_payment`] (the output proved inside a block record that `required`
+///   Keystones agree on).
+///
+/// The indexer is a hint, never evidence. A lying one can at most make the checks fail, so an
+/// invoice is never moved to `Pending` on its word alone (a wrong `Pending` would also block the real
+/// payment, which is never rematched). Returns the number of invoices claimed.
+pub async fn backfill_invoices_from_indexer(
+    client: &Arc<RwLock<MultiChainClient>>,
+    data_dir: &std::path::Path,
+    keystone_endpoints: &[String],
+    indexer_endpoints: &[String],
+    required_keystones: usize,
+    thin_sync: bool,
+) -> usize {
+    use crate::mmr_client::invoice::{InvoiceState, InvoiceStore};
+    use crate::mmr_client::thin_shard::{bind_payment, quorum_payment, Binding};
+
+    if indexer_endpoints.is_empty() || keystone_endpoints.is_empty() {
+        return 0;
+    }
+    let Ok(store) = InvoiceStore::open(data_dir) else { return 0 };
+    let open: Vec<_> = store
+        .list(None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| {
+            matches!(i.state, InvoiceState::Created | InvoiceState::Shared | InvoiceState::PaymentSent)
+                && i.created_tip.is_some()
+                && !i.has_outpoint_hints()
+        })
+        .collect();
+    if open.is_empty() {
+        return 0;
+    }
+    let http = reqwest::Client::new();
+    let mut claimed = 0usize;
+    for inv in open {
+        let floor = inv.created_tip.unwrap_or(0).saturating_sub(BACKFILL_SLACK_BLOCKS);
+        let (mut outs, _indexed) = match escrow_api::indexer_outputs(
+            &http,
+            indexer_endpoints,
+            &hex::encode(inv.recipient),
+            Some(inv.shard_id),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::debug!("invoice backfill: shard {}: indexer: {e}", inv.shard_id);
+                continue;
+            }
+        };
+        outs.retain(|o| o.height >= floor && o.value_atoms >= inv.amount_atoms);
+        outs.sort_by_key(|o| (o.height, o.output_idx));
+        for o in outs {
+            let followed = if thin_sync {
+                client.read().await.thin_shard(inv.shard_id).filter(|t| t.note != Some("unsupported_dynamic_shard"))
+            } else {
+                None
+            };
+            let binding = match followed {
+                Some(entry) => {
+                    if entry.slot.status(Instant::now()) != "synced" {
+                        Binding::Unbound("thin state not synced".into())
+                    } else if let Some(st) = entry.slot.state() {
+                        bind_payment(&http, keystone_endpoints, st, inv.shard_id, o.height, o.output_idx, &inv.recipient, inv.amount_atoms, &[]).await
+                    } else {
+                        Binding::Unbound("no thin state yet".into())
+                    }
+                }
+                None => {
+                    quorum_payment(&http, keystone_endpoints, inv.shard_id, o.height, o.output_idx, &inv.recipient, inv.amount_atoms, required_keystones).await
+                }
+            };
+            match binding {
+                Binding::Bound => {
+                    match store.on_watch_inclusion(inv.shard_id, o.height, o.output_idx, inv.recipient, Vec::new()) {
+                        Ok(Some(_)) => {
+                            claimed += 1;
+                            log::info!(
+                                "invoice backfill: shard {}: output at ({}, {}) pays an open invoice, proved; Pending",
+                                inv.shard_id, o.height, o.output_idx
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => log::warn!("invoice backfill: {e}"),
+                    }
+                    break;
+                }
+                Binding::Unbound(why) => {
+                    log::debug!("invoice backfill: shard {}: output at height {} not proved: {why}", inv.shard_id, o.height);
+                }
+            }
+        }
+    }
+    claimed
+}
+
+/// [`backfill_invoices_from_indexer`] at most once per [`BACKFILL_MIN_INTERVAL_SECS`] for the whole process.
+pub async fn backfill_invoices_throttled(
+    client: &Arc<RwLock<MultiChainClient>>,
+    data_dir: &std::path::Path,
+    cfg: &FilamentNodeConfig,
+) {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if cfg.indexer_endpoints.is_empty() {
+        return;
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+    if now.saturating_sub(last) < BACKFILL_MIN_INTERVAL_SECS
+        || LAST.compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed).is_err()
+    {
+        return;
+    }
+    backfill_invoices_from_indexer(
+        client,
+        data_dir,
+        &cfg.all_keystone_endpoints(),
+        &cfg.indexer_endpoints,
+        cfg.required_keystones(),
+        cfg.thin_sync,
+    )
+    .await;
 }
 
 #[doc(hidden)]
@@ -1478,6 +1660,24 @@ pub async fn wire_watch_notify_subscription(
                     };
                     match result {
                         Ok((InclusionApplyResult::Accepted, invoice_id)) => {
+                            // IPP-WATCH-1: the proof verified, so an output paying an escrow's
+                            // policy hash is a funding output of that escrow.
+                            if let Ok(es) = crate::wallet::escrow::EscrowStore::open(&data_dir) {
+                                match escrow_api::apply_verified_inclusion(&es, shard_id, height, output_idx, value_atoms, &address) {
+                                    Ok(ids) => {
+                                        for id in ids {
+                                            log::info!("IPP-WATCH-1: escrow {id} funded: {value_atoms} atoms at ({shard_id}, {height}, {output_idx}), inclusion proof verified");
+                                            if let Some(ref tx) = sse_tx {
+                                                let _ = tx.send(json!({
+                                                    "type": "escrow_funding", "escrow_id": id, "shard_id": shard_id,
+                                                    "height": height, "output_idx": output_idx, "value_atoms": value_atoms,
+                                                }).to_string());
+                                            }
+                                        }
+                                    }
+                                    Err(e) => log::warn!("IPP-WATCH-1: escrow funding update failed: {e}"),
+                                }
+                            }
                             let msg = format!(
                                 "{value_atoms} atoms pending on shard {shard_id} at height {height}"
                             );
@@ -1542,6 +1742,14 @@ pub async fn wire_watch_notify_subscription(
                     {
                         log::debug!("FUD-5: UTXO spent ({shard_id}, {output_height}, {output_idx})");
                     }
+                    // IPP-WATCH-1: a spent escrow output (payment or recovery in a block).
+                    if let Ok(es) = crate::wallet::escrow::EscrowStore::open(&data_dir) {
+                        if let Ok(ids) = escrow_api::apply_outpoint_gone(&es, shard_id, output_height, output_idx) {
+                            for id in ids {
+                                log::info!("IPP-WATCH-1: escrow {id} output ({shard_id}, {output_height}, {output_idx}) spent");
+                            }
+                        }
+                    }
                 });
             }
             ClientEvent::TxRevertReceived { shard_id, height, output_idx } => {
@@ -1550,6 +1758,14 @@ pub async fn wire_watch_notify_subscription(
                         .apply_revert(shard_id, height, output_idx)
                     {
                         log::debug!("FUD-5: UTXO reverted ({shard_id}, {height}, {output_idx})");
+                    }
+                    // IPP-WATCH-1: the block that created an escrow funding output was reverted.
+                    if let Ok(es) = crate::wallet::escrow::EscrowStore::open(&data_dir) {
+                        if let Ok(ids) = escrow_api::apply_outpoint_gone(&es, shard_id, height, output_idx) {
+                            for id in ids {
+                                log::warn!("IPP-WATCH-1: escrow {id} output ({shard_id}, {height}, {output_idx}) reverted by a reorg");
+                            }
+                        }
                     }
                     let Ok(store) = crate::mmr_client::invoice::InvoiceStore::open(&data_dir) else {
                         return;
@@ -1705,6 +1921,7 @@ impl FilamentRuntime {
                     &cfg,
                 ).await;
                 drop(wallet);
+                backfill_invoices_throttled(&self.client, &data_dir, &cfg).await;
                 advance_watch_invoice_confirmations(
                     &self.client,
                     &data_dir,
@@ -2801,6 +3018,13 @@ async fn invoice_create(
         Ok(id) => {
             // FUD-5: register WatchAddress so Keystone can push inclusion notifs.
             s.client.write().await.watch_address(recipient, body.shard_id);
+            // The shard tip now: the late-payment indexer backfill ignores outputs mined before it.
+            {
+                let cfg = s.config.read().await.clone();
+                if let Some(tip) = current_shard_tip(&s.client, &cfg.all_keystone_endpoints(), body.shard_id, cfg.required_keystones()).await {
+                    let _ = store.set_created_tip(&id, tip);
+                }
+            }
             (StatusCode::OK, Json(json!({ "invoice_id": base64url_encode16(&id) }))).into_response()
         }
         Err(e) => {
@@ -2828,6 +3052,23 @@ async fn invoice_list(State(s): State<FilamentAppState>) -> axum::response::Resp
     }
 }
 
+/// Body of `GET /invoice/{id}`.
+fn invoice_detail_json(b64_id: &str, inv: &crate::mmr_client::invoice::Invoice) -> serde_json::Value {
+    json!({
+        "invoice_id": b64_id,
+        "uri": ShishaUri::from_invoice(inv).encode(),
+        "state": format!("{:?}", inv.state),
+        "amount_atoms": inv.amount_atoms,
+        "shard_id": inv.shard_id,
+        "memo": inv.memo,
+        "height_hint": inv.height_hint,
+        "idx_hint": inv.idx_hint,
+        // How strongly a Confirmed invoice was checked (`verified_chain`, `keystone_quorum`,
+        // `keystone_tip`); null until confirmed.
+        "assurance": inv.assurance,
+    })
+}
+
 async fn invoice_get(
     State(s): State<FilamentAppState>,
     Path(b64_id): Path<String>,
@@ -2843,17 +3084,7 @@ async fn invoice_get(
     };
     match store.load(&id) {
         Ok(inv) => {
-            let uri = ShishaUri::from_invoice(&inv).encode();
-            (StatusCode::OK, Json(json!({
-                "invoice_id": b64_id,
-                "uri": uri,
-                "state": format!("{:?}", inv.state),
-                "amount_atoms": inv.amount_atoms,
-                "shard_id": inv.shard_id,
-                "memo": inv.memo,
-                "height_hint": inv.height_hint,
-                "idx_hint": inv.idx_hint,
-            }))).into_response()
+            (StatusCode::OK, Json(invoice_detail_json(&b64_id, &inv))).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))).into_response(),
     }
@@ -3024,6 +3255,7 @@ async fn contacts_update(
 // the light client's verified chain state; signing uses the wallet's hot key.
 
 use crate::mmr_client::escrow_api::{self, EscrowApiError};
+use crate::mmr_client::ipp_api;
 use crate::wallet::escrow::{EscrowOutpoint, EscrowStore};
 
 fn escrow_error(e: EscrowApiError) -> axum::response::Response {
@@ -3065,11 +3297,75 @@ async fn escrow_open(
     let wallet = s.wallet.read().await;
     let client = s.client.read().await;
     let r = escrow_api::open(&store, &wallet, &client, &req).await;
+    drop(client);
+    drop(wallet);
     if let Ok(v) = &r {
         s.notify("INFO", "wallet", "Escrow policy stored",
             &format!("escrow {} — back up the policy before funding", v.record.id), Some("providers"));
+        // IPP-WATCH-1: have Keystone push the funding outputs of this escrow.
+        let data_dir = std::path::PathBuf::from(&s.config.read().await.data_dir);
+        register_escrow_watches(&mut *s.client.write().await, &data_dir);
     }
     escrow_reply(r)
+}
+
+// ── Instant payment provider (IPP-MSG-1 wiring; `ipp_api`) ───────────────────
+
+/// `POST /ipp/open` — open a balance with a provider; stores the escrow with its endpoint and session.
+async fn ipp_open(
+    State(s): State<FilamentAppState>,
+    Json(req): Json<ipp_api::IppOpenRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let r = {
+        let wallet = s.wallet.read().await;
+        let client = s.client.read().await;
+        ipp_api::open(&store, &wallet, &client, &req).await
+    };
+    if let Ok(v) = &r {
+        s.notify("INFO", "wallet", "Balance opened with provider",
+            &format!("escrow {} — fund {} (policy hash), then tell the provider", v.record.id, v.record.policy_hash_hex), Some("providers"));
+        let data_dir = std::path::PathBuf::from(&s.config.read().await.data_dir);
+        register_escrow_watches(&mut *s.client.write().await, &data_dir);
+    }
+    escrow_reply(r)
+}
+
+/// `POST /ipp/escrow/{id}/funding` — tell the provider the funding is in a block.
+async fn ipp_funding(
+    State(s): State<FilamentAppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ipp_api::IppFundingRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let wallet = s.wallet.read().await;
+    escrow_reply(ipp_api::funding(&wallet, &store, &id, &req).await)
+}
+
+/// `POST /ipp/escrow/{id}/pay` — sign the payer's half, hand it to the provider, return the commitment.
+async fn ipp_pay(
+    State(s): State<FilamentAppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ipp_api::IppPayRequest>,
+) -> axum::response::Response {
+    let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
+    let wallet = s.wallet.read().await;
+    let client = s.client.read().await;
+    let r = ipp_api::pay(&store, &wallet, &client, &id, &req).await;
+    if let Ok(v) = &r {
+        s.notify("INFO", "wallet", "Payment committed by provider",
+            &format!("tx {}… — the provider completes it when the merchant confirms delivery", &v.txid[..8]), Some("providers"));
+    }
+    escrow_reply(r)
+}
+
+/// `POST /ipp/delivery-confirm` — merchant: confirm delivery; the provider completes and broadcasts.
+async fn ipp_delivery_confirm(
+    State(s): State<FilamentAppState>,
+    Json(req): Json<ipp_api::IppDeliveryRequest>,
+) -> axum::response::Response {
+    let wallet = s.wallet.read().await;
+    escrow_reply(ipp_api::delivery_confirm(&wallet, &req).await)
 }
 
 async fn escrow_outpoint_add(
@@ -3099,7 +3395,12 @@ async fn escrow_backup_import(
     Json(backup): Json<Value>,
 ) -> axum::response::Response {
     let store = match escrow_store(&s).await { Ok(st) => st, Err(r) => return r };
-    escrow_reply(escrow_api::import_backup(&store, &backup).map(|added| json!({ "added": added })))
+    let r = escrow_api::import_backup(&store, &backup).map(|added| json!({ "added": added }));
+    if r.is_ok() {
+        let data_dir = std::path::PathBuf::from(&s.config.read().await.data_dir);
+        register_escrow_watches(&mut *s.client.write().await, &data_dir);
+    }
+    escrow_reply(r)
 }
 
 async fn escrow_pay(
@@ -3566,6 +3867,7 @@ async fn background_task(s: FilamentAppState) {
                     &cfg,
                 ).await;
             }
+            backfill_invoices_throttled(&s.client, &data_dir, &cfg).await;
             advance_watch_invoice_confirmations(
                 &s.client,
                 &data_dir,
@@ -3706,6 +4008,7 @@ pub async fn start_server(
         let wallet = state.wallet.read().await;
         wire_watch_sender(&mut c, &wallet, &cfg, p2p.clone());
         restore_invoice_watch_registrations(&mut c, &data_dir).await;
+        register_escrow_watches(&mut c, &data_dir);
     }
     *state.p2p.write().await = p2p;
 
@@ -3792,6 +4095,10 @@ pub async fn start_server(
         .route("/contacts/{id}",           get(contacts_get).put(contacts_update).delete(contacts_delete))
         .route("/escrow",                  get(escrow_list))
         .route("/escrow/open",             post(escrow_open))
+        .route("/ipp/open",                post(ipp_open))
+        .route("/ipp/escrow/{id}/funding", post(ipp_funding))
+        .route("/ipp/escrow/{id}/pay",     post(ipp_pay))
+        .route("/ipp/delivery-confirm",    post(ipp_delivery_confirm))
         .route("/escrow/backup",           get(escrow_backup_export).post(escrow_backup_import))
         .route("/escrow/{id}/outpoints",   post(escrow_outpoint_add))
         .route("/escrow/{id}/outpoints/{height}/{idx}", delete(escrow_outpoint_remove))
@@ -3904,6 +4211,28 @@ mod status_tests {
         assert!(!is_genesis_only(&ChainSyncStatus::NotStarted, 0));
         assert_eq!(sync_status_parts(&ChainSyncStatus::Synced, 0).0, "genesis_only");
         assert_eq!(sync_status_parts(&ChainSyncStatus::Synced, 7).0, "synced");
+    }
+}
+
+#[cfg(test)]
+mod invoice_json_tests {
+    use super::*;
+    use crate::mmr_client::invoice::{InvoiceStore, ASSURANCE_KEYSTONE_TIP};
+
+    /// `GET /invoice/{id}` must carry `assurance`: null while pending, the label once set.
+    #[test]
+    fn invoice_detail_carries_assurance() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = InvoiceStore::open(dir.path()).unwrap();
+        let id = store.create([1u8; 32], 100, 0, "x", 0, 0).unwrap();
+        let b64 = crate::mmr_client::invoice::base64url_encode16(&id);
+
+        let pending = invoice_detail_json(&b64, &store.load(&id).unwrap());
+        assert!(pending.get("assurance").is_some_and(|v| v.is_null()), "{pending}");
+
+        store.set_assurance(&id, ASSURANCE_KEYSTONE_TIP).unwrap();
+        let confirmed = invoice_detail_json(&b64, &store.load(&id).unwrap());
+        assert_eq!(confirmed["assurance"], ASSURANCE_KEYSTONE_TIP);
     }
 }
 
@@ -4035,5 +4364,43 @@ mod escrow_route_tests {
         let (code, v) = body(escrow_open(State(s), Json(open_req(500))).await).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(v["error"].as_str().unwrap().contains("signing key"));
+    }
+
+    /// IPP-MSG-1 routes: refusals that happen before any provider round trip.
+    #[tokio::test]
+    async fn ipp_routes_refuse_before_calling_a_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider_pk = xonly(&SecretKey::from_slice(&[0x62; 32]).unwrap());
+
+        // No hot key: the merchant delivery confirm cannot be signed.
+        let s = state(dir.path(), false).await;
+        let req = ipp_api::IppDeliveryRequest {
+            provider_url: "http://127.0.0.1:1".into(),
+            provider_pk_hex: provider_pk.clone(),
+            payment_request_id: "r1".into(),
+        };
+        let (code, v) = body(ipp_delivery_confirm(State(s), Json(req)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("signing key"), "{v}");
+
+        // Plain http to a remote host is refused, with a hot key present.
+        let s = state(dir.path(), true).await;
+        let req = ipp_api::IppDeliveryRequest {
+            provider_url: "http://provider.example".into(),
+            provider_pk_hex: provider_pk,
+            payment_request_id: "r1".into(),
+        };
+        let (code, v) = body(ipp_delivery_confirm(State(s.clone()), Json(req)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("https"), "{v}");
+
+        // An escrow with no provider session cannot be reported to a provider.
+        let (code, v) = body(escrow_open(State(s.clone()), Json(open_req(500))).await).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let notice = ipp_api::IppFundingRequest { funding_txid_hex: hex::encode([9u8; 32]) };
+        let (code, v) = body(ipp_funding(State(s), Path(id), Json(notice)).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("not opened through a provider"), "{v}");
     }
 }

@@ -33,6 +33,55 @@ pub fn sighash_v2(txid: &[u8; 32], prevouts_hash: &[u8; 32], input_index: u32) -
     h.finalize().into()
 }
 
+/// Witness wire prefix: Schnorr signature (BIP-340).
+pub const WITNESS_TYPE_SCHNORR: u8 = 0x01;
+
+/// Expected `WitnessEntry::witness_data` length for Schnorr (`0x01` + 64-byte signature).
+pub const SCHNORR_WITNESS_LEN: usize = 65;
+
+/// Why a witness did not verify.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WitnessError {
+    pub input_index: usize,
+    pub reason: String,
+}
+
+impl std::fmt::Display for WitnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "input {}: {}", self.input_index, self.reason)
+    }
+}
+
+impl std::error::Error for WitnessError {}
+
+fn verify_ctx() -> &'static secp256k1::Secp256k1<secp256k1::VerifyOnly> {
+    static CTX: std::sync::OnceLock<secp256k1::Secp256k1<secp256k1::VerifyOnly>> = std::sync::OnceLock::new();
+    CTX.get_or_init(secp256k1::Secp256k1::verification_only)
+}
+
+/// Verify one witness (`0x01 ‖ 64-byte BIP-340 signature`) against an x-only public key and a sighash.
+pub fn verify_schnorr_witness(
+    witness: &crate::transaction_impl::WitnessEntry,
+    expected_pubkey: &[u8; 32],
+    sighash: &[u8; 32],
+    input_index: usize,
+) -> Result<(), WitnessError> {
+    let err = |reason: String| WitnessError { input_index, reason };
+    let data = &witness.witness_data;
+    if data.len() != SCHNORR_WITNESS_LEN {
+        return Err(err(format!("malformed witness length {} (expected {})", data.len(), SCHNORR_WITNESS_LEN)));
+    }
+    if data[0] != WITNESS_TYPE_SCHNORR {
+        return Err(err(format!("unsupported witness type 0x{:02x}", data[0])));
+    }
+    let sig = secp256k1::schnorr::Signature::from_slice(&data[1..])
+        .map_err(|e| err(format!("invalid Schnorr signature: {e}")))?;
+    let pk = secp256k1::XOnlyPublicKey::from_slice(expected_pubkey)
+        .map_err(|e| err(format!("invalid x-only pubkey: {e}")))?;
+    let msg = secp256k1::Message::from_digest(*sighash);
+    verify_ctx().verify_schnorr(&sig, &msg, &pk).map_err(|e| err(format!("signature does not verify: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

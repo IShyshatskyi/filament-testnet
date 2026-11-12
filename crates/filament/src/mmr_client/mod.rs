@@ -311,6 +311,12 @@ pub mod escrow_api;
 pub mod keystone_submit;
 
 #[cfg(feature = "full-node")]
+pub mod ipp_client;
+
+#[cfg(feature = "full-node")]
+pub mod ipp_api;
+
+#[cfg(feature = "full-node")]
 pub mod filament_p2p;
 
 /// Re-export of `common::proofs` for backward-compatible test imports.

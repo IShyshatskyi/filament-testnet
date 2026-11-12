@@ -111,6 +111,12 @@ pub struct EscrowRecord {
     pub created_at_ms: u64,
     /// Set when the policy was included in an exported backup.
     pub backed_up_at_ms: Option<u64>,
+    /// IPP-MSG-1: the provider endpoint this escrow was opened through, and the provider's
+    /// session id for it. `None` for an escrow opened by hand (policy stored locally only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl EscrowRecord {
@@ -426,6 +432,8 @@ impl EscrowStore {
             outpoints: Vec::new(),
             created_at_ms: now_ms(),
             backed_up_at_ms: None,
+            provider_url: None,
+            session_id: None,
         };
         all.push(rec.clone());
         self.save_all(&all)?;
@@ -447,6 +455,14 @@ impl EscrowStore {
         let out = rec.clone();
         self.save_all(&all)?;
         Ok(out)
+    }
+
+    /// Remember the provider endpoint and session this escrow was opened through (IPP-MSG-1).
+    pub fn set_provider_session(&self, id: &str, provider_url: &str, session_id: &str) -> Result<EscrowRecord, EscrowError> {
+        self.update(id, |r| {
+            r.provider_url = Some(provider_url.to_string());
+            r.session_id = Some(session_id.to_string());
+        })
     }
 
     /// Record a funding output once it is in a block (a new payment slot).

@@ -26,6 +26,14 @@ pub mod merged_mining_check;
 pub mod crypto_escrow;
 pub mod ipp;
 
+/// `crypto::tx_sighash`, the path the node-side crate uses.
+pub mod crypto {
+    pub use crate::tx_sighash;
+    pub mod escrow {
+        pub use crate::crypto_escrow::*;
+    }
+}
+
 pub mod common {
     pub mod crypto {
         pub use crate::hash;

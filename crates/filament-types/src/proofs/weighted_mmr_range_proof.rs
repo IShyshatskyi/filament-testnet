@@ -32,31 +32,39 @@ pub struct WeightedMMRRangeProof {
 
 impl WeightedMMRRangeProof {
     pub fn verify_with_anchor(&self, genesis_anchor: [u8; 32]) -> bool {
+        self.check_with_anchor(genesis_anchor).is_ok()
+    }
+
+    /// [`Self::verify_with_anchor`] that says which check failed.
+    pub fn check_with_anchor(&self, genesis_anchor: [u8; 32]) -> Result<(), String> {
         let Some(len) = self.end.checked_sub(self.start) else {
-            return false;
+            return Err("range ends before it starts".into());
         };
         let r = len as usize;
-        if r != self.leaves.len() || r == 0 {
-            return false;
+        if r != self.leaves.len() {
+            return Err("leaf count differs from end - start".into());
+        }
+        if r == 0 {
+            return Err("empty range".into());
         }
         if self.end > self.leaf_count {
-            return false;
+            return Err("range ends past the proof's leaf count".into());
         }
 
         // Step 1: the maximal aligned blocks of [start, end), hashed bottom-up.
         let peak_positions = Self::range_peak_positions(self.start, self.end);
         if peak_positions.len() != self.siblings_per_peak.len() {
-            return false;
+            return Err("range peak count differs from siblings_per_peak".into());
         }
         let range_peak_hashes = Self::compute_range_peak_hashes(&self.leaves, self.start, self.end);
         if range_peak_hashes.len() != peak_positions.len() {
-            return false;
+            return Err("range peak hash count differs from range peak positions".into());
         }
 
         // Step 2: positional. Each block climbs to the MMR peak containing it.
         let descriptors = peak_descriptors(self.leaf_count);
         if descriptors.len() != self.peaks.len() {
-            return false;
+            return Err("peak count differs from the peaks a tree of leaf_count leaves has".into());
         }
         let mut mmr_peak_i = 0usize;
         let mut sibling_cursor = 0usize;
@@ -68,7 +76,7 @@ impl WeightedMMRRangeProof {
             // The MMR peak whose leaf range contains this block.
             let peak_h = loop {
                 let Some(&(pos, height)) = descriptors.get(mmr_peak_i) else {
-                    return false;
+                    return Err("a range block lies past the last peak".into());
                 };
                 if u64::from(block_start) < (u64::from(pos) + 1) << height {
                     break height;
@@ -78,14 +86,14 @@ impl WeightedMMRRangeProof {
             // An aligned 2^range_h block inside an aligned 2^peak_h peak lies wholly
             // inside it iff range_h <= peak_h.
             if range_h > peak_h {
-                return false;
+                return Err("a range block is taller than the peak that contains it".into());
             }
             let n = (peak_h - range_h) as usize;
             if self.siblings_per_peak[k] as usize != n {
-                return false;
+                return Err("siblings_per_peak differs from the climb height".into());
             }
             let Some(path) = self.siblings.get(sibling_cursor..sibling_cursor + n) else {
-                return false;
+                return Err("sibling list is too short".into());
             };
             sibling_cursor += n;
 
@@ -99,19 +107,22 @@ impl WeightedMMRRangeProof {
                 };
             }
             if cur_hash != self.peaks[mmr_peak_i] {
-                return false;
+                return Err("a sibling climb does not reach the claimed peak".into());
             }
             block_start += 1u32 << range_h;
         }
 
         // No trailing siblings.
         if sibling_cursor != self.siblings.len() {
-            return false;
+            return Err("trailing siblings".into());
         }
 
         // Step 3: the claimed peaks bag to the claimed root.
         let anchor = WeightedHash::from_anchor(&genesis_anchor);
-        bag_peaks_weighted(&self.peaks, anchor) == self.root
+        if bag_peaks_weighted(&self.peaks, anchor) != self.root {
+            return Err("the peaks do not bag to the claimed root".into());
+        }
+        Ok(())
     }
 
     pub fn verify(&self) -> bool {

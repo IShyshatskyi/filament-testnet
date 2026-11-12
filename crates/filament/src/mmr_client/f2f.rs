@@ -379,6 +379,7 @@ mod tests {
             relay_node:     None,
             mmr_proof_bytes: None,
             assurance: None,
+            created_tip: None,
         };
         inv.encode().unwrap()
     }
