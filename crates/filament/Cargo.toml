@@ -27,7 +27,7 @@ required-features = ["full-node"]
 # ── Dependencies ───────────────────────────────────────────────────────────────
 # This crate has NO dependency on `shisha-core` — the physical move
 # (Gap 8 Phase 2) inverted the direction: `shisha-core` now depends on this
-# crate. See docs/plan/Crate_Split_Plan.md §Gap 8 for the extraction analysis.
+# crate. See the crate split notes for the extraction analysis.
 [dependencies]
 network_common = { package = "filament-types", path = "../filament-types" }
 

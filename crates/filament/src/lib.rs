@@ -33,14 +33,14 @@
 //! `address/` was deleted outright; `wallet/` was trimmed to just
 //! `SchnorrSigner`, the one real, load-bearing piece (used directly by
 //! `mmr_client::filament_wallet`). Full history:
-//! `docs/reports/RF-19_RF-20_Completion_Report.md` §3.
+//! the extraction notes
 //!
 //!
 //! `mmr_client::parallel_verifier`'s range-proof path builds a real multi-leaf
 //! (moved into common-types Aug 2026). This crate has **zero** dependency on
 //! `shisha-core`.
 //!
-//! See `docs/plan/Crate_Split_Plan.md` §Gap 8 for the full extraction
+//! See the crate split notes for the full extraction
 //! analysis.
 //!
 //! ## Feature flags

@@ -16,7 +16,7 @@
 //   relay=<pct-encoded>  preferred relay node e.g. "127.0.0.1:8334"
 //   invoice_id=<b64url22> stable 16-byte invoice id (base64url, no padding)
 //
-// Design reference: `docs/plan/P2P_Phase10_Plan.md` §3
+// Design reference: the light-client protocol design
 
 use crate::mmr_client::invoice::{
     base64url_decode16, base64url_encode16, decode_hex32, encode_hex32, Invoice, InvoiceState,

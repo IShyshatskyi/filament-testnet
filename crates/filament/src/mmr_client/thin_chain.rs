@@ -1,4 +1,4 @@
-//! Thin beacon chain state for the light client (`docs/plan/Filament_Thin_Sync_Design.md`).
+//! Thin beacon chain state for the light client (the thin sync design).
 //!
 //! Holds only the MMR peaks, the leaf count and the last [`RECENT_HEADERS`] full
 //! headers. A new block is accepted one header at a time:
