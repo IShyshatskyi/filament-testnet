@@ -235,6 +235,15 @@ Settings persist in the data directory, and flags override only what they set.
 `/f2f/{pubkey,messages,send}`. The wallet routes are experimental on testnet. Keep a Keystone's
 wallet port off the public internet.
 
+**Beacon coins and several accounts.** One address holds shard coins and beacon coins; the wallet tracks both
+(`beacon_confirmed` / `beacon_unconfirmed` in `/wallet/balance`). `/wallet/send`, `/wallet/sign` and
+`/wallet/broadcast` take `"beacon": true` to spend beacon coins: the transaction is signed for chain id 0 and
+posted to the Keystone's `/mempool/submit/beacon`. Besides the account the process starts with (`main`), the client
+can hold more accounts, each with its own address and key (encrypted with its own password) or watch-only:
+`/accounts` (list, create), `/accounts/{import,watch}`, `/accounts/{id}/{unlock,lock,rename,backup}`,
+`DELETE /accounts/{id}?confirm=yes`; the wallet routes take `?account=<id>`. Like the rest of the wallet routes,
+these are experimental on testnet.
+
 ---
 
 ## 8. Keystone endpoints Filament calls

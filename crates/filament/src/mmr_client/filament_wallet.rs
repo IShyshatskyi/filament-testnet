@@ -69,6 +69,9 @@ pub struct UtxoEntry {
     pub confirmations: u32,
     pub coinbase: bool,
     pub shard_id: u16,
+    /// The output is on the beacon chain (`shard_id` is then 0 and meaningless).
+    #[serde(default)]
+    pub beacon: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +87,9 @@ pub struct TxHistoryEntry {
     pub confirmations: u32,
     pub fee: f64,
     pub shard_id: u16,
+    /// The entry is on the beacon chain (`shard_id` is then 0 and meaningless).
+    #[serde(default)]
+    pub beacon: bool,
     pub ts_ms: u64,
 }
 
@@ -99,6 +105,12 @@ pub struct BalanceResponse {
     /// `balance_max_utxos`, so `confirmed` is the sum of the UTXO pages read and may be short.
     #[serde(default)]
     pub too_many_outputs: bool,
+    /// Beacon-chain coins (`confirmed` / `unconfirmed` above are shard coins only), from the wallet's
+    /// beacon outputs.
+    #[serde(default)]
+    pub beacon_confirmed: f64,
+    #[serde(default)]
+    pub beacon_unconfirmed: f64,
 }
 
 fn balance_source_utxos() -> String { "utxos".into() }
@@ -120,6 +132,16 @@ pub struct SendRequest {
     pub fee_atoms: u64,
     #[serde(default)]
     pub shard_id: u16,
+    /// Send beacon-chain coins instead of shard coins (`shard_id` is then ignored).
+    #[serde(default)]
+    pub beacon: bool,
+}
+
+impl SendRequest {
+    /// Chain id the transaction id and the signatures are bound to (0 = beacon, shard N = N + 1).
+    pub fn chain_id(&self) -> u16 {
+        if self.beacon { network_common::transaction::BEACON_CHAIN_ID } else { network_common::transaction::shard_chain_id(self.shard_id) }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,10 +222,15 @@ async fn fetch_indexer_wallet(
         }),
         _ => None, // older indexer without the route: fall back to the UTXO sum
     };
-    let shard_of = |v: &Value| -> Option<u16> {
-        (v.get("chain")?.as_str()? == "shard").then(|| v.get("shard_id")?.as_u64().map(|s| s as u16))?
+    // (beacon, shard_id): rows on the beacon chain have no shard id (FIL-BEACON-1).
+    let chain_of = |v: &Value| -> Option<(bool, u16)> {
+        match v.get("chain")?.as_str()? {
+            "beacon" => Some((true, 0)),
+            "shard" => Some((false, v.get("shard_id")?.as_u64()? as u16)),
+            _ => None,
+        }
     };
-    let mut tips: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
+    let mut tips: std::collections::HashMap<(bool, u16), u32> = std::collections::HashMap::new();
     let mut utxos = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..64 {
@@ -213,14 +240,14 @@ async fn fetch_indexer_wallet(
         }
         let page: Value = http.get(&url).send().await.ok().filter(|r| r.status().is_success())?.json().await.ok()?;
         for a in page.get("as_of").and_then(|v| v.as_array()).into_iter().flatten() {
-            if let (Some(s), Some(h)) = (shard_of(a), a.get("indexed_height").and_then(|v| v.as_u64())) {
-                tips.insert(s, h as u32);
+            if let (Some(c), Some(h)) = (chain_of(a), a.get("indexed_height").and_then(|v| v.as_u64())) {
+                tips.insert(c, h as u32);
             }
         }
         for u in page.get("utxos")?.as_array()? {
-            let Some(shard_id) = shard_of(u) else { continue };
+            let Some((beacon, shard_id)) = chain_of(u) else { continue };
             let height = u.get("height")?.as_u64()? as u32;
-            let tip = tips.get(&shard_id).copied().unwrap_or(height);
+            let tip = tips.get(&(beacon, shard_id)).copied().unwrap_or(height);
             utxos.push(UtxoEntry {
                 height,
                 output_idx: u.get("output_idx")?.as_u64()? as u16,
@@ -228,6 +255,7 @@ async fn fetch_indexer_wallet(
                 confirmations: tip.saturating_sub(height) + 1,
                 coinbase: false,
                 shard_id,
+                beacon,
             });
         }
         match (page.get("truncated").and_then(|v| v.as_bool()), page.get("next_cursor").and_then(|v| v.as_str())) {
@@ -240,11 +268,11 @@ async fn fetch_indexer_wallet(
     if let Ok(r) = http.get(&url).send().await {
         if let Ok(v) = r.json::<Value>().await {
             for (i, h) in v.get("history").and_then(|x| x.as_array()).into_iter().flatten().enumerate() {
-                let Some(shard_id) = shard_of(h) else { continue };
+                let Some((beacon, shard_id)) = chain_of(h) else { continue };
                 let height = h.get("height").and_then(|x| x.as_u64()).map(|x| x as u32);
                 let atoms = h.get("value").and_then(|x| x.as_u64()).unwrap_or(0) as f64 / ATOMS_PER_COIN;
                 let spend = h.get("kind").and_then(|x| x.as_str()) == Some("spend");
-                let tip = tips.get(&shard_id).copied();
+                let tip = tips.get(&(beacon, shard_id)).copied();
                 history.push(TxHistoryEntry {
                     id: i as u64,
                     txid: String::new(), // the indexer keeps no txid
@@ -256,6 +284,7 @@ async fn fetch_indexer_wallet(
                     confirmations: match (tip, height) { (Some(t), Some(h)) => t.saturating_sub(h) + 1, _ => 0 },
                     fee: 0.0,
                     shard_id,
+                    beacon,
                     ts_ms: 0,
                 });
             }
@@ -307,14 +336,14 @@ impl FilamentWallet {
     pub fn address(&self) -> &str { &self.address }
 
     pub fn balance(&self) -> BalanceResponse {
-        let confirmed: f64 = self.utxos.iter()
-            .filter(|u| u.confirmations >= 1)
-            .map(|u| u.value)
-            .sum();
-        let unconfirmed: f64 = self.utxos.iter()
-            .filter(|u| u.confirmations == 0)
-            .map(|u| u.value)
-            .sum();
+        let sum = |beacon: bool, confirmed: bool| -> f64 {
+            self.utxos.iter()
+                .filter(|u| u.beacon == beacon && (u.confirmations >= 1) == confirmed)
+                .map(|u| u.value)
+                .sum()
+        };
+        let (confirmed, unconfirmed) = (sum(false, true), sum(false, false));
+        let (beacon_confirmed, beacon_unconfirmed) = (sum(true, true), sum(true, false));
         match self.indexer_balance {
             // The indexer indexes only included outputs, so its total is the confirmed balance.
             Some(IndexerBalance::Atoms(a)) => BalanceResponse {
@@ -322,11 +351,17 @@ impl FilamentWallet {
                 unconfirmed,
                 source: "indexer".into(),
                 too_many_outputs: false,
+                beacon_confirmed,
+                beacon_unconfirmed,
             },
             Some(IndexerBalance::TooManyOutputs) => BalanceResponse {
                 confirmed, unconfirmed, source: "utxos".into(), too_many_outputs: true,
+                beacon_confirmed, beacon_unconfirmed,
             },
-            None => BalanceResponse { confirmed, unconfirmed, source: "utxos".into(), too_many_outputs: false },
+            None => BalanceResponse {
+                confirmed, unconfirmed, source: "utxos".into(), too_many_outputs: false,
+                beacon_confirmed, beacon_unconfirmed,
+            },
         }
     }
 
@@ -355,6 +390,9 @@ impl FilamentWallet {
 
     /// The configured Keystone REST endpoints, in priority order.
     pub fn keystone_endpoints(&self) -> &[String] { &self.keystone_endpoints }
+
+    /// The indexer endpoints set by [`Self::set_indexer_endpoints`].
+    pub fn indexer_endpoints(&self) -> &[String] { &self.indexer_endpoints }
 
     /// Eratosthenes endpoints for UTXO / history refresh (`FilamentNodeConfig::indexer_endpoints`).
     pub fn set_indexer_endpoints(&mut self, eps: Vec<String>) {
@@ -451,9 +489,9 @@ impl FilamentWallet {
     /// FIL-REFRESH-1 (Oct 30, 2026): reads the configured **indexer** endpoints with the
     /// indexer's real shapes (`{utxos, truncated, next_cursor, as_of}` paged by cursor,
     /// `{history}`, values in atoms). It used to ask the Keystone endpoints, which do not
-    /// serve these routes, and parse bare arrays — so it never updated anything. Beacon rows
-    /// are skipped (wallet UTXOs are per shard). Confirmations come from the indexer's
-    /// indexed height for that chain.
+    /// serve these routes, and parse bare arrays — so it never updated anything. Beacon rows are
+    /// kept (`beacon: true`, FIL-BEACON-1) and spent with `SendRequest::beacon`. Confirmations come
+    /// from the indexer's indexed height for that chain.
     ///
     /// Queries every configured endpoint (MNT-7 fan-out) rather than trusting
     /// a single one, and cross-check their responses. Adopts the response
@@ -598,13 +636,27 @@ impl FilamentWallet {
         fee_atoms: u64,
         preferred_shard: Option<u16>,
     ) -> Result<Vec<&UtxoEntry>, String> {
+        self.select_utxos(amount_atoms, fee_atoms, |u| !u.beacon && preferred_shard.map_or(true, |s| u.shard_id == s))
+    }
+
+    /// FIL-BEACON-1: the same selection over the wallet's beacon-chain outputs only.
+    pub fn select_beacon_utxos(&self, amount_atoms: u64, fee_atoms: u64) -> Result<Vec<&UtxoEntry>, String> {
+        self.select_utxos(amount_atoms, fee_atoms, |u| u.beacon)
+    }
+
+    fn select_utxos(
+        &self,
+        amount_atoms: u64,
+        fee_atoms: u64,
+        keep: impl Fn(&UtxoEntry) -> bool,
+    ) -> Result<Vec<&UtxoEntry>, String> {
         let need = amount_atoms.checked_add(fee_atoms)
             .ok_or("Amount overflow")?;
 
         // That shard only, largest first.
         let mut sorted: Vec<&UtxoEntry> = self.utxos.iter()
             .filter(|u| u.confirmations >= 1)
-            .filter(|u| preferred_shard.map_or(true, |s| u.shard_id == s))
+            .filter(|u| keep(u))
             .collect();
 
         sorted.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap_or(std::cmp::Ordering::Equal));
@@ -643,14 +695,18 @@ impl FilamentWallet {
         let key = self
             .signing_key
             .ok_or("no signing key attached — unlock the hot key (desktop) or start Filament with --signing-key-file")?;
-        let selected = self.select_utxos_for_amount(req.amount_atoms, req.fee_atoms, Some(req.shard_id))?;
+        let selected = if req.beacon {
+            self.select_beacon_utxos(req.amount_atoms, req.fee_atoms)?
+        } else {
+            self.select_utxos_for_amount(req.amount_atoms, req.fee_atoms, Some(req.shard_id))?
+        };
         let (mut tx, witnesses) = self.build_signed_transaction_with_key(req, &selected, &key, current_height)?;
         tx.witnesses = witnesses;
-        let txid = hex::encode(tx.txid(network_common::transaction::shard_chain_id(req.shard_id)).0);
+        let txid = hex::encode(tx.txid(req.chain_id()).0);
         let answer = crate::mmr_client::keystone_submit::submit_raw_tx(
             &self.http,
             &self.keystone_endpoints,
-            Some(req.shard_id),
+            (!req.beacon).then_some(req.shard_id),
             tx.serialize_with_witnesses(),
         )
         .await?;
@@ -754,10 +810,10 @@ impl FilamentWallet {
 
         // Sign with Schnorr: one key per input (all inputs belong to same wallet)
         let keys: Vec<SecretKey> = (0..tx.inputs.len()).map(|_| secret_key).collect();
-        // chain_id = shard_id + 1. This used to pass
+        // chain_id = shard_id + 1 on a shard, 0 on the beacon. This used to pass
         // `req.shard_id as u8`, so every signature was for the wrong chain and
         // failed TX-5 on a real node.
-        let chain_id = network_common::transaction::shard_chain_id(req.shard_id);
+        let chain_id = req.chain_id();
         // Sighash v2 commits the spent outputs: our own key received every one.
         let own = bitcoin::secp256k1::Keypair::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &secret_key)
             .x_only_public_key().0.serialize();
@@ -837,8 +893,8 @@ mod indexer_refresh_tests {
     use axum::{extract::Query, routing::get, Json, Router};
     use std::collections::HashMap;
 
-    /// FIL-REFRESH-1: refresh reads Eratosthenes' real shapes, pages by cursor, skips beacon
-    /// rows, derives confirmations from the indexed height, maps history.
+    /// FIL-REFRESH-1: refresh reads Eratosthenes' real shapes, pages by cursor, keeps beacon rows
+    /// as beacon outputs (FIL-BEACON-1), derives confirmations from the indexed height, maps history.
     #[tokio::test]
     async fn refresh_reads_the_indexer() {
         let addr = "ab".repeat(32);
@@ -880,8 +936,13 @@ mod indexer_refresh_tests {
         w.set_indexer_endpoints(vec![ep.clone()]);
         let out = w.refresh_from_keystone().await.unwrap();
         assert_eq!(out.responded, vec![ep]);
-        let u: Vec<(u32, u16, u32, u16)> = w.utxos().iter().map(|u| (u.height, u.output_idx, u.confirmations, u.shard_id)).collect();
-        assert_eq!(u, vec![(100, 0, 21, 2), (120, 3, 1, 2)], "beacon row skipped, both pages read");
+        let u: Vec<(u32, u16, u32, u16, bool)> =
+            w.utxos().iter().map(|u| (u.height, u.output_idx, u.confirmations, u.shard_id, u.beacon)).collect();
+        assert_eq!(
+            u,
+            vec![(100, 0, 21, 2, false), (800, 1, 101, 0, true), (120, 3, 1, 2, false)],
+            "both pages read; the beacon row is a beacon output with its own tip"
+        );
         assert!((w.utxos()[0].value - 1.5).abs() < 1e-12);
         let h = w.history();
         assert_eq!((h[0].kind.as_str(), h[1].kind.as_str()), ("receive", "send"));
@@ -889,7 +950,10 @@ mod indexer_refresh_tests {
         assert_eq!(h[1].confirmations, 11);
         let b = w.balance();
         assert_eq!((b.source.as_str(), b.too_many_outputs), ("indexer", false));
-        assert!((b.confirmed - 1.75).abs() < 1e-12, "shard rows of /explorer/balance, beacon skipped");
+        assert!((b.confirmed - 1.75).abs() < 1e-12, "shard rows of /explorer/balance");
+        assert!((b.beacon_confirmed - 7e-8).abs() < 1e-15, "beacon coins reported separately");
+        assert!(w.select_utxos_for_amount(1, 0, Some(0)).is_err(), "a shard send never spends beacon outputs");
+        assert_eq!(w.select_beacon_utxos(5, 1).unwrap().len(), 1);
     }
 
     /// FIL-BALANCE-1: a 413 from `/explorer/balance` is reported, the UTXO sum is used.

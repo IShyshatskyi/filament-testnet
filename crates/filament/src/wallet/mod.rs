@@ -12,6 +12,8 @@ pub mod transaction_builder;
 pub mod escrow;
 pub mod hot_key;
 pub mod hw_assemble;
+#[cfg(feature = "full-node")]
+pub mod accounts;
 
 pub use transaction_builder::SchnorrSigner;
 pub use escrow::{EscrowOutpoint, EscrowPayment, EscrowRecord, EscrowStore};

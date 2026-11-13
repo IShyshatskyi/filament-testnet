@@ -60,6 +60,17 @@ pub async fn broadcast_hex(
     shard_id: u16,
     tx_hex: &str,
 ) -> Result<Value, String> {
+    broadcast_hex_chain(http, endpoints, Some(shard_id), tx_hex).await
+}
+
+/// [`broadcast_hex`] for either chain: `Some(shard)` posts to `/mempool/submit?shard=N`, `None` to
+/// `/mempool/submit/beacon` (FIL-BEACON-1); the txid is bound to the matching chain id.
+pub async fn broadcast_hex_chain(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    shard_id: Option<u16>,
+    tx_hex: &str,
+) -> Result<Value, String> {
     let bytes = hex::decode(tx_hex.trim()).map_err(|_| "transaction must be hex".to_string())?;
     let tx = network_common::transaction::Transaction::deserialize_with_witnesses(&bytes).map_err(|e| {
         format!("not a signed transaction (expected serialize_with_witnesses bytes): {e:?}")
@@ -67,8 +78,12 @@ pub async fn broadcast_hex(
     if tx.witnesses.len() != tx.inputs.len() {
         return Err(format!("{} inputs but {} witnesses — sign every input first", tx.inputs.len(), tx.witnesses.len()));
     }
-    let txid = hex::encode(tx.txid(network_common::transaction::shard_chain_id(shard_id)).0);
-    let mut answer = submit_raw_tx(http, endpoints, Some(shard_id), bytes).await?;
+    let chain_id = match shard_id {
+        Some(s) => network_common::transaction::shard_chain_id(s),
+        None => network_common::transaction::BEACON_CHAIN_ID,
+    };
+    let txid = hex::encode(tx.txid(chain_id).0);
+    let mut answer = submit_raw_tx(http, endpoints, shard_id, bytes).await?;
     if let Some(obj) = answer.as_object_mut() {
         obj.entry("txid").or_insert(Value::String(txid));
     }
@@ -85,19 +100,32 @@ mod tests {
 
     type Seen = Arc<Mutex<Vec<(Option<u16>, Vec<u8>)>>>;
 
-    /// A fake Keystone `/mempool/submit` that records what it receives.
+    /// A fake Keystone `/mempool/submit` (shard) and `/mempool/submit/beacon` that records what it receives
+    /// (`None` = the beacon route).
     async fn fake_keystone(seen: Seen) -> String {
-        let app = Router::new().route(
-            "/mempool/submit",
-            post(move |q: Query<std::collections::HashMap<String, String>>, body: Bytes| {
-                let seen = seen.clone();
-                async move {
-                    let shard = q.get("shard").and_then(|s| s.parse().ok());
-                    seen.lock().unwrap().push((shard, body.to_vec()));
-                    Json(serde_json::json!({ "status": "accepted", "shard": shard }))
-                }
-            }),
-        );
+        let seen_beacon = seen.clone();
+        let app = Router::new()
+            .route(
+                "/mempool/submit",
+                post(move |q: Query<std::collections::HashMap<String, String>>, body: Bytes| {
+                    let seen = seen.clone();
+                    async move {
+                        let shard = q.get("shard").and_then(|s| s.parse().ok());
+                        seen.lock().unwrap().push((shard, body.to_vec()));
+                        Json(serde_json::json!({ "status": "accepted", "shard": shard }))
+                    }
+                }),
+            )
+            .route(
+                "/mempool/submit/beacon",
+                post(move |body: Bytes| {
+                    let seen = seen_beacon.clone();
+                    async move {
+                        seen.lock().unwrap().push((None, body.to_vec()));
+                        Json(serde_json::json!({ "status": "accepted", "chain": "beacon" }))
+                    }
+                }),
+            );
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
@@ -105,7 +133,7 @@ mod tests {
     }
 
     fn utxo(shard_id: u16, height: u32, idx: u16, coins: f64) -> UtxoEntry {
-        UtxoEntry { height, output_idx: idx, value: coins, confirmations: 3, coinbase: false, shard_id }
+        UtxoEntry { height, output_idx: idx, value: coins, confirmations: 3, coinbase: false, shard_id, beacon: false }
     }
 
     /// FIL-SEND-1: the wallet signs locally, the node gets raw bytes it admits, and only the
@@ -123,7 +151,7 @@ mod tests {
         // Shard 1 has more money, but the send is on shard 0.
         wallet.set_utxos(vec![utxo(0, 40, 0, 0.6), utxo(1, 41, 0, 50.0), utxo(0, 42, 1, 0.5)]);
 
-        let req = SendRequest { to: "77".repeat(32), amount_atoms: 100_000_000, fee_atoms: 10_000, shard_id: 0 };
+        let req = SendRequest { to: "77".repeat(32), amount_atoms: 100_000_000, fee_atoms: 10_000, shard_id: 0, beacon: false };
         let resp = wallet.submit_transaction(&req, 50).await.unwrap();
         assert_eq!(resp.status, "accepted");
 
@@ -140,12 +168,65 @@ mod tests {
         assert!(wallet.submit_transaction(&big, 50).await.unwrap_err().contains("Insufficient"));
     }
 
+    /// FIL-BEACON-1: a beacon send spends beacon outputs only, is signed for chain id 0 (so it does not
+    /// verify as a shard transaction and the reverse), and goes to `/mempool/submit/beacon`.
+    #[tokio::test]
+    async fn beacon_send_is_bound_to_chain_zero_and_posted_to_the_beacon_route() {
+        use network_common::crypto::tx_sighash::{prevouts_hash, sighash_v2, verify_schnorr_witness};
+        let seen: Seen = Arc::default();
+        let ep = fake_keystone(seen.clone()).await;
+        let key = bitcoin::secp256k1::SecretKey::from_slice(&[0x44; 32]).unwrap();
+        let me = bitcoin::secp256k1::Keypair::from_secret_key(&bitcoin::secp256k1::Secp256k1::new(), &key)
+            .x_only_public_key().0.serialize();
+        let mut wallet = FilamentWallet::new(String::new(), None);
+        wallet.attach_hot_key(key).unwrap();
+        wallet.set_keystone_endpoints(vec![ep]);
+        let mut b1 = utxo(0, 70, 2, 3.0); b1.beacon = true;
+        let mut b2 = utxo(0, 71, 0, 1.0); b2.beacon = true;
+        // A shard output with far more money must not be touched by a beacon send.
+        wallet.set_utxos(vec![b1, utxo(0, 40, 0, 500.0), b2]);
+
+        let req = SendRequest { to: "88".repeat(32), amount_atoms: 350_000_000, fee_atoms: 10_000, shard_id: 0, beacon: true };
+        assert_eq!(req.chain_id(), network_common::transaction::BEACON_CHAIN_ID);
+        let resp = wallet.submit_transaction(&req, 900).await.unwrap();
+        assert_eq!(resp.status, "accepted");
+
+        let (route, bytes) = seen.lock().unwrap()[0].clone();
+        assert_eq!(route, None, "the beacon route");
+        let tx = Transaction::deserialize_with_witnesses(&bytes).unwrap();
+        assert_eq!(resp.txid, hex::encode(tx.txid(network_common::transaction::BEACON_CHAIN_ID).0));
+        let mut spent: Vec<(u32, u16)> = tx.inputs.iter().map(|i| (i.prev_height, i.prev_output_idx)).collect();
+        spent.sort();
+        assert_eq!(spent, vec![(70, 2), (71, 0)], "beacon outputs only");
+        assert_eq!(tx.outputs[0].value, 350_000_000);
+
+        let prevouts: Vec<(u64, [u8; 32])> = tx.inputs.iter()
+            .map(|i| (if i.prev_height == 70 { 300_000_000 } else { 100_000_000 }, me)).collect();
+        let ph = prevouts_hash(&prevouts);
+        for (i, w) in tx.witnesses.iter().enumerate() {
+            verify_schnorr_witness(w, &me, &sighash_v2(&tx.txid(0).0, &ph, i as u32), i)
+                .expect("signed for the beacon chain");
+            assert!(
+                verify_schnorr_witness(w, &me, &sighash_v2(&tx.txid(shard_chain_id(0)).0, &ph, i as u32), i).is_err(),
+                "not valid as a shard-0 transaction (replay protection)"
+            );
+        }
+
+        // Not enough beacon coins: refused, never topped up from shard coins.
+        let big = SendRequest { amount_atoms: 9_000_000_000, ..req };
+        assert!(wallet.submit_transaction(&big, 900).await.unwrap_err().contains("Insufficient"));
+        // The generic broadcast helper takes the same route and reports the beacon txid.
+        let hex_tx = hex::encode(&bytes);
+        let out = broadcast_hex_chain(&reqwest::Client::new(), &wallet.keystone_endpoints().to_vec(), None, &hex_tx).await.unwrap();
+        assert_eq!(out["txid"], serde_json::json!(resp.txid));
+    }
+
     #[tokio::test]
     async fn send_without_key_is_refused_and_broadcast_checks_format() {
         let seen: Seen = Arc::default();
         let ep = fake_keystone(seen.clone()).await;
         let wallet = FilamentWallet::new("aa".repeat(32), None);
-        let req = SendRequest { to: "77".repeat(32), amount_atoms: 1, fee_atoms: 1, shard_id: 0 };
+        let req = SendRequest { to: "77".repeat(32), amount_atoms: 1, fee_atoms: 1, shard_id: 0, beacon: false };
         assert!(wallet.submit_transaction(&req, 5).await.unwrap_err().contains("no signing key"));
 
         let http = reqwest::Client::new();

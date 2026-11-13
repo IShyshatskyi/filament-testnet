@@ -1819,6 +1819,8 @@ pub struct FilamentAppState {
     pub pending_txids: Arc<Mutex<HashMap<String, PendingTxMeta>>>,
     /// Optional ShishaNet PeerManager for Path-2 P2P inbound notifs.
     pub p2p: Arc<RwLock<Option<Arc<crate::mmr_client::filament_p2p::FilamentP2p>>>>,
+    /// FIL-ACCOUNTS-1: the extra accounts of this process (`main` is `wallet`).
+    pub accounts: Arc<RwLock<crate::wallet::accounts::AccountBook>>,
 }
 
 impl FilamentAppState {
@@ -1834,9 +1836,21 @@ impl FilamentAppState {
             logs.push("INFO", &format!("Keystone delegate: {}", ep), "filament");
         }
 
+        let template = crate::wallet::accounts::AccountTemplate {
+            keystone_endpoints: wallet.keystone_endpoints().to_vec(),
+            indexer_endpoints: wallet.indexer_endpoints().to_vec(),
+        };
+        let wallet = Arc::new(RwLock::new(wallet));
+        let accounts_dir = std::path::Path::new(&config.data_dir).join("accounts");
+        let accounts = crate::wallet::accounts::AccountBook::open(&accounts_dir, Arc::clone(&wallet), template.clone())
+            .unwrap_or_else(|e| {
+                logs.push("WARN", &format!("accounts: {e}; starting with the main account only"), "filament");
+                crate::wallet::accounts::AccountBook::open(std::path::Path::new("/nonexistent-accounts"), Arc::clone(&wallet), template)
+                    .expect("an empty account book always opens")
+            });
         Self {
             client:     Arc::new(RwLock::new(client)),
-            wallet:     Arc::new(RwLock::new(wallet)),
+            wallet,
             config:     Arc::new(RwLock::new(config)),
             notifs:     Arc::new(Mutex::new(notifs)),
             logs:       Arc::new(Mutex::new(logs)),
@@ -1846,6 +1860,7 @@ impl FilamentAppState {
             f2f_inbox:  Arc::new(Mutex::new(VecDeque::with_capacity(64))),
             pending_txids: Arc::new(Mutex::new(HashMap::new())),
             p2p: Arc::new(RwLock::new(None)),
+            accounts: Arc::new(RwLock::new(accounts)),
         }
     }
 
@@ -1883,6 +1898,7 @@ impl FilamentAppState {
             client: Arc::clone(&self.client),
             wallet: Arc::clone(&self.wallet),
             config: Arc::clone(&self.config),
+            accounts: Some(Arc::clone(&self.accounts)),
         }
     }
 }
@@ -1893,6 +1909,8 @@ pub struct FilamentRuntime {
     pub client: Arc<RwLock<MultiChainClient>>,
     pub wallet: Arc<RwLock<FilamentWallet>>,
     pub config: Arc<RwLock<FilamentNodeConfig>>,
+    /// FIL-ACCOUNTS-1: extra accounts to refresh together with the main wallet (None = main only).
+    pub accounts: Option<Arc<RwLock<crate::wallet::accounts::AccountBook>>>,
 }
 
 impl FilamentRuntime {
@@ -1973,7 +1991,9 @@ impl FilamentRuntime {
     pub async fn refresh_wallet_from_keystone(
         &self,
     ) -> Result<crate::mmr_client::filament_wallet::RefreshOutcome, String> {
-        self.wallet.write().await.refresh_from_keystone().await
+        let main = self.wallet.write().await.refresh_from_keystone().await;
+        refresh_extra_accounts(self.accounts.as_ref()).await;
+        main
     }
 
     /// G-4: prune expired invoices using the current beacon tip.
@@ -2371,23 +2391,23 @@ async fn health(State(s): State<FilamentAppState>) -> impl IntoResponse {
     Json(json!({ "status": "healthy", "uptime_secs": s.start_time.elapsed().as_secs() }))
 }
 
-async fn wallet_address(State(s): State<FilamentAppState>) -> impl IntoResponse {
-    let w = s.wallet.read().await;
+async fn wallet_address(WalletSel(wallet): WalletSel) -> impl IntoResponse {
+    let w = wallet.read().await;
     Json(json!({ "address": w.address() }))
 }
 
-async fn wallet_balance(State(s): State<FilamentAppState>) -> impl IntoResponse {
-    let w = s.wallet.read().await;
+async fn wallet_balance(WalletSel(wallet): WalletSel) -> impl IntoResponse {
+    let w = wallet.read().await;
     Json(w.balance())
 }
 
-async fn wallet_utxos(State(s): State<FilamentAppState>) -> impl IntoResponse {
-    let w = s.wallet.read().await;
+async fn wallet_utxos(WalletSel(wallet): WalletSel) -> impl IntoResponse {
+    let w = wallet.read().await;
     Json(w.utxos().to_vec())
 }
 
-async fn wallet_history(State(s): State<FilamentAppState>) -> impl IntoResponse {
-    let w = s.wallet.read().await;
+async fn wallet_history(WalletSel(wallet): WalletSel) -> impl IntoResponse {
+    let w = wallet.read().await;
     Json(w.history().to_vec())
 }
 
@@ -2407,21 +2427,27 @@ async fn wallet_fee_estimate(
 
 async fn wallet_send(
     State(s): State<FilamentAppState>,
+    WalletSel(sel_wallet): WalletSel,
     Json(req): Json<SendRequest>,
 ) -> axum::response::Response {
     let (shard_id, amount_atoms) = (req.shard_id, req.amount_atoms);
-    let Some(tip) = crate::mmr_client::escrow_api::local_tip(&*s.client.read().await, Some(shard_id)).await else {
+    // FIL-BEACON-1: `beacon: true` sends beacon coins; the tip is then the beacon's verified tip.
+    let tip_of = (!req.beacon).then_some(shard_id);
+    let Some(tip) = crate::mmr_client::escrow_api::local_tip(&*s.client.read().await, tip_of).await else {
+        let what = if req.beacon { "the beacon chain".to_string() } else { format!("shard {}", shard_id + 1) };
         return (StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": format!("shard {} not synced yet — a send needs its verified tip", shard_id + 1) }))).into_response();
+            Json(json!({ "error": format!("{what} not synced yet — a send needs its verified tip") }))).into_response();
     };
-    let wallet = s.wallet.read().await;
+    let wallet = sel_wallet.read().await;
     match wallet.submit_transaction(&req, tip).await {
         Ok(resp) => {
             let preview = &req.to[..8.min(req.to.len())];
             s.notify("INFO", "wallet", "Transaction submitted",
                 &format!("Sent {} atoms to {}…", amount_atoms, preview), Some("wallet"));
-            // FI-5: start watching this txid.
-            s.watch_tx(resp.txid.clone(), shard_id, amount_atoms);
+            // FI-5: start watching this txid (the watcher follows shard transactions only).
+            if !req.beacon {
+                s.watch_tx(resp.txid.clone(), shard_id, amount_atoms);
+            }
             (StatusCode::OK, Json(resp)).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
@@ -2441,6 +2467,9 @@ struct SignRequest {
     fee_atoms: u64,
     #[serde(default)]
     shard_id: u16,
+    /// Sign a beacon-chain transaction (FIL-BEACON-1); `shard_id` is then ignored.
+    #[serde(default)]
+    beacon: bool,
     secret_key_hex: String,
     #[serde(default)]
     current_height: u32,
@@ -2448,6 +2477,7 @@ struct SignRequest {
 
 async fn wallet_sign(
     State(s): State<FilamentAppState>,
+    WalletSel(sel_wallet): WalletSel,
     Json(req): Json<SignRequest>,
 ) -> axum::response::Response {
     let send_req = SendRequest {
@@ -2455,21 +2485,25 @@ async fn wallet_sign(
         amount_atoms: req.amount_atoms,
         fee_atoms: req.fee_atoms,
         shard_id: req.shard_id,
+        beacon: req.beacon,
     };
 
     // Select UTXOs from the wallet's cached UTXO set
-    let wallet = s.wallet.read().await;
-    let selected = match wallet.select_utxos_for_amount(req.amount_atoms, req.fee_atoms, Some(req.shard_id)) {
+    let wallet = sel_wallet.read().await;
+    let picked = if req.beacon {
+        wallet.select_beacon_utxos(req.amount_atoms, req.fee_atoms)
+    } else {
+        wallet.select_utxos_for_amount(req.amount_atoms, req.fee_atoms, Some(req.shard_id))
+    };
+    let selected = match picked {
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
 
     match wallet.build_signed_transaction(&send_req, &selected, &req.secret_key_hex, req.current_height) {
         Ok((tx, witnesses)) => {
-            // VF-3: the one transaction id, on the shard's chain (shard N → N+1).
-            let txid = hex::encode(
-                tx.txid(network_common::transaction::shard_chain_id(req.shard_id)).0,
-            );
+            // VF-3: the one transaction id, on the shard's chain (shard N → N+1) or the beacon's (0).
+            let txid = hex::encode(tx.txid(send_req.chain_id()).0);
             let witness_hex: Vec<String> = witnesses.iter()
                 .map(|w| hex::encode(&w.witness_data))
                 .collect();
@@ -2513,6 +2547,7 @@ const PORTAL_AUTH_DOMAIN_STR: &str = "shisha:testnet-portal:auth:v1";
 
 async fn wallet_sign_message(
     State(s): State<FilamentAppState>,
+    WalletSel(sel_wallet): WalletSel,
     Json(req): Json<SignMessageRequest>,
 ) -> axum::response::Response {
     if !req.domain.is_empty()
@@ -2538,7 +2573,7 @@ async fn wallet_sign_message(
                 .into_response()
         }
     };
-    let wallet = s.wallet.read().await;
+    let wallet = sel_wallet.read().await;
     match wallet.sign_portal_auth(&nonce) {
         Ok(out) => {
             s.notify(
@@ -2932,6 +2967,7 @@ async fn config_set(
     Json(new_cfg): Json<FilamentNodeConfig>,
 ) -> impl IntoResponse {
     let eps = new_cfg.effective_keystone_endpoints(None);
+    let eps_for_accounts = eps.clone();
     let indexers = new_cfg.indexer_endpoints.clone();
     save_config_to_disk(&new_cfg).await;
     *s.config.write().await = new_cfg;
@@ -2939,8 +2975,12 @@ async fn config_set(
         let mut w = s.wallet.write().await;
         w.set_keystone_endpoints(eps);
         // FIL-TAURI-CFG-1: wallet refresh / balance / escrow funding watch read these.
-        w.set_indexer_endpoints(indexers);
+        w.set_indexer_endpoints(indexers.clone());
     }
+    s.accounts.write().await.set_template(crate::wallet::accounts::AccountTemplate {
+        keystone_endpoints: eps_for_accounts,
+        indexer_endpoints: indexers,
+    }).await;
     s.log("INFO", "Config updated and persisted to disk", "config");
     Json(json!({ "ok": true }))
 }
@@ -2952,6 +2992,9 @@ struct BroadcastRequest {
     tx_hex:   String,
     #[serde(default)]
     shard_id: u16,
+    /// Broadcast on the beacon chain (`/mempool/submit/beacon`); `shard_id` is then ignored.
+    #[serde(default)]
+    beacon:   bool,
 }
 
 /// MNT-7: broadcasts to every configured Keystone endpoint for propagation
@@ -2964,15 +3007,189 @@ async fn wallet_broadcast(
     // FIL-BCAST-1: raw bytes to Keystone POST /mempool/submit (there is no Keystone
     // /wallet/broadcast route; this used to forward JSON there and always failed).
     let endpoints = s.config.read().await.effective_keystone_endpoints(None);
-    match crate::mmr_client::keystone_submit::broadcast_hex(&reqwest::Client::new(), &endpoints, req.shard_id, &req.tx_hex).await {
+    let target = (!req.beacon).then_some(req.shard_id);
+    match crate::mmr_client::keystone_submit::broadcast_hex_chain(&reqwest::Client::new(), &endpoints, target, &req.tx_hex).await {
         Ok(json) => {
             if let Some(txid) = json.get("txid").and_then(|v| v.as_str()) {
                 s.notify("INFO", "wallet", "Transaction broadcast", &format!("tx {}… accepted by Keystone", &txid[..8.min(txid.len())]), Some("wallet"));
-                s.watch_tx(txid.to_string(), req.shard_id, 0);
+                if !req.beacon {
+                    s.watch_tx(txid.to_string(), req.shard_id, 0);
+                }
             }
             (StatusCode::OK, Json(json)).into_response()
         }
         Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+// ── Accounts (FIL-ACCOUNTS-1) ────────────────────────────────────────────────
+//
+// `main` is the account the process started with. Every wallet route above (`/wallet/address`, `balance`, `utxos`,
+// `history`, `send`, `sign`, `sign-message`) takes `?account=<id>` (or the header `x-filament-account`) and acts on
+// that account's wallet; without it they act on `main`. Escrow, IPP, invoices and the address book stay on `main`.
+// Like every route on this server these are local-only (loopback, no auth): passwords travel in request bodies.
+
+/// The wallet a request addresses (see above).
+pub struct WalletSel(pub Arc<RwLock<FilamentWallet>>);
+
+impl axum::extract::FromRequestParts<FilamentAppState> for WalletSel {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &FilamentAppState,
+    ) -> Result<Self, Self::Rejection> {
+        let from_query = parts.uri.query().and_then(|q| {
+            q.split('&').find_map(|kv| kv.strip_prefix("account=").map(|v| v.to_string()))
+        });
+        let from_header = parts.headers.get("x-filament-account").and_then(|v| v.to_str().ok()).map(|v| v.to_string());
+        let id = from_query.or(from_header);
+        match state.accounts.read().await.wallet(id.as_deref()) {
+            Ok(w) => Ok(WalletSel(w)),
+            Err(e) => Err((StatusCode::NOT_FOUND, Json(json!({ "error": e }))).into_response()),
+        }
+    }
+}
+
+fn account_err(e: String) -> axum::response::Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response()
+}
+
+async fn accounts_list(State(s): State<FilamentAppState>) -> impl IntoResponse {
+    Json(json!({ "accounts": s.accounts.read().await.list().await }))
+}
+
+#[derive(Deserialize)]
+struct AccountCreateBody { label: String, password: String }
+
+async fn accounts_create(State(s): State<FilamentAppState>, Json(b): Json<AccountCreateBody>) -> axum::response::Response {
+    match s.accounts.write().await.create(&b.label, &b.password).await {
+        Ok(a) => {
+            s.log("INFO", &format!("account '{}' created ({}…)", a.label, &a.address[..8]), "accounts");
+            (StatusCode::OK, Json(json!(a))).into_response()
+        }
+        Err(e) => account_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct AccountImportBody { label: String, private_key_hex: String, password: String }
+
+async fn accounts_import(State(s): State<FilamentAppState>, Json(b): Json<AccountImportBody>) -> axum::response::Response {
+    match s.accounts.write().await.import(&b.label, &b.private_key_hex, &b.password).await {
+        Ok(a) => {
+            s.log("INFO", &format!("account '{}' imported ({}…)", a.label, &a.address[..8]), "accounts");
+            (StatusCode::OK, Json(json!(a))).into_response()
+        }
+        Err(e) => account_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct AccountWatchBody { label: String, address: String }
+
+async fn accounts_watch(State(s): State<FilamentAppState>, Json(b): Json<AccountWatchBody>) -> axum::response::Response {
+    match s.accounts.write().await.add_watch(&b.label, &b.address).await {
+        Ok(a) => (StatusCode::OK, Json(json!(a))).into_response(),
+        Err(e) => account_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct PasswordBody { password: String }
+
+async fn accounts_unlock(
+    State(s): State<FilamentAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(b): Json<PasswordBody>,
+) -> axum::response::Response {
+    match s.accounts.read().await.unlock(&id, &b.password).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(e) => account_err(e),
+    }
+}
+
+async fn accounts_lock(
+    State(s): State<FilamentAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    match s.accounts.read().await.lock(&id).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(e) => account_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct RenameBody { label: String }
+
+async fn accounts_rename(
+    State(s): State<FilamentAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(b): Json<RenameBody>,
+) -> axum::response::Response {
+    match s.accounts.write().await.rename(&id, &b.label) {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(e) => account_err(e),
+    }
+}
+
+/// The encrypted key file as JSON text (needs the password; contains no secret in the clear).
+async fn accounts_backup(
+    State(s): State<FilamentAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(b): Json<PasswordBody>,
+) -> axum::response::Response {
+    match s.accounts.read().await.backup(&id, &b.password) {
+        Ok(text) => (StatusCode::OK, Json(json!({ "backup": text }))).into_response(),
+        Err(e) => account_err(e),
+    }
+}
+
+/// `DELETE /accounts/{id}?confirm=yes` forgets the account and deletes its key file.
+async fn accounts_remove(
+    State(s): State<FilamentAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    if q.get("confirm").map(String::as_str) != Some("yes") {
+        return account_err("removing an account deletes its key file: repeat with ?confirm=yes after backing it up".into());
+    }
+    match s.accounts.write().await.remove(&id) {
+        Ok(()) => {
+            s.log("WARN", &format!("account {id} removed"), "accounts");
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(e) => account_err(e),
+    }
+}
+
+/// The account and per-account wallet routes (FIL-ACCOUNTS-1), shared by the server and its tests.
+pub fn wallet_account_routes() -> Router<FilamentAppState> {
+    Router::new()
+        .route("/accounts",         get(accounts_list).post(accounts_create))
+        .route("/accounts/import",  post(accounts_import))
+        .route("/accounts/watch",   post(accounts_watch))
+        .route("/accounts/{id}",    delete(accounts_remove))
+        .route("/accounts/{id}/unlock", post(accounts_unlock))
+        .route("/accounts/{id}/lock",   post(accounts_lock))
+        .route("/accounts/{id}/rename", post(accounts_rename))
+        .route("/accounts/{id}/backup", post(accounts_backup))
+        .route("/wallet/address",   get(wallet_address))
+        .route("/wallet/balance",   get(wallet_balance))
+        .route("/wallet/utxos",     get(wallet_utxos))
+        .route("/wallet/history",   get(wallet_history))
+        .route("/wallet/send",      post(wallet_send))
+        .route("/wallet/fee",       get(wallet_fee_estimate))
+        .route("/wallet/sign",      post(wallet_sign))
+        .route("/wallet/sign-message", post(wallet_sign_message))
+}
+
+/// Refresh the extra accounts' wallets (called with the main wallet's refresh).
+async fn refresh_extra_accounts(accounts: Option<&Arc<RwLock<crate::wallet::accounts::AccountBook>>>) {
+    let Some(accounts) = accounts else { return };
+    let wallets = accounts.read().await.extra_wallets();
+    for w in wallets {
+        let _ = w.write().await.refresh_from_keystone().await;
     }
 }
 
@@ -3898,7 +4115,10 @@ async fn background_task(s: FilamentAppState) {
             };
 
             if !pending_snap.is_empty() {
-                let history = s.wallet.read().await.history().to_vec();
+                let mut history = s.wallet.read().await.history().to_vec();
+                for w in s.accounts.read().await.extra_wallets() {
+                    history.extend(w.read().await.history().iter().cloned());
+                }
                 let mut confirmed_ids: Vec<String> = Vec::new();
                 let mut mempool_ids:   Vec<String> = Vec::new();
                 let mut stale_ids:     Vec<String> = Vec::new();
@@ -4063,14 +4283,7 @@ pub async fn start_server(
 
     let app = Router::new()
         .route("/health",           get(health))
-        .route("/wallet/address",   get(wallet_address))
-        .route("/wallet/balance",   get(wallet_balance))
-        .route("/wallet/utxos",     get(wallet_utxos))
-        .route("/wallet/history",   get(wallet_history))
-        .route("/wallet/send",      post(wallet_send))
-        .route("/wallet/fee",       get(wallet_fee_estimate))
-        .route("/wallet/sign",      post(wallet_sign))
-        .route("/wallet/sign-message", post(wallet_sign_message))
+        .merge(wallet_account_routes())
         .route("/chain/all",        get(chain_all))
         .route("/chain/beacon",     get(chain_beacon))
         .route("/chain/shard/{id}", get(chain_shard))
@@ -4402,5 +4615,189 @@ mod escrow_route_tests {
         let (code, v) = body(ipp_funding(State(s), Path(id), Json(notice)).await).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(v["error"].as_str().unwrap().contains("not opened through a provider"), "{v}");
+    }
+}
+
+/// FIL-ACCOUNTS-1: several accounts inside one process, over the real route table.
+#[cfg(test)]
+mod accounts_route_tests {
+    use super::*;
+    use axum::body::Bytes;
+    use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
+    use network_common::common::proofs::types::{BeaconBlockData, BlockData};
+    use serde_json::Value;
+
+    fn xonly(sk: &SecretKey) -> [u8; 32] {
+        Keypair::from_secret_key(&Secp256k1::new(), sk).x_only_public_key().0.serialize()
+    }
+
+    async fn serve(app: Router) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// Indexer: Bob's address has 0.4 shard coins and 3 beacon coins; everyone else has nothing.
+    async fn fake_indexer(bob: String) -> String {
+        let app = Router::new().route(
+            "/explorer/utxos",
+            get(move |Query(q): Query<HashMap<String, String>>| {
+                let bob = bob.clone();
+                async move {
+                    let rows = if q.get("address") == Some(&bob) {
+                        json!([
+                            { "chain": "shard", "shard_id": 0, "height": 10, "output_idx": 1, "value": 40_000_000u64 },
+                            { "chain": "beacon", "shard_id": null, "height": 20, "output_idx": 0, "value": 300_000_000u64 }
+                        ])
+                    } else {
+                        json!([])
+                    };
+                    Json(json!({ "utxos": rows, "truncated": false, "as_of": [
+                        { "chain": "beacon", "shard_id": null, "indexed_height": 50 },
+                        { "chain": "shard", "shard_id": 0, "indexed_height": 40 }
+                    ]}))
+                }
+            }),
+        );
+        serve(app).await
+    }
+
+    type Seen = Arc<Mutex<Vec<(Option<u16>, Vec<u8>)>>>;
+    async fn fake_keystone(seen: Seen) -> String {
+        let s2 = seen.clone();
+        let app = Router::new()
+            .route("/mempool/submit", post(move |Query(q): Query<HashMap<String, String>>, b: Bytes| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock().unwrap().push((q.get("shard").and_then(|s| s.parse().ok()), b.to_vec()));
+                    Json(json!({ "status": "accepted" }))
+                }
+            }))
+            .route("/mempool/submit/beacon", post(move |b: Bytes| {
+                let seen = s2.clone();
+                async move {
+                    seen.lock().unwrap().push((None, b.to_vec()));
+                    Json(json!({ "status": "accepted", "chain": "beacon" }))
+                }
+            }));
+        serve(app).await
+    }
+
+    async fn app_state(dir: &std::path::Path, ks: String, ix: String) -> FilamentAppState {
+        let mut client = MultiChainClient::new(Box::new(crate::mmr_client::storage::InMemoryStorage::new()));
+        client
+            .init_beacon_chain(BlockData::Beacon(BeaconBlockData {
+                height: 0, block_hash: Default::default(), prev_mmr_root: Default::default(),
+                current_mmr_root: Default::default(), version: 1, delta: 0, difficulty: 1, bits: 0x1d10_0000,
+                nonce: 0, tx_merkle_root: [0u8; 32], merged_mining_root: [0u8; 32],
+            }))
+            .await
+            .unwrap();
+        let main_key = SecretKey::from_slice(&[0x61; 32]).unwrap();
+        let mut wallet = FilamentWallet::new(hex::encode(xonly(&main_key)), None);
+        wallet.set_signing_key(main_key);
+        wallet.set_keystone_endpoints(vec![ks]);
+        wallet.set_indexer_endpoints(vec![ix]);
+        let config = FilamentNodeConfig { data_dir: dir.to_string_lossy().into_owned(), dns_seeds: Vec::new(), ..FilamentNodeConfig::default() };
+        FilamentAppState::new(client, wallet, config)
+    }
+
+    #[tokio::test]
+    async fn several_accounts_over_http() {
+        let bob_key = SecretKey::from_slice(&[0x22; 32]).unwrap();
+        let bob_addr = hex::encode(xonly(&bob_key));
+        let seen: Seen = Arc::default();
+        let (ks, ix) = (fake_keystone(seen.clone()).await, fake_indexer(bob_addr.clone()).await);
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(dir.path(), ks, ix).await;
+        let base = serve(wallet_account_routes().with_state(state.clone())).await;
+        let http = reqwest::Client::new();
+        let post_json = |path: String, body: Value| {
+            let http = http.clone();
+            let base = base.clone();
+            async move {
+                let r = http.post(format!("{base}{path}")).json(&body).send().await.unwrap();
+                (r.status().as_u16(), r.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+        let get_json = |path: String| {
+            let http = http.clone();
+            let base = base.clone();
+            async move {
+                let r = http.get(format!("{base}{path}")).send().await.unwrap();
+                (r.status().as_u16(), r.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+
+        // Create one account, import Bob's known key, watch a third address.
+        let (c, alice) = post_json("/accounts".into(), json!({ "label": "Alice", "password": "alice-password" })).await;
+        assert_eq!(c, 200, "{alice}");
+        let alice_id = alice["id"].as_str().unwrap().to_string();
+        let (c, bob) = post_json("/accounts/import".into(), json!({ "label": "Bob", "private_key_hex": "22".repeat(32), "password": "bob-password" })).await;
+        assert_eq!(c, 200, "{bob}");
+        assert_eq!(bob["address"], bob_addr);
+        let bob_id = bob["id"].as_str().unwrap().to_string();
+        let (c, _) = post_json("/accounts/watch".into(), json!({ "label": "Cold", "address": "ab".repeat(32) })).await;
+        assert_eq!(c, 200);
+
+        let (_, list) = get_json("/accounts".into()).await;
+        let labels: Vec<&str> = list["accounts"].as_array().unwrap().iter().map(|a| a["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, vec!["Main", "Alice", "Bob", "Cold"]);
+        assert!(!list.to_string().contains(&"22".repeat(32)), "no secret in a response");
+
+        // One refresh fills every account from the indexer.
+        state.runtime().refresh_wallet_from_keystone().await.ok();
+        let (_, main_bal) = get_json("/wallet/balance".into()).await;
+        let (_, bob_bal) = get_json(format!("/wallet/balance?account={bob_id}")).await;
+        let (_, alice_bal) = get_json(format!("/wallet/balance?account={alice_id}")).await;
+        assert_eq!(main_bal["confirmed"], 0.0);
+        assert_eq!(alice_bal["confirmed"], 0.0);
+        assert!((bob_bal["confirmed"].as_f64().unwrap() - 0.4).abs() < 1e-12, "{bob_bal}");
+        assert!((bob_bal["beacon_confirmed"].as_f64().unwrap() - 3.0).abs() < 1e-12, "{bob_bal}");
+        let (_, bob_addr_json) = get_json(format!("/wallet/address?account={bob_id}")).await;
+        assert_eq!(bob_addr_json["address"], bob_addr);
+        let (c, _) = get_json("/wallet/balance?account=acct-nope".into()).await;
+        assert_eq!(c, 404);
+
+        // Bob sends beacon coins: his output, his key, the beacon chain.
+        let to = "77".repeat(32);
+        let send = json!({ "to": to, "amount_atoms": 100_000_000u64, "fee_atoms": 10_000u64, "beacon": true });
+        let (c, r) = post_json(format!("/wallet/send?account={bob_id}"), send.clone()).await;
+        assert_eq!(c, 200, "{r}");
+        let (route, bytes) = seen.lock().unwrap()[0].clone();
+        assert_eq!(route, None);
+        let tx = network_common::transaction::Transaction::deserialize_with_witnesses(&bytes).unwrap();
+        assert_eq!(r["txid"], hex::encode(tx.txid(0).0));
+        assert_eq!(tx.inputs.iter().map(|i| (i.prev_height, i.prev_output_idx)).collect::<Vec<_>>(), vec![(20, 0)]);
+        {
+            use network_common::crypto::tx_sighash::{prevouts_hash, sighash_v2, verify_schnorr_witness};
+            let ph = prevouts_hash(&[(300_000_000, xonly(&bob_key))]);
+            verify_schnorr_witness(&tx.witnesses[0], &xonly(&bob_key), &sighash_v2(&tx.txid(0).0, &ph, 0), 0)
+                .expect("signed by Bob's key for the beacon chain");
+        }
+        // The same request for Alice (no funds) and for main (a different key, no funds) fails on funds, not on keys.
+        let (c, r) = post_json(format!("/wallet/send?account={alice_id}"), send.clone()).await;
+        assert_eq!(c, 400, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("Insufficient"), "{r}");
+
+        // Lock Bob: he can no longer spend, and a wrong password does not unlock.
+        assert_eq!(post_json(format!("/accounts/{bob_id}/lock"), json!({})).await.0, 200);
+        let (c, r) = post_json(format!("/wallet/send?account={bob_id}"), send.clone()).await;
+        assert_eq!(c, 400);
+        assert!(r["error"].as_str().unwrap().contains("no signing key"), "{r}");
+        let (c, r) = post_json(format!("/accounts/{bob_id}/unlock"), json!({ "password": "not the password" })).await;
+        assert_eq!((c, r["error"].as_str().unwrap()), (400, "wrong password"));
+        assert_eq!(post_json(format!("/accounts/{bob_id}/unlock"), json!({ "password": "bob-password" })).await.0, 200);
+        assert_eq!(post_json(format!("/wallet/send?account={bob_id}"), send).await.0, 200);
+
+        // Backup needs the password; removal needs ?confirm=yes and deletes the key file.
+        let (c, r) = post_json(format!("/accounts/{alice_id}/backup"), json!({ "password": "alice-password" })).await;
+        assert_eq!(c, 200);
+        assert!(r["backup"].as_str().unwrap().contains(alice["address"].as_str().unwrap()));
+        assert_eq!(http.delete(format!("{base}/accounts/{alice_id}")).send().await.unwrap().status().as_u16(), 400);
+        assert_eq!(http.delete(format!("{base}/accounts/{alice_id}?confirm=yes")).send().await.unwrap().status().as_u16(), 200);
+        assert!(!dir.path().join("accounts").join(&alice_id).exists());
+        assert_eq!(http.delete(format!("{base}/accounts/main?confirm=yes")).send().await.unwrap().status().as_u16(), 400);
     }
 }
