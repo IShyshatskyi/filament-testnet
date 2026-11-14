@@ -60,11 +60,25 @@ pub fn open_store(data_dir: &str) -> Result<EscrowStore> {
 
 /// Verified tip height of the escrow's chain (`None` = beacon), from the light client.
 pub async fn local_tip(client: &MultiChainClient, shard_id: Option<u16>) -> Option<u32> {
-    let state = match shard_id {
-        None => client.get_beacon_state().await,
-        Some(s) => client.get_shard_state(s as u32).await,
-    };
-    state.ok().map(|st| st.tip.height())
+    match shard_id {
+        None => client.get_beacon_state().await.ok().map(|st| st.tip.height()),
+        Some(s) => {
+            if let Ok(st) = client.get_shard_state(s as u32).await {
+                return Some(st.tip.height());
+            }
+            // Thin sync keeps a followed shard in its own slot, not in the shard map: use its verified
+            // height, otherwise a thin-sync Filament can never send or open an escrow (devnet run, Nov 13).
+            #[cfg(feature = "full-node")]
+            {
+                use crate::mmr_client::thin_chain::ThinState;
+                return client.thin_shard(s).and_then(|t| t.slot.state().and_then(|st| st.height()));
+            }
+            #[cfg(not(feature = "full-node"))]
+            {
+                None
+            }
+        }
+    }
 }
 
 pub(crate) async fn require_tip(client: &MultiChainClient, shard_id: Option<u16>) -> Result<u32> {
