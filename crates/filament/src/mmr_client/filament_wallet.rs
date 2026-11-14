@@ -214,7 +214,9 @@ async fn fetch_indexer_wallet(
             let rows = v.get("per_chain")?.as_array()?;
             let mut total: u64 = 0;
             for row in rows {
-                if row.get("chain").and_then(|c| c.as_str()) == Some("shard") {
+                // The indexer labels rows "shard_<id>" (and "beacon"); "shard" is accepted too.
+                let is_shard = row.get("chain").and_then(|c| c.as_str()).is_some_and(|c| c == "shard" || c.starts_with("shard_"));
+                if is_shard {
                     total = total.checked_add(row.get("balance_atoms")?.as_u64()?)?;
                 }
             }
@@ -917,7 +919,7 @@ mod indexer_refresh_tests {
             }))
             .route("/explorer/balance", get(|| async {
                 Json(serde_json::json!({ "balance_atoms": 175_000_007u64, "utxo_count": 3, "per_chain": [
-                    { "chain": "shard", "shard_id": 2, "balance_atoms": 175_000_000u64, "utxo_count": 2 },
+                    { "chain": "shard_2", "shard_id": 2, "balance_atoms": 175_000_000u64, "utxo_count": 2 },
                     { "chain": "beacon", "shard_id": null, "balance_atoms": 7, "utxo_count": 1 }
                 ]}))
             }))

@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cli_config, mut address) = parse_args();
 
     // Merge: CLI flags take precedence over persisted config
-    let config = if let Some(mut persisted) = load_config_from_disk(&cli_config.data_dir).await {
+    let mut config = if let Some(mut persisted) = load_config_from_disk(&cli_config.data_dir).await {
         // CLI overrides only for fields the user explicitly set (non-default values)
         if cli_config.network != FilamentNodeConfig::default().network {
             persisted.network = cli_config.network;
@@ -287,7 +287,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // FIL-GENESIS-1: block 0 from the network genesis file, or no verified chain at all.
     match &config.genesis_file {
         Some(path) => match client.init_from_genesis_file(std::path::Path::new(path)).await {
-            Ok(hash) => info!("Filament: beacon genesis from {path} — chain identity {}", hex::encode(hash)),
+            Ok(hash) => {
+                info!("Filament: beacon genesis from {path} — chain identity {}", hex::encode(hash));
+                // The P2P handshake magic follows `config.network`. Without --network it stayed at the default
+                // "testnet1" next to a devnet genesis, so every Keystone closed the session with "Wrong network
+                // magic" (devnet run, Nov 13, 2026). A devnet genesis file now selects the devnet protocol.
+                if config.network == FilamentNodeConfig::default().network
+                    && client.network_id() == filament::mmr_client::multi_chain_client::NetworkId::Devnet
+                {
+                    config.network = "devnet".into();
+                    info!("Filament: the genesis file is a devnet genesis, using network 'devnet' for P2P");
+                }
+            }
             Err(e) => {
                 eprintln!("filament: {e}");
                 std::process::exit(2);
