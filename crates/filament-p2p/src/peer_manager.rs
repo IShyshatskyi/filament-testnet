@@ -60,6 +60,8 @@ type PeerId = u64;
 
 struct PeerHandle {
     tx: mpsc::UnboundedSender<ShishaMessage>,
+    /// Remote address (the dialed address for an outbound connection).
+    addr: SocketAddr,
 }
 
 /// Handshake and framing for one network: the network name fixes the frame
@@ -262,6 +264,17 @@ impl PeerManager {
         }
     }
 
+    /// Remote addresses of the connected peers; an outbound connection reports the address it was dialed at.
+    pub async fn connected_addrs(&self) -> Vec<SocketAddr> {
+        self.peers.read().await.values().map(|h| h.addr).collect()
+    }
+
+    /// Connections that completed a handshake since start. It changes with every new connection, so a peer that
+    /// dropped and came back between two looks still shows (the connected count alone would not).
+    pub fn connections_total(&self) -> u64 {
+        self.next_peer_id.load(Ordering::Relaxed)
+    }
+
     pub async fn connect(self: &Arc<Self>, addr: SocketAddr) {
         let dialed = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
             Ok(r) => r,
@@ -307,7 +320,7 @@ impl PeerManager {
         // Handshake complete — register the peer and run the steady-state loop.
         let peer_id = self.next_peer_id.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = mpsc::unbounded_channel::<ShishaMessage>();
-        self.peers.write().await.insert(peer_id, PeerHandle { tx });
+        self.peers.write().await.insert(peer_id, PeerHandle { tx, addr });
         self.peer_count.fetch_add(1, Ordering::Relaxed);
         log::info!("filament-p2p: handshake complete with {addr} (peer_id={peer_id})");
 
@@ -325,7 +338,10 @@ impl PeerManager {
 
         let this = Arc::clone(self);
         let mut leftover = buf;
-        let read_result: Result<(), String> = async {
+        // Shutdown ends the connection too: the read loop used to run to the end before shutdown was looked at,
+        // so a stopped manager kept its sockets open until the other side closed them.
+        let _read_result: Result<(), String> = tokio::select! {
+            r = async {
             let mut rb = [0u8; 8192];
             loop {
                 // Frames already buffered (read together with the handshake)
@@ -341,13 +357,9 @@ impl PeerManager {
                 }
                 leftover.extend_from_slice(&rb[..n]);
             }
-        }
-        .await;
-
-        tokio::select! {
-            _ = shutdown.changed() => {}
-            _ = async { read_result } => {}
-        }
+        } => r,
+            _ = shutdown.changed() => Ok(()),
+        };
 
         self.peers.write().await.remove(&peer_id);
         self.peer_count.fetch_sub(1, Ordering::Relaxed);
