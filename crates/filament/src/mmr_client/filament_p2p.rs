@@ -12,9 +12,10 @@
 //! 2. Hosts from Keystone REST URLs + `keystone_p2p_port`
 //! 3. Live peer-cache entries
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use p2p_proto::p2p::common::manager::PeerManager;
 use p2p_proto::p2p::common::traits::{
@@ -25,10 +26,16 @@ use tokio::sync::{watch, RwLock};
 
 use super::multi_chain_client::MultiChainClient;
 
+/// First wait before a dial target that is not connected is dialed again, and the longest wait between dials.
+const REDIAL_FIRST_DELAY: Duration = Duration::from_secs(6);
+const REDIAL_MAX_DELAY: Duration = Duration::from_secs(60);
+
 /// Running Filament-side PeerManager + shutdown handle.
 pub struct FilamentP2p {
     pub mgr: Arc<PeerManager>,
     shutdown_tx: watch::Sender<()>,
+    /// Dial targets kept connected: a target that drops is dialed again with backoff.
+    targets: Arc<Mutex<Vec<SocketAddr>>>,
 }
 
 impl FilamentP2p {
@@ -52,6 +59,12 @@ impl FilamentP2p {
         match resolve_dial_addr(host, port) {
             Some(addr) => {
                 log::info!("Filament P2P: dialing {addr}");
+                {
+                    let mut t = self.targets.lock().expect("targets poisoned");
+                    if !t.contains(&addr) {
+                        t.push(addr); // re-dialed after a drop, like the startup targets
+                    }
+                }
                 self.mgr.connect(addr).await;
             }
             None => {
@@ -236,17 +249,59 @@ pub async fn start_filament_p2p(
     // Wait briefly for the listener to bind (port 0 → ephemeral).
     let _ = tokio::time::timeout(Duration::from_secs(2), mgr.listen_addr()).await;
 
-    for addr in dial_peers {
-        mgr.connect(addr).await;
+    for addr in &dial_peers {
+        mgr.connect(*addr).await;
     }
+    let targets = Arc::new(Mutex::new(dial_peers));
 
-    // Keystone drops WatchAddress on disconnect. Re-send whenever the peer
-    // set grows (handshake complete) and stop when Filament shuts down.
+    // A dial target is dialed once above and never again unless this task does it: a Keystone that
+    // restarted was otherwise never reached again and the Path-2 notification path stayed dead (soak
+    // finding, Nov 12, 2026). A target that is not connected is dialed with a doubling delay (first
+    // 6 s, so a handshake still in flight is not duplicated, up to 60 s); the delay resets once it is
+    // connected.
+    let mgr_redial = Arc::clone(&mgr);
+    let targets_redial = Arc::clone(&targets);
+    let mut shutdown_redial = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut state: HashMap<SocketAddr, (Instant, Duration)> = HashMap::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = shutdown_redial.changed() => break,
+                _ = ticker.tick() => {
+                    let connected = mgr_redial.connected_addrs().await;
+                    let wanted: Vec<SocketAddr> = targets_redial.lock().expect("targets poisoned").clone();
+                    let now = Instant::now();
+                    for addr in wanted {
+                        if connected.contains(&addr) {
+                            state.remove(&addr);
+                            continue;
+                        }
+                        let (next, delay) = *state
+                            .entry(addr)
+                            .or_insert((now + REDIAL_FIRST_DELAY, REDIAL_FIRST_DELAY));
+                        if now < next {
+                            continue;
+                        }
+                        log::info!("Filament P2P: {addr} is not connected; dialing again");
+                        mgr_redial.connect(addr).await;
+                        let delay = (delay * 2).min(REDIAL_MAX_DELAY);
+                        state.insert(addr, (Instant::now() + delay, delay));
+                    }
+                }
+            }
+        }
+    });
+
+    // Keystone drops WatchAddress on disconnect. Re-send whenever a connection we have not seen
+    // appears (`connections_total` changes with every new one, so a restart faster than one tick
+    // still counts) and stop when Filament shuts down.
     let mgr_watch = Arc::clone(&mgr);
     let client_watch = Arc::clone(&client);
     let mut shutdown_watch = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        let mut last_peers = 0usize;
+        let mut last_total = mgr_watch.connections_total();
         let mut ticker = tokio::time::interval(Duration::from_secs(5));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -254,23 +309,20 @@ pub async fn start_filament_p2p(
                 _ = shutdown_watch.changed() => break,
                 _ = ticker.tick() => {
                     let n = mgr_watch.peers().len();
-                    if n == 0 {
-                        last_peers = 0;
-                        continue;
-                    }
-                    if n > last_peers {
+                    let total = mgr_watch.connections_total();
+                    if n > 0 && total != last_total {
                         log::info!(
-                            "Filament P2P: peer count {last_peers}→{n}; replaying WatchAddress registrations"
+                            "Filament P2P: {n} peer(s), new connection(s) since the last look; replaying WatchAddress registrations"
                         );
                         client_watch.read().await.resend_watch_addresses();
+                        last_total = total;
                     }
-                    last_peers = n;
                 }
             }
         }
     });
 
-    Ok(FilamentP2p { mgr, shutdown_tx })
+    Ok(FilamentP2p { mgr, shutdown_tx, targets })
 }
 
 #[cfg(test)]
@@ -427,5 +479,62 @@ mod tests {
         assert!(p.check_peer_version(&theirs).unwrap_err().contains("genesis mismatch"));
         theirs.genesis_hash = hex32(TESTNET_STRESS_GENESIS);
         assert!(p.check_peer_version(&theirs).is_ok());
+    }
+
+    /// Soak finding (Nov 12, 2026): a dial target was connected once and never again after the connection
+    /// closed. When the Keystone behind the target restarts on the same address, Filament must be connected again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn filament_redials_a_keystone_that_restarted() {
+        use p2p_proto::p2p::common::traits::NODE_NETWORK;
+
+        // A free loopback port the stand-in Keystone can bind, close, and bind again.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let keystone_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let start_keystone = || {
+            let (stop_tx, stop_rx) = watch::channel(());
+            let caps = Capabilities {
+                services: NODE_NETWORK,
+                user_agent: "/stub-keystone:0.1.0/".into(),
+                beacon_height: 0,
+                shard_heights: vec![],
+                nonce: rand::random(),
+                listen_addr: keystone_addr,
+            };
+            let mgr = PeerManager::new(ShishaProtocol::new("testnet1".into()), caps, keystone_addr, 8, stop_rx);
+            let run = Arc::clone(&mgr);
+            tokio::spawn(async move { run.run().await });
+            (mgr, stop_tx)
+        };
+        let (keystone, stop_keystone) = start_keystone();
+        tokio::time::timeout(Duration::from_secs(2), keystone.listen_addr()).await.expect("keystone bound");
+
+        let client = Arc::new(RwLock::new(MultiChainClient::new(Box::new(InMemoryStorage::new()))));
+        let p2p = start_filament_p2p("testnet1", "127.0.0.1:0".parse().unwrap(), vec![keystone_addr], Arc::clone(&client))
+            .await
+            .expect("start p2p");
+
+        async fn wait_connected(what: &str, secs: u64, mgr: &Arc<PeerManager>, want: usize) {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+            while mgr.connected_addrs().await.len() != want {
+                assert!(tokio::time::Instant::now() < deadline, "timed out waiting for: {what}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        wait_connected("first connection", 10, &p2p.mgr, 1).await;
+        let first_total = p2p.mgr.connections_total();
+
+        // The Keystone goes away (its process is killed) ...
+        let _ = stop_keystone.send(());
+        wait_connected("the connection to drop", 10, &p2p.mgr, 0).await;
+        // ... and comes back on the same address.
+        let (_keystone2, _stop2) = start_keystone();
+        wait_connected("a new connection after the restart", 40, &p2p.mgr, 1).await;
+        assert!(p2p.mgr.connections_total() > first_total, "a new connection means a new peer id");
+
+        p2p.shutdown();
     }
 }
