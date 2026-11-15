@@ -72,7 +72,12 @@ pub struct ShardThin {
     pub slot: ThinShardSlot,
     /// Derived from verified beacon data; `None` until the beacon is far enough along.
     pub anchor: Option<ShardAnchor>,
-    /// Why the shard cannot be followed (`unsupported_dynamic_shard`), or that it waits (`awaiting_anchor`).
+    /// A dynamically activated shard's activation height, found from verified epoch records.
+    pub dynamic_activation: Option<u32>,
+    /// `(epoch, active_shard_count)` of the epoch records verified for this shard's checks.
+    pub epoch_counts: Vec<(u32, u16)>,
+    /// Why the shard is not followed yet (`awaiting_activation`: no verified epoch has opened it;
+    /// `awaiting_anchor`), if it is not.
     pub note: Option<&'static str>,
 }
 
@@ -81,8 +86,16 @@ impl ShardThin {
     pub fn status(&self, now: Instant) -> &'static str {
         match self.note {
             Some("unsupported_dynamic_shard") => "unsupported",
+            Some("awaiting_activation") => "awaiting_activation",
             _ => self.slot.status(now),
         }
+    }
+
+    /// Thin sync follows this shard (confirmations come from its verified chain). `false` for a
+    /// shard that cannot be followed, or whose activation no verified epoch record has shown yet
+    /// (DYN-1): those use the Keystone-quorum rule, labelled lower assurance.
+    pub fn followable(&self) -> bool {
+        !matches!(self.note, Some("unsupported_dynamic_shard") | Some("awaiting_activation"))
     }
 }
 
@@ -236,6 +249,7 @@ impl ThinKind for ShardKind<'_> {
         async move {
             let id = self.params.shard_id;
             let from = st.leaf_count();
+            st.refresh_params(self.params);
             let resp: ThinShardBlocksResponse =
                 get_json(http, &format!("{base}/shard/{id}/chain/headers/{from}")).await?;
             if resp.from != from || resp.blocks_hex.is_empty() {

@@ -14,11 +14,12 @@
 //!   test fixtures).
 //!
 //! Limits (stated, not hidden): the check covers the work a block claims, not that the claim equals
-//! the shard DAA's expected difficulty; and the chain count (packed in `merged_mining_root`, D7) is
-//! the miner's claim, checked only against its own sibling path, not against
-//! the beacon's epoch parameters (the admissible-range check, V7, needs epoch tables Filament does
-//! not have; an open design question). A cheap fake chain still has to be lighter than the real one and lose the
-//! comparison between Keystones.
+//! the shard DAA's expected difficulty. The chain count (packed in `merged_mining_root`, D7) is checked
+//! against the admissible range of the block's epoch (V7) and the floor uses `s_ref` (DAA-C1) **once
+//! the epoch records it needs are verified** (`ThinShardParams::epoch_counts`, from
+//! [`crate::mmr_client::thin_epoch`]; since NC-200 the beacon commits them in the PoW-covered body root);
+//! until then the claim is checked only against its own sibling path. A cheap fake chain still has to
+//! be lighter than the real one and lose the comparison between Keystones.
 
 use std::collections::VecDeque;
 
@@ -28,7 +29,10 @@ use network_common::common::crypto::weighted_hash::{bag_peaks_weighted_u128, Wei
 use network_common::common::genesis::genesis_config::{BeaconGenesisConfig, ShardGenesisConfig};
 use network_common::common::blocks::shard_block::TxInclusionProof;
 use network_common::common::proofs::{decode_shard_blocks, FullShardBlockData, ThinHeaderProofResponse, ThinShardBlocksResponse, ThinShardSessionResponse};
-use network_common::common::merged_mining_check::verify_shard_id_and_mmn;
+use network_common::common::expand_voting::{epoch_length, shard_admissible_count_range, shard_reference_s_bits};
+use network_common::common::merged_mining_check::verify_shard_block_with_ref_s;
+use network_common::common::proofs::ThinEpochRecordResponse;
+use network_common::transaction::BeaconEpochRecord;
 use network_common::common::mmr_math;
 
 use crate::mmr_client::thin_chain::{ThinBeaconState, ThinState, ThinSyncError};
@@ -48,6 +52,15 @@ pub struct ThinShardParams {
     /// Beacon blocks between genesis and a genesis shard's activation block.
     pub activation_delay: u32,
     pub shard_calibration: u32,
+    /// Shard-expansion step (`shard_admissible_count_range`'s numerator and denominator).
+    pub step_numerator: u16,
+    pub step_denominator: u16,
+    /// Beacon height of a dynamically activated shard's activation block, learned from verified
+    /// epoch records ([`crate::mmr_client::thin_epoch`]); `None` until discovered.
+    pub dynamic_activation: Option<u32>,
+    /// `(epoch, active_shard_count)` from epoch records Filament verified, ascending, epochs >= 1.
+    /// Epoch 0's count is `initial_shard_count` (the genesis config).
+    pub epoch_counts: Vec<(u32, u16)>,
 }
 
 impl ThinShardParams {
@@ -61,13 +74,65 @@ impl ThinShardParams {
             initial_shard_count: g.shard_expansion.initial_shard_count,
             activation_delay: g.shard_expansion.activation_delay,
             shard_calibration: g.shard_calibration,
+            step_numerator: g.shard_expansion.step_numerator,
+            step_denominator: g.shard_expansion.step_denominator,
+            dynamic_activation: None,
+            epoch_counts: Vec::new(),
         }
     }
 
-    /// Beacon height of the activation block, for shards the genesis config lists.
-    /// Dynamically activated shards need an expand-vote scan Filament does not do: `None`.
+    /// The shard is not in the genesis config: an expand vote opened it.
+    pub fn is_dynamic(&self) -> bool {
+        self.shard_id >= self.initial_shard_count
+    }
+
+    /// Beacon height of the activation block: `activation_delay` for a genesis shard; for a
+    /// dynamically activated one the height found from verified epoch records
+    /// (`epoch * epoch_length + activation_delay` of the first epoch whose count exceeds the id),
+    /// `None` until then. Never guessed.
     pub fn activation_height(&self) -> Option<u32> {
-        (self.shard_id < self.initial_shard_count).then_some(self.activation_delay)
+        if self.is_dynamic() {
+            self.dynamic_activation
+        } else {
+            Some(self.activation_delay)
+        }
+    }
+
+    /// `c(epoch)`: the active shard count recorded for `epoch`. Epoch 0 is the genesis count.
+    pub fn count_of(&self, epoch: u32) -> Option<u16> {
+        if epoch == 0 {
+            return Some(self.initial_shard_count);
+        }
+        self.epoch_counts
+            .binary_search_by_key(&epoch, |(e, _)| *e)
+            .ok()
+            .map(|i| self.epoch_counts[i].1)
+    }
+
+    /// The governance epoch of the shard block at `shard_height`: the same calibrated projection the
+    /// node uses (`resolve_beacon_governance_epoch`: `anchor + height / calibration`), from the
+    /// activation height Filament derived and the genesis calibration. `None` without an activation.
+    pub fn epoch_of_shard_height(&self, shard_height: u32) -> Option<u32> {
+        let anchor = self.activation_height()? as u64;
+        let calib = self.shard_calibration.max(1) as u64;
+        let beacon_est = anchor.saturating_add(shard_height as u64 / calib);
+        Some((beacon_est.min(u32::MAX as u64) as u32) / epoch_length())
+    }
+
+    /// The admissible chain-count range for a block at `shard_height` (V7, `shard_admissible_count_range`),
+    /// or `None` when a count it needs is not among the verified epoch records yet: never a guess, and
+    /// never a narrower range than the node's (which would refuse honest blocks).
+    pub fn admissible_range(&self, shard_height: u32) -> Option<(u16, u16)> {
+        let epoch = self.epoch_of_shard_height(shard_height)?;
+        // The range reads c(E-1) (c(E) when E-1 is unknown) and, from epoch 2, c(E-2). Require both
+        // so a missing one cannot silently narrow the low side.
+        if epoch >= 1 && self.count_of(epoch - 1).is_none() {
+            return None;
+        }
+        if epoch >= 2 && self.count_of(epoch - 2).is_none() {
+            return None;
+        }
+        shard_admissible_count_range(epoch, |e| self.count_of(e), self.step_numerator, self.step_denominator)
     }
 }
 
@@ -89,36 +154,38 @@ fn anchor_from_tip(beacon: &ThinBeaconState, p: &ThinShardParams) -> Option<Shar
     })
 }
 
-/// Derive a shard's anchor from a header proof for the activation block and the block after it
-/// (whose `prev_mmr_root` is the root *after* the activation block). The proof is checked against
-/// the root of `beacon`, the quorum-trusted thin beacon state; nothing here is taken on trust.
-pub fn anchor_from_header_proof(
+/// The `count` headers a [`ThinHeaderProofResponse`] carries, checked against `beacon`, the thin
+/// beacon state Filament verified itself: they start at `from`, the range proof is against our root
+/// and leaf count and verifies against the bitcoin anchor, each header's proof-of-work holds and is
+/// the proof's leaf at its index. Nothing is taken on a Keystone's word.
+pub(crate) fn verified_headers(
     beacon: &ThinBeaconState,
     bitcoin_anchor_hash: [u8; 32],
-    p: &ThinShardParams,
+    from: u32,
+    count: usize,
     resp: &ThinHeaderProofResponse,
-) -> Result<ShardAnchor, ThinSyncError> {
+) -> Result<Vec<WireBeaconHeader>, ThinSyncError> {
+    use network_common::common::blocks::beacon_wire_header::WIRE_BEACON_HEADER_SIZE;
     let bad = |m: &str| ThinSyncError::BadResponse(m.to_string());
-    let a = p.activation_height().ok_or_else(|| bad("shard is not a genesis shard"))?;
-    if resp.from != a {
-        return Err(bad("header proof does not start at the activation height"));
+    if resp.from != from {
+        return Err(bad("header proof does not start at the height asked"));
     }
     let bytes = hex::decode(&resp.headers_hex).map_err(|_| bad("headers are not valid hex"))?;
     let hs: Vec<WireBeaconHeader> = bytes
-        .chunks_exact(network_common::common::blocks::beacon_wire_header::WIRE_BEACON_HEADER_SIZE)
+        .chunks_exact(WIRE_BEACON_HEADER_SIZE)
         .map(|c| WireBeaconHeader::deserialize(c).map_err(ThinSyncError::BadResponse))
         .collect::<Result<_, _>>()?;
-    if hs.len() != 2 || bytes.len() != 2 * network_common::common::blocks::beacon_wire_header::WIRE_BEACON_HEADER_SIZE {
-        return Err(bad("expected exactly the activation header and the one after"));
+    if hs.len() != count || bytes.len() != count * WIRE_BEACON_HEADER_SIZE {
+        return Err(bad("unexpected number of headers"));
     }
-    if hs[0].height != a || hs[1].height != a + 1 {
-        return Err(bad("headers are not the activation block and its successor"));
+    if hs.iter().enumerate().any(|(i, h)| h.height != from + i as u32) {
+        return Err(bad("headers are not consecutive from the height asked"));
     }
     let proof = &resp.range_proof;
     if proof.root != beacon.root() || proof.leaf_count != beacon.leaf_count() {
         return Err(bad("header proof is not against our verified beacon root"));
     }
-    if proof.start != a || !proof.verify_with_anchor(bitcoin_anchor_hash) {
+    if proof.start != from || !proof.verify_with_anchor(bitcoin_anchor_hash) {
         return Err(bad("header proof does not verify against the anchor"));
     }
     for (i, h) in hs.iter().enumerate() {
@@ -128,6 +195,22 @@ pub fn anchor_from_header_proof(
             return Err(bad("a header does not match the proof's leaf"));
         }
     }
+    Ok(hs)
+}
+
+/// Derive a shard's anchor from a header proof for the activation block and the block after it
+/// (whose `prev_mmr_root` is the root *after* the activation block). The proof is checked against
+/// the root of `beacon`, the quorum-trusted thin beacon state; nothing here is taken on trust.
+pub fn anchor_from_header_proof(
+    beacon: &ThinBeaconState,
+    bitcoin_anchor_hash: [u8; 32],
+    p: &ThinShardParams,
+    resp: &ThinHeaderProofResponse,
+) -> Result<ShardAnchor, ThinSyncError> {
+    let a = p
+        .activation_height()
+        .ok_or_else(|| ThinSyncError::BadResponse("the shard's activation height is not known".to_string()))?;
+    let hs = verified_headers(beacon, bitcoin_anchor_hash, a, 2, resp)?;
     Ok(ShardAnchor {
         root: hs[1].prev_mmr_root,
         genesis_bits: ShardGenesisConfig::bits_from_beacon_nbits(hs[0].bits, p.shard_calibration),
@@ -173,6 +256,14 @@ impl ThinShardState {
         self.anchor
     }
 
+    /// Take the newest verified epoch counts before more blocks are applied (the state outlives the
+    /// rounds, the counts grow as epochs pass). The activation and calibration must be unchanged.
+    pub fn refresh_params(&mut self, p: &ThinShardParams) {
+        debug_assert_eq!(p.shard_id, self.params.shard_id);
+        debug_assert_eq!(p.activation_height(), self.params.activation_height());
+        self.params = p.clone();
+    }
+
     pub fn tip(&self) -> Option<&FullShardBlockData> {
         self.recent.back()
     }
@@ -211,10 +302,17 @@ impl ThinShardState {
         let header = b.to_header(self.params.shard_id);
         let hash = header.hash();
         let block = Block::new(header, Vec::new());
-        verify_shard_id_and_mmn(
+        // V7 / DAA-C1 with the epoch records Filament verified: the claimed chain count must lie in
+        // the admissible range of the block's epoch, and the difficulty floor uses `s_ref` (the range's
+        // ceiling), not the producer's claim. Without the records the checks are those of before
+        // (claim-based floor, no range): stated in the module doc.
+        let range = self.params.admissible_range(b.height);
+        let ref_s = range.map(shard_reference_s_bits);
+        verify_shard_block_with_ref_s(
             &block,
             self.params.tree_depth,
-            None,
+            range,
+            ref_s,
             &self.params.initial_target,
             self.params.genesis_asserted_s_bits,
         )

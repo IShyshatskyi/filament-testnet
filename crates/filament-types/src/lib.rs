@@ -92,9 +92,6 @@ pub mod common {
         pub use crate::mmr_math::*;
     }
 
-    pub mod weighted_mmr_core {
-        pub use crate::weighted_mmr_peaks::WeightedMMR;
-    }
 
     pub use crate::expand_voting;
     pub use crate::ipp;

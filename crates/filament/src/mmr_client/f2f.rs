@@ -351,10 +351,9 @@ pub fn new_msg_id() -> [u8; 8] {
 
 /// Compute the relay dedup id: `BLAKE3(payload)[0..8]` (Track H).
 ///
-/// Gap 10 Phase 2 (Jul 3, 2026): the implementation moved to
-/// `crates/common-types/src/common/relay_hash.rs` — p2p-proto's
-/// relay_store.rs needed it and can't depend back on mmr_client (would
-/// recreate the cycle Gap 10 broke). Re-exported here so every existing
+/// Gap 10 Phase 2 (Jul 3, 2026): the implementation moved to the shared
+/// relay hash module, which the relay store also needs and which cannot
+/// depend back on `mmr_client`. Re-exported here so every existing
 /// `crate::mmr_client::f2f::relay_id` call site keeps resolving unchanged.
 pub use network_common::common::relay_hash::relay_id;
 

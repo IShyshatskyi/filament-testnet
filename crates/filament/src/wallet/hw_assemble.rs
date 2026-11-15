@@ -13,8 +13,8 @@
 use network_common::crypto::tx_sighash::{prevouts_hash, sighash_v2, verify_schnorr_witness, WITNESS_TYPE_SCHNORR};
 use network_common::transaction::{ExtensionRecord, Transaction, TxInput, TxOutput, WitnessEntry};
 
-/// TX-11: the one transaction version (`common_types::...::validation::TX_VERSION`; this crate
-/// does not depend on common-types). Same value as the Ledger app and `wallet::...` signers.
+/// TX-11: the one transaction version (the same value the nodes validate against, the Ledger app and
+/// the `wallet::...` signers use).
 pub const TX_VERSION: u8 = 1;
 
 /// What the host sent the device (`ledger::ShishaTxParams`, minus the input index).

@@ -93,6 +93,7 @@ fn thin_shard_view(client: &MultiChainClient, shard_id: u16) -> Option<ChainView
     };
     let status = match t.note {
         Some("unsupported_dynamic_shard") => "unsupported",
+        Some("awaiting_activation") => "awaiting_activation",
         Some("awaiting_anchor") => "bootstrapping",
         _ => t.slot.status(std::time::Instant::now()),
     };

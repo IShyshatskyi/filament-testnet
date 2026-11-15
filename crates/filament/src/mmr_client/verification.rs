@@ -1,7 +1,6 @@
 // src/mmr_client/verification.rs
 //
-// Gap 9 Phase 2 (Jul 3, 2026): this file was physically moved to
-// crates/common-types/src/common/verification.rs. It turned out to be a
+// Gap 9 Phase 2 (Jul 3, 2026): this file was moved into the shared proof code. It turned out to be a
 // genuine production dependency of common::proofs::fork_proof (ForkProof::verify
 // calls navigate_to, which needs HybridMMRState) — not test-only as initially
 // assumed — which is why it had to move alongside common/transaction rather

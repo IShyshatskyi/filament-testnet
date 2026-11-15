@@ -4,7 +4,7 @@
 // MMR proof verifier and a watch-only wallet delegate.
 //
 // Moved here from `shisha-core` `src/bin/filament.rs` once Gap 9 made a
-// sole `filament` + `common-types` dependency feasible (no monolith).
+// the `filament` crate alone feasible (no monolith).
 // The desktop app uses this crate.
 //
 // Usage:

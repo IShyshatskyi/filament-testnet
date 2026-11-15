@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// Filament HTTP handlers open a fresh `InvoiceStore` per request, so an
 /// in-process `Mutex` alone would not close the TOCTOU across concurrent
 /// `POST /invoice/create` calls — this blocking `flock` covers any opener
-/// of the same store directory (same pattern as rustmmrdb `DataDirLock`).
+/// of the same store directory.
 const CREATE_LOCK_FILE: &str = ".invoice_create.lock";
 
 /// RAII exclusive lock held for the duration of one `create` call.

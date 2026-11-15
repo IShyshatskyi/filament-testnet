@@ -13,7 +13,7 @@
 //! *nothing else* in the entire codebase: `crate::wallet::` had exactly one
 //! external consumer (`mmr_client::filament_wallet`), and `crate::address::`
 //! had exactly one (`wallet::`). Verified via `grep` before moving, same
-//! rule used for Gap 9/10's `weighted_mmr_core`/`k_voting_config`/etc.
+//! rule used for the earlier crate extractions.
 //!
 //! The monolith keeps `crate::mmr_client::*` and `crate::wallet::*` resolving
 //! unchanged via one-line re-export shims at their old locations — no call
@@ -34,11 +34,6 @@
 //! `SchnorrSigner`, the one real, load-bearing piece (used directly by
 //! `mmr_client::filament_wallet`). Full history:
 //! the extraction notes
-//!
-//!
-//! `mmr_client::parallel_verifier`'s range-proof path builds a real multi-leaf
-//! (moved into common-types Aug 2026). This crate has **zero** dependency on
-//! `shisha-core`.
 //!
 //! See the crate split notes for the full extraction
 //! analysis.

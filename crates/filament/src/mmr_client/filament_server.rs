@@ -1266,7 +1266,7 @@ pub async fn backfill_invoices_from_indexer(
         outs.sort_by_key(|o| (o.height, o.output_idx));
         for o in outs {
             let followed = if thin_sync {
-                client.read().await.thin_shard(inv.shard_id).filter(|t| t.note != Some("unsupported_dynamic_shard"))
+                client.read().await.thin_shard(inv.shard_id).filter(|t| t.followable())
             } else {
                 None
             };
@@ -1376,7 +1376,7 @@ pub async fn advance_watch_invoice_confirmations(
     if thin_sync {
         let c = client.read().await;
         for &shard_id in &shard_ids {
-            if c.thin_shard(shard_id).map_or(true, |t| t.note != Some("unsupported_dynamic_shard")) {
+            if c.thin_shard(shard_id).map_or(true, |t| t.followable()) {
                 thin_followed.push(shard_id);
             }
         }
@@ -2094,6 +2094,7 @@ impl FilamentRuntime {
         urls: &[String],
         (network, genesis_file, required): (String, Option<String>, usize),
     ) {
+        use crate::mmr_client::thin_epoch::{discover_dynamic_activation, ensure_epoch_counts};
         use crate::mmr_client::thin_shard::{anchor_from_header_proof, discover_anchor, ThinShardParams};
         use crate::mmr_client::thin_sync::ShardThin;
 
@@ -2109,21 +2110,40 @@ impl FilamentRuntime {
             }
         };
         for shard_id in targets {
-            let params = ThinShardParams::from_genesis(&genesis, shard_id);
+            let mut params = ThinShardParams::from_genesis(&genesis, shard_id);
             let mut entry: ShardThin = self.client.read().await.thin_shard(shard_id).unwrap_or_default();
+            params.dynamic_activation = entry.dynamic_activation;
+            params.epoch_counts = entry.epoch_counts.clone();
+            let beacon = self.client.read().await.thin_beacon_slot().and_then(|s| s.state().cloned());
+            // DYN-1: a shard an expand vote opened is found from verified epoch records, never guessed.
+            if params.is_dynamic() && params.activation_height().is_none() {
+                let Some(beacon) = beacon.as_ref() else {
+                    entry.note = Some("awaiting_activation");
+                    self.client.write().await.set_thin_shard(shard_id, entry);
+                    continue;
+                };
+                match discover_dynamic_activation(http, urls, beacon, genesis.bitcoin_anchor_hash, &params, &mut entry.epoch_counts).await {
+                    Ok(Some(h)) => {
+                        log::info!("thin shard sync: shard {shard_id} activates at beacon height {h} (from verified epoch records)");
+                        entry.dynamic_activation = Some(h);
+                        params.dynamic_activation = Some(h);
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::warn!("thin shard sync: shard {shard_id} activation: {e}"),
+                }
+            }
             let Some(activation) = params.activation_height() else {
-                entry.note = Some("unsupported_dynamic_shard");
+                entry.note = Some("awaiting_activation");
                 self.client.write().await.set_thin_shard(shard_id, entry);
                 continue;
             };
             if entry.anchor.is_none() {
-                let beacon = self.client.read().await.thin_beacon_slot().and_then(|s| s.state().cloned());
-                let Some(beacon) = beacon else {
+                let Some(beacon) = beacon.as_ref() else {
                     entry.note = Some("awaiting_anchor");
                     self.client.write().await.set_thin_shard(shard_id, entry);
                     continue;
                 };
-                entry.anchor = discover_anchor(&beacon, &params);
+                entry.anchor = discover_anchor(beacon, &params);
                 if entry.anchor.is_none() && beacon.leaf_count() > activation + 1 {
                     for url in urls {
                         let at = beacon.leaf_count();
@@ -2134,7 +2154,7 @@ impl FilamentRuntime {
                             )
                             .await;
                         match resp.map_err(|e| e.to_string()).and_then(|r| {
-                            anchor_from_header_proof(&beacon, genesis.bitcoin_anchor_hash, &params, &r).map_err(|e| e.to_string())
+                            anchor_from_header_proof(beacon, genesis.bitcoin_anchor_hash, &params, &r).map_err(|e| e.to_string())
                         }) {
                             Ok(a) => {
                                 entry.anchor = Some(a);
@@ -2150,6 +2170,13 @@ impl FilamentRuntime {
                 self.client.write().await.set_thin_shard(shard_id, entry);
                 continue;
             };
+            // V7 / DAA-C1: the epoch counts the admissible range of this shard's blocks needs.
+            if let Some(beacon) = beacon.as_ref() {
+                if let Err(e) = ensure_epoch_counts(http, urls, beacon, genesis.bitcoin_anchor_hash, &params, &mut entry.epoch_counts).await {
+                    log::warn!("thin shard sync: shard {shard_id} epoch records: {e}");
+                }
+                params.epoch_counts = entry.epoch_counts.clone();
+            }
             entry.note = None;
             let report =
                 crate::mmr_client::thin_sync::thin_shard_round(http, urls, &params, anchor, required, &mut entry.slot).await;
@@ -2322,6 +2349,8 @@ fn thin_shard_json(shard_id: u16, t: &crate::mmr_client::thin_sync::ShardThin) -
     let height = st.and_then(|s| crate::mmr_client::thin_chain::ThinState::height(s)).unwrap_or(0);
     let status_str = if t.note == Some("unsupported_dynamic_shard") {
         "unsupported"
+    } else if t.note == Some("awaiting_activation") {
+        "awaiting_activation"
     } else if t.note == Some("awaiting_anchor") {
         "bootstrapping"
     } else {
@@ -2899,7 +2928,7 @@ pub async fn verify_output_with_config(
     let endpoints = cfg.all_keystone_endpoints();
     let required = cfg.required_keystones();
     let followed = if cfg.thin_sync {
-        client.read().await.thin_shard(shard_id).filter(|t| t.note != Some("unsupported_dynamic_shard"))
+        client.read().await.thin_shard(shard_id).filter(|t| t.followable())
     } else {
         None
     };

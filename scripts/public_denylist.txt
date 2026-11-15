@@ -40,3 +40,16 @@ weighted_mmr_core.rs
 common::epoch_history_fast_start
 kameniar_common
 rustmmrdb::
+# Node-native implementation names must not appear anywhere in published Rust sources, comments
+# included (owner rule): the storage engine and the node-side MMR engines are not part of the light client.
+rustmmrdb
+P1DB
+p1db
+spendflags
+PositionalUtxo
+windowed_weighted
+weighted_mmr_core
+floor_state
+node_window
+common-types
+common_types
