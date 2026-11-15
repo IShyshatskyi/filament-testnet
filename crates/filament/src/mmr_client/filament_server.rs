@@ -2884,49 +2884,98 @@ async fn peers_remove(
     }
 }
 
-#[derive(Deserialize)]
-struct VerifyRequest {
-    txid: String,
+/// B5, shared by the HTTP route and the desktop app: verify one shard output against the Keystones
+/// in `cfg`. A shard Filament follows and has synced is checked against its own verified chain; any
+/// other (or thin sync off) falls back to the Keystone quorum, and the verdict says which.
+pub async fn verify_output_with_config(
+    client: &Arc<RwLock<MultiChainClient>>,
+    cfg: &FilamentNodeConfig,
     shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    recipient: Option<[u8; 32]>,
+    amount_atoms: Option<u64>,
+) -> crate::mmr_client::thin_shard::ProofVerdict {
+    let endpoints = cfg.all_keystone_endpoints();
+    let required = cfg.required_keystones();
+    let followed = if cfg.thin_sync {
+        client.read().await.thin_shard(shard_id).filter(|t| t.note != Some("unsupported_dynamic_shard"))
+    } else {
+        None
+    };
+    let http = reqwest::Client::new();
+    let state = followed
+        .as_ref()
+        .filter(|e| e.slot.status(Instant::now()) == "synced")
+        .and_then(|e| e.slot.state());
+    crate::mmr_client::thin_shard::verify_output(
+        &http, &endpoints, state, shard_id, height, output_idx, recipient, amount_atoms, required,
+    )
+    .await
 }
 
-async fn proofs_verify(
+/// `recipient` of a verify request: 64 hex characters (a `0x` prefix is allowed).
+pub fn parse_recipient_hex(h: &str) -> Result<[u8; 32], String> {
+    match hex::decode(h.trim().trim_start_matches("0x")) {
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            Ok(arr)
+        }
+        _ => Err("recipient must be 64 hex chars".into()),
+    }
+}
+
+/// `POST /proofs/verify` (B5). Proofs here are positional (there is no txid index anywhere), so the
+/// request names the output: `{shard_id, height, output_idx, recipient?, amount_atoms?}`. `recipient`
+/// is 64 hex characters. A request that still carries only a `txid` is refused with the reason.
+#[doc(hidden)]
+#[derive(Deserialize)]
+pub struct VerifyRequest {
+    #[serde(default)]
+    txid: Option<String>,
+    shard_id: u16,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    output_idx: Option<u16>,
+    #[serde(default)]
+    recipient: Option<String>,
+    #[serde(default)]
+    amount_atoms: Option<u64>,
+}
+
+#[doc(hidden)]
+pub async fn proofs_verify(
     State(s): State<FilamentAppState>,
     Json(req): Json<VerifyRequest>,
 ) -> axum::response::Response {
-    let txid_bytes_res: Result<Vec<u8>, _> = hex::decode(&req.txid);
-    let txid_arr = match txid_bytes_res {
-        Ok(b) if b.len() == 32 => {
-            let mut arr = [0u8; 32]; arr.copy_from_slice(&b); arr
-        }
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "txid must be 64 hex chars" }))).into_response(),
+    let (Some(height), Some(output_idx)) = (req.height, req.output_idx) else {
+        let why = if req.txid.is_some() {
+            "a txid cannot be located: proofs are positional. Send {shard_id, height, output_idx} \
+             (the indexer's POST /tx/status gives the height of a transaction you hold)"
+        } else {
+            "send {shard_id, height, output_idx, recipient?, amount_atoms?}"
+        };
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": why }))).into_response();
+    };
+    let recipient = match req.recipient.as_deref().map(parse_recipient_hex).transpose() {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
 
-    let client = s.client.read().await;
-    let t0 = Instant::now();
-    let valid = client.verify_transaction_in_shard(req.shard_id as u32, txid_arr, &[], 0)
-        .await
-        .unwrap_or(false);
-    let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    drop(client);
-
-    let prefix = &req.txid[..8.min(req.txid.len())];
+    let verdict = {
+        let cfg = s.config.read().await;
+        verify_output_with_config(&s.client, &cfg, req.shard_id, height, output_idx, recipient, req.amount_atoms).await
+    };
     s.notify(
-        if valid { "INFO" } else { "WARN" },
+        if verdict.valid { "INFO" } else { "WARN" },
         "proof",
-        if valid { "Proof verified" } else { "Proof failed" },
-        &format!("TX {}… shard {}", prefix, req.shard_id),
+        if verdict.valid { "Proof verified" } else { "Proof failed" },
+        &format!("shard {} height {} output {} ({})", req.shard_id, height, output_idx, verdict.assurance),
         Some("proofs"),
     );
-
-    (StatusCode::OK, Json(json!({
-        "valid": valid,
-        "proof_type": "batch",
-        "proof_bytes": 173_000,
-        "ms": elapsed_ms,
-        "txid": req.txid,
-        "shard_id": req.shard_id,
-    }))).into_response()
+    (StatusCode::OK, Json(verdict)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -3269,8 +3318,8 @@ async fn invoice_list(State(s): State<FilamentAppState>) -> axum::response::Resp
     }
 }
 
-/// Body of `GET /invoice/{id}`.
-fn invoice_detail_json(b64_id: &str, inv: &crate::mmr_client::invoice::Invoice) -> serde_json::Value {
+/// Body of `GET /invoice/{id}` (also the desktop app's `get_invoice`).
+pub fn invoice_detail_json(b64_id: &str, inv: &crate::mmr_client::invoice::Invoice) -> serde_json::Value {
     json!({
         "invoice_id": b64_id,
         "uri": ShishaUri::from_invoice(inv).encode(),

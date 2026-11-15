@@ -82,6 +82,13 @@ The number of active chains is **not a separate header field**. It is the 12 low
 `merged_mining_root` (the last two bytes also carry the tree height), so the PoW commitment covers
 it (`MergedMiningHash::chain_count_of_root`).
 
+The PoW commitment is `SHA256d(coinbase_hash ‖ aux_hash)` with
+`aux_hash = BLAKE3(height ‖ merged_mining_root ‖ body_root)` from height 1. The `tx_merkle_root` slot of a
+beacon header holds that **beacon body root** (every non-coinbase transaction and the epoch record), so the
+proof of work covers the block body and a relayer cannot swap transactions after mining. Height 0 keeps the
+two-input form, so the genesis hashes are unchanged. The same rule applies to the auxiliary beacon header of
+a shard block (`beacon_merkle_root` is the body root).
+
 ### Proofs (`filament-types::proofs`)
 
 | Proof | Use |
@@ -228,7 +235,7 @@ cargo build --release -p filament --features full-node --bin filament
 Settings persist in the data directory, and flags override only what they set.
 
 **HTTP API** on `127.0.0.1:7380` (loopback only). Groups: `/health`;
-`/sync/{status,trust,proof-latency}`; `/chain/{all,beacon,shard/{id}}`; `/peers`; `/proofs/verify`;
+`/sync/{status,trust,proof-latency}`; `/chain/{all,beacon,shard/{id}}`; `/peers`; `POST /proofs/verify` (positional: `{shard_id, height, output_idx, recipient?, amount_atoms?}`; a txid alone is refused, since proofs are positional; the reply carries `assurance` = `verified_chain` or `keystone_quorum`, the named checks and the reason);
 `/events` (SSE); `/config`, `/logs`, `/notifications`;
 `/wallet/{address,balance,utxos,history,fee,send,sign,sign-message,broadcast}`;
 `/invoice/{create,list,parse,{id},{id}/cancel,{id}/hints}`; `/contacts`; `/escrow/…`;

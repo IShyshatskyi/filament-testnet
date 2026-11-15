@@ -46,7 +46,12 @@ impl BeaconHeader {
         let commitment: [u8; 32] = if self.coinbase_hash == [0u8; 32] {
             commitment_hash_from_parts(self.beacon_height, self.beacon_merkle_root, self.merged_mining_root)
         } else {
-            calculate_commitment_hash_from_coinbase(self.beacon_height, self.coinbase_hash, self.merged_mining_root)
+            calculate_commitment_hash_from_coinbase(
+                self.beacon_height,
+                self.coinbase_hash,
+                self.merged_mining_root,
+                self.beacon_merkle_root,
+            )
         };
         let mut header = Vec::with_capacity(80);
         header.extend_from_slice(&self.version.to_le_bytes());
