@@ -25,11 +25,18 @@ pub struct WireBeaconHeader {
     pub coinbase_hash: [u8; 32],
 }
 
-/// Leaf 1 of the commitment: `BLAKE3(height ‖ merged_mining_root)`.
-fn calculate_aux_hash(height: u32, merged_mining_root: [u8; 32]) -> [u8; 32] {
+/// Leaf 1 of the commitment: `BLAKE3(height ‖ merged_mining_root ‖ body_root)`.
+///
+/// `body_root` is the header's `tx_merkle_root` slot, which from height 1 holds the beacon body
+/// root (every non-coinbase transaction and the epoch record), so the proof of work covers the
+/// block body. Height 0 keeps the two-input form: the genesis block's hash is pinned.
+fn calculate_aux_hash(height: u32, merged_mining_root: [u8; 32], body_root: [u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(&height.to_le_bytes());
     h.update(&merged_mining_root);
+    if height != 0 {
+        h.update(&body_root);
+    }
     h.finalize().into()
 }
 
@@ -38,8 +45,9 @@ pub(crate) fn calculate_commitment_hash_from_coinbase(
     height: u32,
     coinbase_hash: [u8; 32],
     merged_mining_root: [u8; 32],
+    body_root: [u8; 32],
 ) -> [u8; 32] {
-    let aux_hash = calculate_aux_hash(height, merged_mining_root);
+    let aux_hash = calculate_aux_hash(height, merged_mining_root, body_root);
     let mut preimage = [0u8; 64];
     preimage[0..32].copy_from_slice(&coinbase_hash);
     preimage[32..64].copy_from_slice(&aux_hash);
@@ -87,6 +95,7 @@ impl WireBeaconHeader {
             self.height,
             self.coinbase_hash,
             self.merged_mining_root,
+            self.tx_merkle_root,
         )
     }
 
@@ -145,8 +154,8 @@ mod tests {
             hex::encode(h.serialize()),
             "010000001111111111111111111111111111111111111111111111111111111111111111fbffffff80000003040302012a000000222222222222222222222222222222222222222222222222222222222222222233333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444"
         );
-        assert_eq!(hex::encode(h.commitment_hash()), "7fa5d19f563d643a786e2206092b230e223e7c731022cea91ee4eee7336f4a89");
-        assert_eq!(hex::encode(h.pow_hash()), "2ebd5f8af33412460078fc3ab413b8c374e184587b35d5416746fa2d7596f5fe");
+        assert_eq!(hex::encode(h.commitment_hash()), "b7a50a1be57a0c45c7c3bdaf461a9b3bdba2b84d684d462027246b4ab353c970");
+        assert_eq!(hex::encode(h.pow_hash()), "2974f5b777aef638ba3ce54a73d94fafdba7c9f8c9ccaa3be84a5b21e65c960e");
     }
 
     #[test]

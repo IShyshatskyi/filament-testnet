@@ -481,6 +481,249 @@ pub fn check_payment(
     Ok(())
 }
 
+/// `tx_merkle_root` of the block record whose hash is `claimed`, the leaf of the verified chain at
+/// `height`: a held record, or one fetched from a Keystone and checked to hash to exactly that leaf.
+async fn record_root_bound_to(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    claimed: WeightedHash,
+) -> Result<[u8; 32], String> {
+    if let Some(b) = st.recent().find(|b| b.height == height) {
+        return Ok(b.tx_merkle_root);
+    }
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
+        let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(r) => r,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        let rec = match decode_shard_blocks(&resp.blocks_hex).map(|mut v| v.drain(..).find(|b| b.height == height)) {
+            Ok(Some(r)) => r,
+            _ => {
+                last = format!("{ep}: no block record for height {height}");
+                continue;
+            }
+        };
+        if WeightedHash::from_leaf_rbits(&st.block_hash(&rec), rec.difficulty) != claimed {
+            last = format!("{ep}: its block record is not the block in our verified chain");
+            continue;
+        }
+        return Ok(rec.tx_merkle_root);
+    }
+    Err(last)
+}
+
+/// What a [`TxInclusionProof`] shows about one output, once it verifies against `tx_merkle_root`:
+/// `(recipient, value_atoms, value_is_committed)`. Pure; no network.
+pub fn output_facts(
+    tx_merkle_root: &[u8; 32],
+    proof: &TxInclusionProof,
+    height: u32,
+    output_idx: u16,
+) -> Result<([u8; 32], u64, bool), String> {
+    if proof.height != height || proof.output_idx != u32::from(output_idx) {
+        return Err("the proof is for another output".into());
+    }
+    if !proof.verify(tx_merkle_root) {
+        return Err("the proof does not verify against the block's tx_merkle_root".into());
+    }
+    let out = proof.output().ok_or_else(|| "the proof carries no such output".to_string())?;
+    Ok((out.recipient, out.value, proof.value_is_committed()))
+}
+
+/// One named step of [`verify_output`], for the reply's `checks` list.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct VerifyCheck {
+    pub name: &'static str,
+    pub ok: bool,
+}
+
+/// The answer of [`verify_output`] (B5): a verdict with the reason and the steps behind it. No size,
+/// proof-type or timing field is invented; every field is something that was checked.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProofVerdict {
+    pub valid: bool,
+    /// `verified_chain` (the block is in the shard chain Filament verified itself) or
+    /// `keystone_quorum` (no verified chain for this shard; `required` Keystones agree).
+    pub assurance: &'static str,
+    pub shard_id: u16,
+    pub height: u32,
+    pub output_idx: u16,
+    pub tx_merkle_root: Option<String>,
+    pub recipient: Option<String>,
+    pub value_atoms: Option<u64>,
+    pub value_committed: Option<bool>,
+    pub checks: Vec<VerifyCheck>,
+    pub keystones_asked: usize,
+    pub keystones_agreeing: usize,
+    pub reason: Option<String>,
+}
+
+/// B5: verify that the output `(height, output_idx)` of a shard block is committed by that block, and
+/// optionally that it pays `recipient` at least `amount_atoms`.
+///
+/// * `st = Some(..)` (thin sync follows the shard): the block is first bound to the chain Filament
+///   verified itself (`block_bound`), then every Keystone is asked for the inclusion proof; one valid
+///   proof against that bound root is conclusive, the count of agreeing Keystones is reported.
+/// * `st = None`: each Keystone supplies its own block record and proof; valid when at least `required`
+///   of them prove the same output inside the same block hash (`assurance = keystone_quorum`).
+///
+/// A Keystone is asked for a proof, never a verdict.
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_output(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: Option<&ThinShardState>,
+    shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    want_recipient: Option<[u8; 32]>,
+    want_amount: Option<u64>,
+    required: usize,
+) -> ProofVerdict {
+    let mut v = ProofVerdict {
+        valid: false,
+        assurance: if st.is_some() { "verified_chain" } else { "keystone_quorum" },
+        shard_id,
+        height,
+        output_idx,
+        tx_merkle_root: None,
+        recipient: None,
+        value_atoms: None,
+        value_committed: None,
+        checks: Vec::new(),
+        keystones_asked: endpoints.len(),
+        keystones_agreeing: 0,
+        reason: None,
+    };
+    if endpoints.is_empty() {
+        v.reason = Some("no Keystone endpoint is configured".into());
+        return v;
+    }
+    // The trusted root, when the chain is Filament's own.
+    let mut fixed_root: Option<[u8; 32]> = None;
+    if let Some(st) = st {
+        let bound = match bound_leaf(http, endpoints, st, shard_id, height, &[]).await {
+            Ok(leaf) => record_root_bound_to(http, endpoints, st, shard_id, height, leaf).await,
+            Err(e) => Err(e),
+        };
+        match bound {
+            Ok(root) => {
+                v.checks.push(VerifyCheck { name: "block_bound_to_verified_chain", ok: true });
+                v.tx_merkle_root = Some(hex::encode(root));
+                fixed_root = Some(root);
+            }
+            Err(why) => {
+                v.checks.push(VerifyCheck { name: "block_bound_to_verified_chain", ok: false });
+                v.reason = Some(format!("block record not bound to the verified chain: {why}"));
+                return v;
+            }
+        }
+    }
+
+    // Per Keystone: (block hash it vouches for, facts) when its proof verifies.
+    let mut proven: Vec<([u8; 32], [u8; 32], u64, bool)> = Vec::new();
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let root = match fixed_root {
+            Some(r) => r,
+            None => {
+                let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
+                let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last = format!("{ep}: {e}");
+                        continue;
+                    }
+                };
+                let Some(rec) = decode_shard_blocks(&resp.blocks_hex).ok().and_then(|x| x.into_iter().find(|b| b.height == height)) else {
+                    last = format!("{ep}: no block record for height {height}");
+                    continue;
+                };
+                // remember the hash this Keystone's block has, keyed below through `proven`
+                let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+                let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        last = format!("{ep}: {e}");
+                        continue;
+                    }
+                };
+                match output_facts(&rec.tx_merkle_root, &proof, height, output_idx) {
+                    Ok((r, val, c)) => proven.push((record_block_hash(shard_id, &rec), r, val, c)),
+                    Err(e) => last = format!("{ep}: {e}"),
+                }
+                if v.tx_merkle_root.is_none() {
+                    v.tx_merkle_root = Some(hex::encode(rec.tx_merkle_root));
+                }
+                continue;
+            }
+        };
+        let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+        let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(p) => p,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        match output_facts(&root, &proof, height, output_idx) {
+            Ok((r, val, c)) => proven.push(([0u8; 32], r, val, c)),
+            Err(e) => last = format!("{ep}: {e}"),
+        }
+    }
+
+    // Group by block hash (all zero in the thin case: one bound block); take the largest group.
+    let mut groups: std::collections::HashMap<[u8; 32], Vec<&([u8; 32], [u8; 32], u64, bool)>> = std::collections::HashMap::new();
+    for p in &proven {
+        groups.entry(p.0).or_default().push(p);
+    }
+    let best = groups.values().max_by_key(|g| g.len());
+    let Some(best) = best else {
+        v.checks.push(VerifyCheck { name: "path_reaches_tx_merkle_root", ok: false });
+        v.reason = Some(format!("no Keystone supplied a proof that verifies ({last})"));
+        return v;
+    };
+    v.keystones_agreeing = best.len();
+    let (_, recipient, value, committed) = *best[0];
+    v.checks.push(VerifyCheck { name: "path_reaches_tx_merkle_root", ok: true });
+    v.checks.push(VerifyCheck { name: "output_exists", ok: true });
+    v.recipient = Some(hex::encode(recipient));
+    v.value_atoms = Some(value);
+    v.value_committed = Some(committed);
+    v.checks.push(VerifyCheck { name: "value_committed", ok: committed });
+    let mut ok = true;
+    if let Some(want) = want_recipient {
+        let m = recipient == want;
+        v.checks.push(VerifyCheck { name: "recipient_matches", ok: m });
+        ok &= m;
+    }
+    if let Some(want) = want_amount {
+        // an uncommitted coinbase reward amount cannot be compared with an asked amount
+        let m = committed && value >= want;
+        v.checks.push(VerifyCheck { name: "amount_at_least", ok: m });
+        ok &= m;
+    }
+    let enough = st.is_some() || best.len() >= required.max(1);
+    v.checks.push(VerifyCheck { name: "enough_keystones_agree", ok: enough });
+    v.valid = ok && enough;
+    if !v.valid {
+        v.reason = Some(if !enough {
+            format!("fewer than {} Keystones prove this output in the same block ({} do)", required.max(1), best.len())
+        } else {
+            "the proof verifies, but the output does not match what was asked".into()
+        });
+    }
+    v
+}
+
 /// [`bind_inclusion`] plus the payment itself: the paying block's record (held, or fetched and
 /// checked to hash to the very leaf the verified chain holds) supplies `tx_merkle_root`; a Keystone
 /// is then asked for a [`TxInclusionProof`] of the output, which Filament verifies and compares
@@ -502,39 +745,9 @@ pub async fn bind_payment(
         Ok(leaf) => leaf,
         Err(why) => return Binding::Unbound(why),
     };
-    // The block record whose hash is the verified chain's leaf at `height`.
-    let root = if let Some(b) = st.recent().find(|b| b.height == height) {
-        b.tx_merkle_root
-    } else {
-        let mut last = String::from("no Keystone answered");
-        let mut found = None;
-        for ep in endpoints {
-            let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
-            let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
-                Ok(r) => r,
-                Err(e) => {
-                    last = format!("{ep}: {e}");
-                    continue;
-                }
-            };
-            let rec = match decode_shard_blocks(&resp.blocks_hex).map(|mut v| v.drain(..).find(|b| b.height == height)) {
-                Ok(Some(r)) => r,
-                _ => {
-                    last = format!("{ep}: no block record for height {height}");
-                    continue;
-                }
-            };
-            if WeightedHash::from_leaf_rbits(&st.block_hash(&rec), rec.difficulty) != claimed {
-                last = format!("{ep}: its block record is not the block in our verified chain");
-                continue;
-            }
-            found = Some(rec.tx_merkle_root);
-            break;
-        }
-        match found {
-            Some(r) => r,
-            None => return Binding::Unbound(last),
-        }
+    let root = match record_root_bound_to(http, endpoints, st, shard_id, height, claimed).await {
+        Ok(r) => r,
+        Err(why) => return Binding::Unbound(why),
     };
     let mut last = String::from("no Keystone answered");
     for ep in endpoints {
