@@ -246,3 +246,67 @@ impl TxInclusionProof {
         verify_tx_merkle_path(self.tx_idx, &leaf, &self.path, tx_merkle_root)
     }
 }
+
+/// Proof that a beacon block's coinbase carries an epoch-parameters record (`0x0004`), against the
+/// header's `tx_merkle_root`, which for height >= 1 is the beacon body root. The root must come from a
+/// header whose proof-of-work was checked and whose place in the verifier's own chain was proved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeaconEpochRecordProof {
+    /// The record's 17-byte payload.
+    pub payload: Vec<u8>,
+    /// Sibling path of leaf 0 (the coinbase slot, replaced by the extension leaf).
+    pub path: Vec<[u8; 32]>,
+}
+
+impl BeaconEpochRecordProof {
+    /// The record, when the payload parses and sits at leaf 0 under `body_root`.
+    pub fn verify(&self, body_root: &[u8; 32]) -> Option<crate::beacon_epoch_record::BeaconEpochRecord> {
+        let record = crate::beacon_epoch_record::BeaconEpochRecord::from_bytes(&self.payload)?;
+        let leaf = crate::beacon_epoch_record::beacon_ext_leaf(Some(&self.payload));
+        verify_tx_merkle_path(0, &leaf, &self.path, body_root).then_some(record)
+    }
+}
+
+#[cfg(test)]
+mod beacon_epoch_record_proof_tests {
+    use super::*;
+
+    fn h32(s: &str) -> [u8; 32] {
+        hex::decode(s).unwrap().try_into().unwrap()
+    }
+
+    /// Pinned from the node implementation (network-common `beacon_epoch_record_proof`, a coinbase
+    /// with the record and four ordinary transactions).
+    fn node_vector() -> (BeaconEpochRecordProof, [u8; 32]) {
+        let proof = BeaconEpochRecordProof {
+            payload: hex::decode("0700000000000109ffff00090600040003").unwrap(),
+            path: [
+                "2abd95278b1502f67059e31972dfc8ef7274da4f34ef42d22f00ec3ac6ada3cd",
+                "20e64c355de1d83ed8c51dbfb9226ca1b724b90e3f48f3b30db2d6b5ea155b87",
+                "14877c51fcb7e504f2d72ebde2dba89a8171f44bc5e424dca98e5ae46691d921",
+            ]
+            .map(h32)
+            .to_vec(),
+        };
+        (proof, h32("6259da188b8775b133e9a2600f276f18ef03061bdf876775891badf828e608e0"))
+    }
+
+    #[test]
+    fn the_nodes_proof_verifies_and_forgeries_do_not() {
+        let (proof, root) = node_vector();
+        let rec = proof.verify(&root).expect("the node's proof verifies");
+        assert_eq!((rec.epoch_index, rec.active_shard_count, rec.prev_active_shard_count, rec.s_bits), (7, 6, 4, 3));
+        let mut forged = proof.clone();
+        forged.payload[12] = 60; // active_shard_count
+        assert!(forged.verify(&root).is_none());
+        let mut wrong_root = root;
+        wrong_root[0] ^= 1;
+        assert!(proof.verify(&wrong_root).is_none());
+        let mut damaged = proof.clone();
+        damaged.path[1][0] ^= 1;
+        assert!(damaged.verify(&root).is_none());
+        let mut short = proof;
+        short.payload.pop();
+        assert!(short.verify(&root).is_none());
+    }
+}

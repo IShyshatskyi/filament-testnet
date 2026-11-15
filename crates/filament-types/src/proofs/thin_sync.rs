@@ -77,3 +77,13 @@ pub struct ThinHeaderProofResponse {
     pub headers_hex: String,
     pub range_proof: WeightedMMRRangeProof,
 }
+
+/// `GET /chain/epoch-record/{epoch}?at=LEAF_COUNT`: the beacon block that starts governance epoch
+/// `epoch` as a one-header proof into the beacon MMR, and the proof that its coinbase carries the
+/// epoch record under the header's beacon body root.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThinEpochRecordResponse {
+    pub epoch: u32,
+    pub header_proof: ThinHeaderProofResponse,
+    pub record_proof: crate::shard_body::BeaconEpochRecordProof,
+}

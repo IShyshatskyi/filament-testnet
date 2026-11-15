@@ -6,6 +6,7 @@ pub mod weighted_hash;
 pub mod hash;
 pub mod hash_sorting;
 pub mod transaction_impl;
+pub mod beacon_epoch_record;
 pub mod tx_sighash;
 pub mod txid;
 pub mod relay_hash;
@@ -62,7 +63,7 @@ pub mod common {
         }
         pub use crate::genesis_network::BeaconBlock;
         pub mod shard_block {
-            pub use crate::shard_body::{ShardBlockBody, TransactionDescriptor, TxInclusionProof};
+            pub use crate::shard_body::{BeaconEpochRecordProof, ShardBlockBody, TransactionDescriptor, TxInclusionProof};
             pub use crate::shard_header::{BeaconHeader, Block, FullShardHeader};
         }
     }
@@ -108,6 +109,7 @@ pub mod common {
 pub mod transaction {
     pub use crate::transaction_impl::*;
     pub use crate::txid::{shard_chain_id, txid_from_parts, BEACON_CHAIN_ID, TXID_DOMAIN_TAG};
+    pub use crate::beacon_epoch_record::*;
 
     pub mod types {
         pub use crate::transaction_impl::*;
