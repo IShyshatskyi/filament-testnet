@@ -143,6 +143,26 @@ pub fn verify_shard_id_and_mmn_with_ref_s(
     Ok(())
 }
 
+/// The light client's entry point: the check of one shard [`Block`] with the admissible count range and
+/// the reference width `s_ref` of its epoch (the node's `verify_shard_block_with_ref_s`).
+pub fn verify_shard_block_with_ref_s(
+    block: &crate::shard_header::Block,
+    tree_depth: usize,
+    expected_active_shard_count: Option<(u16, u16)>,
+    ref_s: Option<u32>,
+    initial_target: &[u8; 32],
+    genesis_asserted_s_bits: u32,
+) -> Result<(), MergedMiningError> {
+    verify_shard_id_and_mmn_with_ref_s(
+        &block.header,
+        tree_depth,
+        expected_active_shard_count,
+        ref_s,
+        initial_target,
+        genesis_asserted_s_bits,
+    )
+}
+
 /// [`verify_shard_id_and_mmn_with_ref_s`] for a [`Block`] with one exact expected chain count
 /// (`None` skips the count check) and no reference width.
 pub fn verify_shard_id_and_mmn(
