@@ -37,10 +37,11 @@ pub mod bitcoin_anchors {
 
 pub const SHARD_CALIBRATION_CONSTANT: u64 = 16;
 
-/// CPU-oriented initial target ceiling, 2^240 (`devnet`, `testnet1`, `testnet2`, `testnet-stress`).
+/// CPU-oriented initial target ceiling, 2^244 (`devnet`, `testnet1`, `testnet2`, `testnet-stress`;
+/// 2^240 before Nov 18, 2026). Pinned against the node by `tests/vectors/consensus_v1.json`.
 pub const GENESIS_MAX_TARGET_CPU: [u8; 32] = {
     let mut t = [0u8; 32];
-    t[1] = 0x01;
+    t[1] = 0x10;
     t
 };
 /// `testnet3`'s ASIC-oriented initial target ceiling, 2^216.
@@ -299,7 +300,10 @@ impl BeaconGenesisConfig {
     pub fn devnet() -> Self {
         Self::preset(
             NetworkId::Devnet, bitcoin_anchors::DEVNET_ANCHOR_HASH, 935093, 1704067200, 1704067200, 128,
-            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2, Self::delayed(1), Vec::new(),
+            GENESIS_DEFAULT_BITS, GENESIS_MAX_TARGET_CPU, 2, 2,
+            // Governance epochs turn every 256 beacon blocks on devnet (4,096 before Nov 17, 2026).
+            ExpandVotingConfig { activation_delay: 1, epoch_length: 256, ..ExpandVotingConfig::default() },
+            Vec::new(),
             "Shisha Network Devnet",
         )
     }

@@ -29,7 +29,7 @@ use network_common::common::crypto::weighted_hash::{bag_peaks_weighted_u128, Wei
 use network_common::common::genesis::genesis_config::{BeaconGenesisConfig, ShardGenesisConfig};
 use network_common::common::blocks::shard_block::TxInclusionProof;
 use network_common::common::proofs::{decode_shard_blocks, FullShardBlockData, ThinHeaderProofResponse, ThinShardBlocksResponse, ThinShardSessionResponse};
-use network_common::common::expand_voting::{epoch_length, shard_admissible_count_range, shard_reference_s_bits};
+use network_common::common::expand_voting::{shard_admissible_count_range, shard_reference_s_bits};
 use network_common::common::merged_mining_check::verify_shard_block_with_ref_s;
 use network_common::common::proofs::ThinEpochRecordResponse;
 use network_common::transaction::BeaconEpochRecord;
@@ -52,6 +52,11 @@ pub struct ThinShardParams {
     /// Beacon blocks between genesis and a genesis shard's activation block.
     pub activation_delay: u32,
     pub shard_calibration: u32,
+    /// Governance epoch length in beacon blocks (`shard_expansion.epoch_length` of the genesis the
+    /// light client was started with). Never the process-global `epoch_length()`: that is 4,096
+    /// unless a node binary initialised it, and a light client on an epoch-256 or epoch-8 network
+    /// would read every epoch boundary wrong.
+    pub epoch_length: u32,
     /// Shard-expansion step (`shard_admissible_count_range`'s numerator and denominator).
     pub step_numerator: u16,
     pub step_denominator: u16,
@@ -74,6 +79,7 @@ impl ThinShardParams {
             initial_shard_count: g.shard_expansion.initial_shard_count,
             activation_delay: g.shard_expansion.activation_delay,
             shard_calibration: g.shard_calibration,
+            epoch_length: g.shard_expansion.epoch_length,
             step_numerator: g.shard_expansion.step_numerator,
             step_denominator: g.shard_expansion.step_denominator,
             dynamic_activation: None,
@@ -116,7 +122,7 @@ impl ThinShardParams {
         let anchor = self.activation_height()? as u64;
         let calib = self.shard_calibration.max(1) as u64;
         let beacon_est = anchor.saturating_add(shard_height as u64 / calib);
-        Some((beacon_est.min(u32::MAX as u64) as u32) / epoch_length())
+        Some((beacon_est.min(u32::MAX as u64) as u32) / self.epoch_length.max(1))
     }
 
     /// The admissible chain-count range for a block at `shard_height` (V7, `shard_admissible_count_range`),

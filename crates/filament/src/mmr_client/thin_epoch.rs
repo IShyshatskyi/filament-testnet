@@ -20,7 +20,6 @@
 //! Records are trusted only for epochs strictly before the beacon's current one: the block that starts
 //! the current epoch may still be reorganised, an earlier one is buried by a whole epoch of work.
 
-use network_common::common::expand_voting::epoch_length;
 use network_common::common::proofs::ThinEpochRecordResponse;
 use network_common::transaction::BeaconEpochRecord;
 
@@ -32,6 +31,7 @@ use crate::mmr_client::thin_sync::fetch_json;
 pub fn verify_epoch_record(
     beacon: &ThinBeaconState,
     bitcoin_anchor_hash: [u8; 32],
+    epoch_length: u32,
     epoch: u32,
     resp: &ThinEpochRecordResponse,
 ) -> Result<BeaconEpochRecord, ThinSyncError> {
@@ -39,7 +39,7 @@ pub fn verify_epoch_record(
     if epoch == 0 || resp.epoch != epoch {
         return Err(bad("the response is not for the epoch asked"));
     }
-    let height = epoch.checked_mul(epoch_length()).ok_or_else(|| bad("epoch out of range"))?;
+    let height = epoch.checked_mul(epoch_length).ok_or_else(|| bad("epoch out of range"))?;
     let hs = verified_headers(beacon, bitcoin_anchor_hash, height, 1, &resp.header_proof)?;
     let record = resp
         .record_proof
@@ -52,9 +52,9 @@ pub fn verify_epoch_record(
 }
 
 /// The newest epoch whose record Filament trusts: the one before the beacon's current epoch.
-pub fn newest_trusted_epoch(beacon: &ThinBeaconState) -> u32 {
+pub fn newest_trusted_epoch(beacon: &ThinBeaconState, epoch_length: u32) -> u32 {
     let tip = beacon.leaf_count().saturating_sub(1);
-    (tip / epoch_length()).saturating_sub(1)
+    (tip / epoch_length.max(1)).saturating_sub(1)
 }
 
 /// Fetch and verify one epoch's record from the first Keystone that gives a valid answer.
@@ -63,6 +63,7 @@ pub async fn fetch_epoch_record(
     urls: &[String],
     beacon: &ThinBeaconState,
     bitcoin_anchor_hash: [u8; 32],
+    epoch_length: u32,
     epoch: u32,
 ) -> Result<BeaconEpochRecord, String> {
     let at = beacon.leaf_count();
@@ -70,7 +71,7 @@ pub async fn fetch_epoch_record(
     for url in urls {
         let resp: Result<ThinEpochRecordResponse, String> =
             fetch_json(http, &format!("{url}/chain/epoch-record/{epoch}?at={at}")).await.map_err(|e| e.to_string());
-        match resp.and_then(|r| verify_epoch_record(beacon, bitcoin_anchor_hash, epoch, &r).map_err(|e| e.to_string())) {
+        match resp.and_then(|r| verify_epoch_record(beacon, bitcoin_anchor_hash, epoch_length, epoch, &r).map_err(|e| e.to_string())) {
             Ok(rec) => return Ok(rec),
             Err(e) => last = format!("{url}: {e}"),
         }
@@ -95,13 +96,14 @@ async fn count_of_epoch(
     urls: &[String],
     beacon: &ThinBeaconState,
     bitcoin_anchor_hash: [u8; 32],
+    epoch_length: u32,
     counts: &mut Vec<(u32, u16)>,
     epoch: u32,
 ) -> Result<u16, String> {
     if let Some(c) = known(counts, epoch) {
         return Ok(c);
     }
-    let rec = fetch_epoch_record(http, urls, beacon, bitcoin_anchor_hash, epoch).await?;
+    let rec = fetch_epoch_record(http, urls, beacon, bitcoin_anchor_hash, epoch_length, epoch).await?;
     insert_count(counts, epoch, rec.active_shard_count);
     Ok(rec.active_shard_count)
 }
@@ -120,10 +122,10 @@ pub async fn ensure_epoch_counts(
     let Some(activation) = p.activation_height() else {
         return Ok(());
     };
-    let newest = newest_trusted_epoch(beacon);
-    let first = (activation / epoch_length()).saturating_sub(2).max(1);
+    let newest = newest_trusted_epoch(beacon, p.epoch_length);
+    let first = (activation / p.epoch_length.max(1)).saturating_sub(2).max(1);
     for epoch in first..=newest {
-        count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, counts, epoch).await?;
+        count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, p.epoch_length, counts, epoch).await?;
     }
     Ok(())
 }
@@ -141,12 +143,12 @@ pub async fn discover_dynamic_activation(
     counts: &mut Vec<(u32, u16)>,
 ) -> Result<Option<u32>, String> {
     debug_assert!(p.is_dynamic());
-    let hi = newest_trusted_epoch(beacon);
+    let hi = newest_trusted_epoch(beacon, p.epoch_length);
     if hi < 1 {
         return Ok(None);
     }
     let opened = |c: u16| c > p.shard_id;
-    if !opened(count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, counts, hi).await?) {
+    if !opened(count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, p.epoch_length, counts, hi).await?) {
         return Ok(None);
     }
     // Invariant: epoch `hi` has the shard open; `lo - 1` does not (epoch 0 is the genesis count,
@@ -154,11 +156,11 @@ pub async fn discover_dynamic_activation(
     let (mut lo, mut hi) = (1u32, hi);
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if opened(count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, counts, mid).await?) {
+        if opened(count_of_epoch(http, urls, beacon, bitcoin_anchor_hash, p.epoch_length, counts, mid).await?) {
             hi = mid;
         } else {
             lo = mid + 1;
         }
     }
-    Ok(Some(lo.saturating_mul(epoch_length()).saturating_add(p.activation_delay)))
+    Ok(Some(lo.saturating_mul(p.epoch_length).saturating_add(p.activation_delay)))
 }

@@ -160,11 +160,11 @@ preset and for the checked-in genesis files.
 | Network | Chains at genesis | Start difficulty | Target ceiling | Note |
 |---|---|---|---|---|
 | `mainnet` | 3 | 128 | 2^212 | ASIC |
-| `testnet1` | 3 | 128 | 2^240 | CPU, historical |
-| `testnet2` | 15 (s = 4) | 512 | 2^240 | CPU, the announced community network |
+| `testnet1` | 3 | 128 | 2^244 | CPU, historical (2^240 before Nov 18, 2026) |
+| `testnet2` | 15 (s = 4) | 512 | 2^244 | CPU, the announced community network (2^240 before Nov 18, 2026) |
 | `testnet3` | 3 | 128 | 2^216 | ASIC |
-| `devnet` | 3 | 128 | 2^240 | Local. The name does not identify one chain: any soak genesis runs as `devnet`. |
-| `testnet-stress` | 3 | 128 | 2^240 | Epochs of 256 blocks; genesis hash pinned in the preset. |
+| `devnet` | 3 | 128 | 2^244 | Local; epochs of 256 blocks (2^240 and 4,096 before Nov 17, 2026). The name does not identify one chain: any soak genesis runs as `devnet`. |
+| `testnet-stress` | 3 | 128 | 2^244 | Epochs of 256 blocks; genesis hash pinned in the preset (2^240 before Nov 18, 2026). |
 
 For anything but a stock preset, pass the genesis file (`--genesis-file`, or `--genesis`):
 `MultiChainClient::init_from_genesis_file`. A file that does not load stops startup.
