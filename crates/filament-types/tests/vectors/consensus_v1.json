@@ -854,7 +854,7 @@
           "difficulty": "64",
           "expansion": {
             "activation_delay": 1,
-            "epoch_length": 4096,
+            "epoch_length": 8,
             "initial_s_bits": 5,
             "initial_shard_count": 15,
             "step_denominator": 4,
@@ -876,7 +876,7 @@
           "version": 1
         },
         "name": "genesis_crash_recovery.toml",
-        "text": "network_magic = [0xFF, 0xFF, 0xFF, 0xFF]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\ntimestamp = 1787779736\ndifficulty = 64\nbits = 0x03000040\nmax_target = [16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 5\ntree_depth = 5\nshard_calibration = 1\nminimum_difficulty = 64\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1787779736\ngenesis_message = \"Shisha Network crash-recovery dry-run (E3)\"\npremine = []\n[beacon.shard_expansion]\ninitial_shard_count = 15\ninitial_s_bits = 5\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1\nepoch_length = 4096\n[beacon.k_voting]\nk_initial_kbits = 0x09010000\n[shards]\n"
+        "text": "network_magic = [0xFF, 0xFF, 0xFF, 0xFF]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\ntimestamp = 1787779736\ndifficulty = 64\nbits = 0x03000040\nmax_target = [16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 5\ntree_depth = 5\nshard_calibration = 1\nminimum_difficulty = 64\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1787779736\ngenesis_message = \"Shisha Network crash-recovery dry-run (E3)\"\npremine = []\n[beacon.shard_expansion]\ninitial_shard_count = 15\ninitial_s_bits = 5\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1\nepoch_length = 8\n[beacon.k_voting]\nactivation_height = 8\nk_initial_kbits = 0x09010000\n[shards]\n"
       },
       {
         "genesis": {
@@ -910,7 +910,7 @@
           "version": 1
         },
         "name": "genesis_devnet_15.toml",
-        "text": "network_magic = [0xFF, 0xFF, 0xFF, 0xFF]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\ntimestamp = 1783544872\ndifficulty = 512\nbits = 0x03000200\nmax_target = [0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 4\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1783544872\ngenesis_message = \"Shisha Network Devnet 15-shard soak\"\npremine = []\n[beacon.shard_expansion]\ninitial_shard_count = 15\ninitial_s_bits = 4\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1\nepoch_length = 256\n[beacon.k_voting]\nk_initial_kbits = 0x09010000\n[shards]\n"
+        "text": "network_magic = [0xFF, 0xFF, 0xFF, 0xFF]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Custom\"\nversion = 1\ntimestamp = 1783544872\ndifficulty = 512\nbits = 0x03000200\nmax_target = [0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 4\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\nbitcoin_anchor_hash = [74, 225, 153, 130, 223, 1, 203, 2, 178, 130, 201, 253, 83, 7, 101, 153, 213, 210, 121, 19, 51, 162, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935093\nbitcoin_anchor_timestamp = 1783544872\ngenesis_message = \"Shisha Network Devnet 15-shard soak\"\npremine = []\n[beacon.shard_expansion]\ninitial_shard_count = 15\ninitial_s_bits = 4\nthreshold_numerator = 5\nthreshold_denominator = 8\nstep_numerator = 1\nstep_denominator = 4\nactivation_delay = 1\nepoch_length = 256\n[beacon.k_voting]\nk_initial_kbits = 0x09010000\nactivation_height = 256\n[shards]\n"
       },
       {
         "genesis": {
@@ -933,7 +933,7 @@
           "expected_hash": null,
           "genesis_hash": "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200",
           "genesis_message": "Shisha Network Testnet2 - Public 15-shard network",
-          "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
+          "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "512",
           "network_id": "Testnet2",
           "nonce": null,
@@ -949,7 +949,7 @@
           "version": 1
         },
         "name": "genesis_testnet2.toml",
-        "text": "network_magic = [0x53, 0x48, 0x54, 0x32]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Testnet2\"\nversion = 1\ntimestamp = 1704067200\ndifficulty = 512\nbits = 0x03000200\nmax_target = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 4\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\nbitcoin_anchor_hash = [70, 34, 156, 102, 220, 235, 135, 207, 106, 86, 102, 68, 142, 41, 104, 43, 190, 216, 31, 237, 18, 193, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935092\nbitcoin_anchor_timestamp = 1704067200\ngenesis_message = \"Shisha Network Testnet2 - Public 15-shard network\"\npremine = [\n    { address = \"testnet-faucet\", amount = 10_000_000_000, description = \"Public testnet faucet (replace with real key before launch)\" },\n]\ncredit_premine_to_shard_genesis = false\n[beacon.shard_expansion]\ninitial_shard_count   = 15\ninitial_s_bits        = 4\nthreshold_numerator   = 5\nthreshold_denominator = 8\nstep_numerator         = 1\nstep_denominator       = 4\nactivation_delay       = 4\nepoch_length           = 4096\n[beacon.k_voting]\nactivation_height = 4096\nk_initial_kbits = 0x09010000\n[shards]\n"
+        "text": "network_magic = [0x53, 0x48, 0x54, 0x32]\nprotocol_version = 1\n[beacon]\nnetwork_id = \"Testnet2\"\nversion = 1\ntimestamp = 1704067200\ndifficulty = 512\nbits = 0x03000200\nmax_target = [0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nasserted_s_bits = 4\ntree_depth = 4\nshard_calibration = 16\nminimum_difficulty = 512\nbitcoin_anchor_hash = [70, 34, 156, 102, 220, 235, 135, 207, 106, 86, 102, 68, 142, 41, 104, 43, 190, 216, 31, 237, 18, 193, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\nbitcoin_anchor_height = 935092\nbitcoin_anchor_timestamp = 1704067200\ngenesis_message = \"Shisha Network Testnet2 - Public 15-shard network\"\npremine = [\n    { address = \"testnet-faucet\", amount = 10_000_000_000, description = \"Public testnet faucet (replace with real key before launch)\" },\n]\ncredit_premine_to_shard_genesis = false\n[beacon.shard_expansion]\ninitial_shard_count   = 15\ninitial_s_bits        = 4\nthreshold_numerator   = 5\nthreshold_denominator = 8\nstep_numerator         = 1\nstep_denominator       = 4\nactivation_delay       = 4\nepoch_length           = 4096\n[beacon.k_voting]\nactivation_height = 4096\nk_initial_kbits = 0x09010000\n[shards]\n"
       },
       {
         "genesis": {
@@ -1051,7 +1051,7 @@
           "expected_hash": null,
           "genesis_hash": "0fe5fab91a058d92f826041cc53b694376aa1a767d5dbf52a261255d03000080",
           "genesis_message": "Shisha Network Testnet 1",
-          "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
+          "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
           "network_id": "Testnet1",
           "nonce": null,
@@ -1089,7 +1089,7 @@
           "expected_hash": null,
           "genesis_hash": "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200",
           "genesis_message": "Shisha Network Testnet2 - Public 15-shard network",
-          "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
+          "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "512",
           "network_id": "Testnet2",
           "nonce": null,
@@ -1154,7 +1154,7 @@
           "difficulty": "128",
           "expansion": {
             "activation_delay": 1,
-            "epoch_length": 4096,
+            "epoch_length": 256,
             "initial_s_bits": 2,
             "initial_shard_count": 3,
             "step_denominator": 4,
@@ -1165,7 +1165,7 @@
           "expected_hash": null,
           "genesis_hash": "2240f8752353043270ffe5d41e867b6dba8a7aa7b1b52abdd007524303000080",
           "genesis_message": "Shisha Network Devnet",
-          "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
+          "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
           "network_id": "Devnet",
           "nonce": null,
@@ -1198,7 +1198,7 @@
           "expected_hash": "000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080",
           "genesis_hash": "000003209cb9d6d5f025b849177c322c66bf0e814cdf3558132fbd0203000080",
           "genesis_message": "Shisha Network Testnet-Stress - 30-day stress launch",
-          "max_target": "0001000000000000000000000000000000000000000000000000000000000000",
+          "max_target": "0010000000000000000000000000000000000000000000000000000000000000",
           "minimum_difficulty": "128",
           "network_id": "TestnetStress",
           "nonce": 89721,
