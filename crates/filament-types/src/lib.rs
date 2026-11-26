@@ -1,0 +1,120 @@
+//! filament-types — minimal wire types and proof-verification primitives
+//! for the Filament light client (clean-room; no private MMR engines).
+
+pub mod expand_voting;
+pub mod weighted_hash;
+pub mod hash;
+pub mod hash_sorting;
+pub mod transaction_impl;
+pub mod beacon_epoch_record;
+pub mod tx_sighash;
+pub mod txid;
+pub mod relay_hash;
+pub mod types;
+pub mod genesis;
+pub mod genesis_network;
+pub mod verification;
+pub mod proofs;
+pub mod beacon_wire_header;
+pub mod weighted_mmr_peaks;
+pub mod mmr_math;
+pub mod merged_mining_hash;
+pub mod pow_target;
+pub mod pow_check;
+pub mod shard_body;
+pub mod shard_header;
+pub mod merged_mining_check;
+pub mod crypto_escrow;
+pub mod ipp;
+
+/// `crypto::tx_sighash`, the path the node-side crate uses.
+pub mod crypto {
+    pub use crate::tx_sighash;
+    pub mod escrow {
+        pub use crate::crypto_escrow::*;
+    }
+}
+
+pub mod common {
+    pub mod crypto {
+        pub use crate::hash;
+        pub use crate::hash::{hash_pair, sha256d};
+        pub use crate::tx_sighash;
+        pub use crate::tx_sighash::{prevouts_hash, sighash_v2};
+        pub use crate::weighted_hash;
+        pub mod merged_mining_hash {
+            pub use crate::merged_mining_hash::*;
+        }
+        pub mod difficulty {
+            pub use crate::pow_target::hash_meets_target;
+        }
+        pub use crate::weighted_hash::{
+            bag_peaks_weighted, bag_peaks_weighted_u128, hash_pair_weighted, rbits_add,
+            rbits_to_u128_approx, u128_to_rbits, WeightedHash,
+        };
+        pub mod escrow {
+            pub use crate::crypto_escrow::*;
+        }
+    }
+
+    pub mod blocks {
+        pub mod beacon_wire_header {
+            pub use crate::beacon_wire_header::*;
+        }
+        pub use crate::genesis_network::BeaconBlock;
+        pub mod shard_block {
+            pub use crate::shard_body::{BeaconEpochRecordProof, ShardBlockBody, TransactionDescriptor, TxInclusionProof};
+            pub use crate::shard_header::{BeaconHeader, Block, FullShardHeader};
+        }
+    }
+
+    pub mod pow_check {
+        pub use crate::pow_check::*;
+    }
+
+    pub mod merged_mining_check {
+        pub use crate::merged_mining_check::*;
+    }
+
+    pub mod genesis {
+        pub mod genesis_config {
+            pub use crate::genesis::{BeaconGenesisConfig, NetworkId, PremineOutput, ShardGenesisConfig, SHARD_CALIBRATION_CONSTANT};
+            pub use crate::genesis_network::NetworkGenesisConfig;
+        }
+        pub mod genesis {
+            pub use crate::genesis_network::GenesisGenerator;
+        }
+        pub use crate::genesis_network::GenesisGenerator;
+        pub use genesis_config::BeaconGenesisConfig;
+    }
+
+    pub mod mmr_math {
+        pub use crate::mmr_math::*;
+    }
+
+
+    pub use crate::expand_voting;
+    pub use crate::ipp;
+    pub use crate::proofs;
+    pub use crate::relay_hash;
+    pub use crate::relay_hash::relay_id;
+    pub use crate::types;
+    pub use crate::types::ChainType;
+    pub use crate::verification;
+}
+
+pub mod transaction {
+    pub use crate::transaction_impl::*;
+    pub use crate::txid::{shard_chain_id, txid_from_parts, BEACON_CHAIN_ID, TXID_DOMAIN_TAG};
+    pub use crate::beacon_epoch_record::*;
+
+    pub mod types {
+        pub use crate::transaction_impl::*;
+    }
+}
+
+pub use hash::hash_pair;
+pub use relay_hash::relay_id;
+pub use tx_sighash::{prevouts_hash, sighash_v2};
+pub use types::ChainType;
+pub use weighted_hash::{bag_peaks_weighted, rbits_to_u128_approx, WeightedHash};

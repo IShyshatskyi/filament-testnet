@@ -1,0 +1,204 @@
+# Light Client Configuration
+#
+# Genesis facts of each network, so a light client can bootstrap its chain state without trusting
+# a peer.
+#
+# The network tables below are DERIVED, not typed: genesis_hash and genesis_mmr_root come from
+# `GenesisGenerator::generate_beacon_genesis` on each network's `BeaconGenesisConfig` preset, and
+# the other fields are the preset's. A unit test (`bootstrap_config_matches_presets`) compares this
+# file with the presets, so a drift fails the build. Hashes are in internal byte order (the same
+# order the nodes write into prev_mmr_root), the reverse of a block explorer's display.
+# `devnet` is the stock preset; a local soak genesis has its own hash, so pass its genesis file
+# (`init_from_genesis_file`) instead of trusting this table for it.
+
+[mainnet]
+network_id = "mainnet"
+genesis_hash = "838e0d64fdee4246554c241ae801e1094fbcec0ad62404d74a0d0c2b03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "e6d1ca21b04efdc5fb8776397a696a5140a6407c0a4daf8acfb1d71603000080"
+bitcoin_anchor_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+bitcoin_anchor_height = 0
+bitcoin_anchor_timestamp = 1704067200
+
+[testnet1]
+network_id = "testnet1"
+genesis_hash = "0fe5fab91a058d92f826041cc53b694376aa1a767d5dbf52a261255d03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "9c7467b125b6df33cfea501d308e0f01605e1e368713f9e64a5365a803000080"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
+
+[testnet2]
+network_id = "testnet2"
+genesis_hash = "b90093161ac6cc699c295b28009435a1fad4484aef64652eba7c800a03000200"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 512
+genesis_bits = 0x03000200
+genesis_mmr_root = "e282773633a55c1d4d51c8da65f534b0cf616cde954301ab6ef0fb6e03000200"
+bitcoin_anchor_hash = "46229c66dceb87cf6a5666448e29682bbed81fed12c100000000000000000000"
+bitcoin_anchor_height = 935092
+bitcoin_anchor_timestamp = 1704067200
+
+[testnet3]
+network_id = "testnet3"
+genesis_hash = "d6180680892cf1da0266435ace905c2a35a21882791e4be45c66497c03000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "a6f37195b0c98ff3d8382770fc25c57129aa6a965a73c87d0adbb54e03000080"
+bitcoin_anchor_hash = "29d5d423d7cb7ea3ee94452d610acb9313a38ff9fd5200000000000000000000"
+bitcoin_anchor_height = 935091
+bitcoin_anchor_timestamp = 1704067200
+
+[devnet]
+network_id = "devnet"
+genesis_hash = "2240f8752353043270ffe5d41e867b6dba8a7aa7b1b52abdd007524303000080"
+genesis_height = 0
+genesis_timestamp = 1704067200
+genesis_difficulty = 128
+genesis_bits = 0x03000080
+genesis_mmr_root = "e54ee53b5a98ee53ee4bebf2c236aeb4d3b666aeda40e1e48deae81a03000080"
+bitcoin_anchor_hash = "4ae19982df01cb02b282c9fd53076599d5d2791333a200000000000000000000"
+bitcoin_anchor_height = 935093
+bitcoin_anchor_timestamp = 1704067200
+
+# Light client synchronization settings
+[sync]
+# Number of recent blocks to cache
+recent_blocks_cache_size = 100
+
+# How often to poll for updates (seconds)
+poll_interval_secs = 10
+
+# Maximum concurrent requests to peers
+max_concurrent_requests = 10
+
+# Batch size for range proofs
+range_proof_batch_size = 100
+
+# Request timeout (seconds)
+request_timeout_secs = 30
+
+# Paranoid mode - verify all proofs even from trusted checkpoints
+paranoid_mode = false
+
+
+# Checkpoint configuration (for fast sync)
+# Light clients can start from recent checkpoints instead of genesis
+[checkpoints.mainnet]
+# Example checkpoint at height 100,000
+# Add these after network has been running for a while
+# height_100000 = "checkpoint_hash_here"
+
+
+[checkpoints.testnet1]
+# Testnet checkpoints
+
+
+[checkpoints.devnet]
+# Devnet typically doesn't need checkpoints
+
+
+# Trusted peers (optional - for initial bootstrap)
+[peers.mainnet]
+# List of known good peers for mainnet
+# peers = [
+#     "peer1.jaxnetwork.org:8333",
+#     "peer2.jaxnetwork.org:8333",
+# ]
+
+
+[peers.testnet1]
+# Testnet peers
+
+
+[peers.devnet]
+# Devnet peers (usually localhost)
+# peers = ["localhost:8332"]
+
+
+# ============================================================================
+# IMPORTANT NOTES ON GENESIS CONFIGURATION
+# ============================================================================
+#
+# Genesis Block Structure:
+# ========================
+#
+# For ALL networks (mainnet, testnet1, testnet3, devnet):
+#
+# 1. prev_block_hash = bitcoin_anchor_hash
+#    - NOT zero hash!
+#    - Links genesis to Bitcoin blockchain
+#    - Prevents pre-mining
+#
+# 2. prev_mmr_root = bitcoin_anchor_hash
+#    - Initial MMR state equals Bitcoin anchor
+#    - First block in chain builds on this root
+#
+# 3. current_mmr_root = genesis_hash
+#    - After mining genesis, its hash becomes the MMR root
+#    - This is what gets set in genesis_mmr_root field above
+#
+# 4. hash = genesis_hash
+#    - The actual genesis block hash after mining
+#    - Calculated from header fields
+#
+#
+# Configuration Workflow:
+# =======================
+#
+# BEFORE genesis mining:
+# - Set bitcoin_anchor_hash to chosen Bitcoin block
+# - Set bitcoin_anchor_height to that block's height
+# - Leave genesis_hash as zeros (will be calculated)
+# - Leave genesis_mmr_root as zeros (will equal genesis_hash)
+#
+# AFTER genesis mining:
+# - Set genesis_hash to the mined block's hash
+# - Set genesis_mmr_root to the same value (equals genesis_hash)
+# - Bitcoin anchor fields remain unchanged
+#
+#
+# Validation in Light Client:
+# ============================
+#
+# When light client loads genesis:
+# 1. Reads bitcoin_anchor_hash from config
+# 2. Creates genesis block with:
+#    - prev_block_hash = bitcoin_anchor_hash
+#    - prev_mmr_root = bitcoin_anchor_hash
+#    - current_mmr_root = genesis_mmr_root (from config)
+#    - hash = genesis_hash (from config)
+#
+# 3. Validates that genesis matches expected structure
+# 4. Uses this as trusted starting point for verification
+#
+#
+# Security Model:
+# ===============
+#
+# The Bitcoin anchor prevents:
+# - Pre-mining (can't mine before Bitcoin anchor exists)
+# - Time manipulation (timestamp must be after Bitcoin block)
+# - Chain rewriting (genesis is cryptographically linked to Bitcoin)
+#
+# Light clients trust:
+# - The genesis_hash in this config file (hardcoded)
+# - The bitcoin_anchor_hash in this config file (hardcoded)
+# - That these values are correct and match the network
+#
+# Light clients verify:
+# - All blocks after genesis using MMR proofs
+# - That proofs link back to trusted genesis_mmr_root
+# - That chain has highest cumulative difficulty
+#
+# ============================================================================

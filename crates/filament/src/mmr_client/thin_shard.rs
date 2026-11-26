@@ -1,0 +1,942 @@
+//! Thin shard chain state for the light client (the thin sync design).
+//!
+//! Same idea as [`ThinBeaconState`](crate::mmr_client::thin_chain::ThinBeaconState): MMR peaks, the
+//! leaf count, the last [`RECENT_BLOCKS`] records, and a weight computed locally. What differs:
+//!
+//! * **The anchor.** A shard's MMR starts from the beacon root at the shard's activation block, not
+//!   from the bitcoin anchor. Filament derives it from beacon data it verified itself
+//!   ([`discover_anchor`]); it never takes it from a Keystone's word.
+//! * **The work.** A shard block's proof-of-work sits in its auxiliary beacon header and its
+//!   merged-mining sibling path, so a 136-byte header is not enough: every block arrives as a full
+//!   [`FullShardBlockData`] record (~2.2 KB) and goes through the node's own
+//!   `verify_shard_id_and_mmn` (target, rBits floor, hash-sorting route to *this* shard, sibling
+//!   path to `merged_mining_root`). An empty sibling path is refused (the node accepts it only for
+//!   test fixtures).
+//!
+//! Limits (stated, not hidden): the check covers the work a block claims, not that the claim equals
+//! the shard DAA's expected difficulty. The chain count (packed in `merged_mining_root`, D7) is checked
+//! against the admissible range of the block's epoch (V7) and the floor uses `s_ref` (DAA-C1) **once
+//! the epoch records it needs are verified** (`ThinShardParams::epoch_counts`, from
+//! [`crate::mmr_client::thin_epoch`]; since NC-200 the beacon commits them in the PoW-covered body root);
+//! until then the claim is checked only against its own sibling path. A cheap fake chain still has to
+//! be lighter than the real one and lose the comparison between Keystones.
+
+use std::collections::VecDeque;
+
+use network_common::common::blocks::beacon_wire_header::WireBeaconHeader;
+use network_common::common::blocks::shard_block::Block;
+use network_common::common::crypto::weighted_hash::{bag_peaks_weighted_u128, WeightedHash};
+use network_common::common::genesis::genesis_config::{BeaconGenesisConfig, ShardGenesisConfig};
+use network_common::common::blocks::shard_block::TxInclusionProof;
+use network_common::common::proofs::{decode_shard_blocks, FullShardBlockData, ThinHeaderProofResponse, ThinShardBlocksResponse, ThinShardSessionResponse};
+use network_common::common::expand_voting::{shard_admissible_count_range, shard_reference_s_bits};
+use network_common::common::merged_mining_check::verify_shard_block_with_ref_s;
+use network_common::common::proofs::ThinEpochRecordResponse;
+use network_common::transaction::BeaconEpochRecord;
+use network_common::common::mmr_math;
+
+use crate::mmr_client::thin_chain::{ThinBeaconState, ThinState, ThinSyncError};
+
+/// How many full block records are kept (same as the beacon: owner decision, Oct 29, 2026).
+pub const RECENT_BLOCKS: usize = 16;
+
+/// Trusted facts a shard's checks need, all from the network's beacon genesis.
+#[derive(Debug, Clone)]
+pub struct ThinShardParams {
+    pub shard_id: u16,
+    pub initial_target: [u8; 32],
+    pub genesis_asserted_s_bits: u32,
+    pub tree_depth: usize,
+    /// `shard_expansion.initial_shard_count`: shards below it exist from genesis.
+    pub initial_shard_count: u16,
+    /// Beacon blocks between genesis and a genesis shard's activation block.
+    pub activation_delay: u32,
+    pub shard_calibration: u32,
+    /// Governance epoch length in beacon blocks (`shard_expansion.epoch_length` of the genesis the
+    /// light client was started with). Never the process-global `epoch_length()`: that is 4,096
+    /// unless a node binary initialised it, and a light client on an epoch-256 or epoch-8 network
+    /// would read every epoch boundary wrong.
+    pub epoch_length: u32,
+    /// Shard-expansion step (`shard_admissible_count_range`'s numerator and denominator).
+    pub step_numerator: u16,
+    pub step_denominator: u16,
+    /// Beacon height of a dynamically activated shard's activation block, learned from verified
+    /// epoch records ([`crate::mmr_client::thin_epoch`]); `None` until discovered.
+    pub dynamic_activation: Option<u32>,
+    /// `(epoch, active_shard_count)` from epoch records Filament verified, ascending, epochs >= 1.
+    /// Epoch 0's count is `initial_shard_count` (the genesis config).
+    pub epoch_counts: Vec<(u32, u16)>,
+}
+
+impl ThinShardParams {
+    /// From the same trusted genesis source as the beacon facts.
+    pub fn from_genesis(g: &BeaconGenesisConfig, shard_id: u16) -> Self {
+        Self {
+            shard_id,
+            initial_target: g.max_target,
+            genesis_asserted_s_bits: g.asserted_s_bits,
+            tree_depth: g.tree_depth as usize,
+            initial_shard_count: g.shard_expansion.initial_shard_count,
+            activation_delay: g.shard_expansion.activation_delay,
+            shard_calibration: g.shard_calibration,
+            epoch_length: g.shard_expansion.epoch_length,
+            step_numerator: g.shard_expansion.step_numerator,
+            step_denominator: g.shard_expansion.step_denominator,
+            dynamic_activation: None,
+            epoch_counts: Vec::new(),
+        }
+    }
+
+    /// The shard is not in the genesis config: an expand vote opened it.
+    pub fn is_dynamic(&self) -> bool {
+        self.shard_id >= self.initial_shard_count
+    }
+
+    /// Beacon height of the activation block: `activation_delay` for a genesis shard; for a
+    /// dynamically activated one the height found from verified epoch records
+    /// (`epoch * epoch_length + activation_delay` of the first epoch whose count exceeds the id),
+    /// `None` until then. Never guessed.
+    pub fn activation_height(&self) -> Option<u32> {
+        if self.is_dynamic() {
+            self.dynamic_activation
+        } else {
+            Some(self.activation_delay)
+        }
+    }
+
+    /// `c(epoch)`: the active shard count recorded for `epoch`. Epoch 0 is the genesis count.
+    pub fn count_of(&self, epoch: u32) -> Option<u16> {
+        if epoch == 0 {
+            return Some(self.initial_shard_count);
+        }
+        self.epoch_counts
+            .binary_search_by_key(&epoch, |(e, _)| *e)
+            .ok()
+            .map(|i| self.epoch_counts[i].1)
+    }
+
+    /// The governance epoch of the shard block at `shard_height`: the same calibrated projection the
+    /// node uses (`resolve_beacon_governance_epoch`: `anchor + height / calibration`), from the
+    /// activation height Filament derived and the genesis calibration. `None` without an activation.
+    pub fn epoch_of_shard_height(&self, shard_height: u32) -> Option<u32> {
+        let anchor = self.activation_height()? as u64;
+        let calib = self.shard_calibration.max(1) as u64;
+        let beacon_est = anchor.saturating_add(shard_height as u64 / calib);
+        Some((beacon_est.min(u32::MAX as u64) as u32) / self.epoch_length.max(1))
+    }
+
+    /// The admissible chain-count range for a block at `shard_height` (V7, `shard_admissible_count_range`),
+    /// or `None` when a count it needs is not among the verified epoch records yet: never a guess, and
+    /// never a narrower range than the node's (which would refuse honest blocks).
+    pub fn admissible_range(&self, shard_height: u32) -> Option<(u16, u16)> {
+        let epoch = self.epoch_of_shard_height(shard_height)?;
+        // The range reads c(E-1) (c(E) when E-1 is unknown) and, from epoch 2, c(E-2). Require both
+        // so a missing one cannot silently narrow the low side.
+        if epoch >= 1 && self.count_of(epoch - 1).is_none() {
+            return None;
+        }
+        if epoch >= 2 && self.count_of(epoch - 2).is_none() {
+            return None;
+        }
+        shard_admissible_count_range(epoch, |e| self.count_of(e), self.step_numerator, self.step_denominator)
+    }
+}
+
+/// The two values a shard's chain is anchored to, derived from verified beacon data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardAnchor {
+    /// Beacon `current_mmr_root` at the activation height: the shard's genesis `prev_mmr_root`.
+    pub root: WeightedHash,
+    /// The height-0 shard block's required `difficulty`.
+    pub genesis_bits: u32,
+}
+
+/// Anchor from the beacon state when it has just reached the activation block (the tip *is* it).
+fn anchor_from_tip(beacon: &ThinBeaconState, p: &ThinShardParams) -> Option<ShardAnchor> {
+    let tip = beacon.tip()?;
+    (tip.height == p.activation_height()?).then(|| ShardAnchor {
+        root: beacon.root(),
+        genesis_bits: ShardGenesisConfig::bits_from_beacon_nbits(tip.bits, p.shard_calibration),
+    })
+}
+
+/// The `count` headers a [`ThinHeaderProofResponse`] carries, checked against `beacon`, the thin
+/// beacon state Filament verified itself: they start at `from`, the range proof is against our root
+/// and leaf count and verifies against the bitcoin anchor, each header's proof-of-work holds and is
+/// the proof's leaf at its index. Nothing is taken on a Keystone's word.
+pub(crate) fn verified_headers(
+    beacon: &ThinBeaconState,
+    bitcoin_anchor_hash: [u8; 32],
+    from: u32,
+    count: usize,
+    resp: &ThinHeaderProofResponse,
+) -> Result<Vec<WireBeaconHeader>, ThinSyncError> {
+    use network_common::common::blocks::beacon_wire_header::WIRE_BEACON_HEADER_SIZE;
+    let bad = |m: &str| ThinSyncError::BadResponse(m.to_string());
+    if resp.from != from {
+        return Err(bad("header proof does not start at the height asked"));
+    }
+    let bytes = hex::decode(&resp.headers_hex).map_err(|_| bad("headers are not valid hex"))?;
+    let hs: Vec<WireBeaconHeader> = bytes
+        .chunks_exact(WIRE_BEACON_HEADER_SIZE)
+        .map(|c| WireBeaconHeader::deserialize(c).map_err(ThinSyncError::BadResponse))
+        .collect::<Result<_, _>>()?;
+    if hs.len() != count || bytes.len() != count * WIRE_BEACON_HEADER_SIZE {
+        return Err(bad("unexpected number of headers"));
+    }
+    if hs.iter().enumerate().any(|(i, h)| h.height != from + i as u32) {
+        return Err(bad("headers are not consecutive from the height asked"));
+    }
+    let proof = &resp.range_proof;
+    if proof.root != beacon.root() || proof.leaf_count != beacon.leaf_count() {
+        return Err(bad("header proof is not against our verified beacon root"));
+    }
+    if proof.start != from || !proof.verify_with_anchor(bitcoin_anchor_hash) {
+        return Err(bad("header proof does not verify against the anchor"));
+    }
+    for (i, h) in hs.iter().enumerate() {
+        beacon.check_pow(h)?;
+        let leaf = WeightedHash::from_leaf_rbits(&h.pow_hash(), h.bits);
+        if proof.leaves.get(i) != Some(&leaf) {
+            return Err(bad("a header does not match the proof's leaf"));
+        }
+    }
+    Ok(hs)
+}
+
+/// Derive a shard's anchor from a header proof for the activation block and the block after it
+/// (whose `prev_mmr_root` is the root *after* the activation block). The proof is checked against
+/// the root of `beacon`, the quorum-trusted thin beacon state; nothing here is taken on trust.
+pub fn anchor_from_header_proof(
+    beacon: &ThinBeaconState,
+    bitcoin_anchor_hash: [u8; 32],
+    p: &ThinShardParams,
+    resp: &ThinHeaderProofResponse,
+) -> Result<ShardAnchor, ThinSyncError> {
+    let a = p
+        .activation_height()
+        .ok_or_else(|| ThinSyncError::BadResponse("the shard's activation height is not known".to_string()))?;
+    let hs = verified_headers(beacon, bitcoin_anchor_hash, a, 2, resp)?;
+    Ok(ShardAnchor {
+        root: hs[1].prev_mmr_root,
+        genesis_bits: ShardGenesisConfig::bits_from_beacon_nbits(hs[0].bits, p.shard_calibration),
+    })
+}
+
+/// Local-only part of anchor discovery: `Some` when the beacon tip is the activation block itself.
+/// Otherwise the caller fetches a header proof (`GET /chain/header-proof/{a}?count=2&at=LEAVES`)
+/// once the beacon is past it, and feeds it to [`anchor_from_header_proof`].
+pub fn discover_anchor(beacon: &ThinBeaconState, p: &ThinShardParams) -> Option<ShardAnchor> {
+    anchor_from_tip(beacon, p)
+}
+
+#[derive(Debug, Clone)]
+pub struct ThinShardState {
+    params: ThinShardParams,
+    anchor: ShardAnchor,
+    /// Bagging seed: the shard MMR is anchored at the activation root's 32 bytes.
+    bag_anchor: WeightedHash,
+    peaks: Vec<WeightedHash>,
+    leaf_count: u32,
+    root: WeightedHash,
+    weight: u128,
+    recent: VecDeque<FullShardBlockData>,
+}
+
+impl ThinShardState {
+    pub fn new(params: ThinShardParams, anchor: ShardAnchor) -> Self {
+        let bag_anchor = WeightedHash::from_anchor(&<[u8; 32]>::from(anchor.root));
+        Self {
+            params,
+            anchor,
+            bag_anchor,
+            peaks: Vec::new(),
+            leaf_count: 0,
+            root: bag_anchor,
+            weight: 0,
+            recent: VecDeque::with_capacity(RECENT_BLOCKS),
+        }
+    }
+
+    pub fn anchor(&self) -> ShardAnchor {
+        self.anchor
+    }
+
+    /// Take the newest verified epoch counts before more blocks are applied (the state outlives the
+    /// rounds, the counts grow as epochs pass). The activation and calibration must be unchanged.
+    pub fn refresh_params(&mut self, p: &ThinShardParams) {
+        debug_assert_eq!(p.shard_id, self.params.shard_id);
+        debug_assert_eq!(p.activation_height(), self.params.activation_height());
+        self.params = p.clone();
+    }
+
+    pub fn tip(&self) -> Option<&FullShardBlockData> {
+        self.recent.back()
+    }
+
+    pub fn recent(&self) -> impl Iterator<Item = &FullShardBlockData> {
+        self.recent.iter()
+    }
+
+    /// Block hash (the header's own hash, as the node computes it) of a record.
+    pub(crate) fn block_hash(&self, b: &FullShardBlockData) -> [u8; 32] {
+        record_block_hash(self.params.shard_id, b)
+    }
+
+    pub fn peaks(&self) -> &[WeightedHash] {
+        &self.peaks
+    }
+
+    /// Block hash of the tip.
+    pub fn tip_hash(&self) -> Option<[u8; 32]> {
+        self.recent.back().map(|b| self.block_hash(b))
+    }
+
+    /// MMR leaf of the block at `height`, when it is one of the held records.
+    pub fn leaf_at(&self, height: u32) -> Option<WeightedHash> {
+        let b = self.recent.iter().find(|b| b.height == height)?;
+        Some(WeightedHash::from_leaf_rbits(&self.block_hash(b), b.difficulty))
+    }
+
+    /// The node's own shard checks on one record, without touching the state.
+    fn check_work(&self, b: &FullShardBlockData) -> Result<[u8; 32], ThinSyncError> {
+        if b.merged_mining_proof.is_empty() {
+            return Err(ThinSyncError::BadPow("empty merged-mining sibling path"));
+        }
+        // The record carries `beacon_coinbase`, which is part of the block hash: rebuild the header
+        // with it, or every block that has one hashes to a different leaf than the node's.
+        let header = b.to_header(self.params.shard_id);
+        let hash = header.hash();
+        let block = Block::new(header, Vec::new());
+        // V7 / DAA-C1 with the epoch records Filament verified: the claimed chain count must lie in
+        // the admissible range of the block's epoch, and the difficulty floor uses `s_ref` (the range's
+        // ceiling), not the producer's claim. Without the records the checks are those of before
+        // (claim-based floor, no range): stated in the module doc.
+        let range = self.params.admissible_range(b.height);
+        let ref_s = range.map(shard_reference_s_bits);
+        verify_shard_block_with_ref_s(
+            &block,
+            self.params.tree_depth,
+            range,
+            ref_s,
+            &self.params.initial_target,
+            self.params.genesis_asserted_s_bits,
+        )
+        .map_err(|_| ThinSyncError::BadPow("shard proof-of-work / hash-sorting / merged-mining check failed"))?;
+        Ok(hash)
+    }
+
+    /// Verify `b` as the next block and append it. On error the state is unchanged.
+    pub fn apply_block(&mut self, b: &FullShardBlockData) -> Result<(), ThinSyncError> {
+        if b.height != self.leaf_count {
+            return Err(ThinSyncError::WrongHeight { expected: self.leaf_count, got: b.height });
+        }
+        if b.height == 0 {
+            if b.prev_mmr_root != self.anchor.root || b.difficulty != self.anchor.genesis_bits {
+                return Err(ThinSyncError::PrevRootMismatch);
+            }
+        } else if b.prev_mmr_root != self.root {
+            return Err(ThinSyncError::PrevRootMismatch);
+        }
+        let hash = self.check_work(b)?;
+        let next_count = self.leaf_count.checked_add(1).ok_or(ThinSyncError::Overflow)?;
+        let leaf = WeightedHash::from_leaf_rbits(&hash, b.difficulty);
+        let (peaks, root, weight) =
+            mmr_math::compute_peaks_after_append(&self.peaks, self.leaf_count, leaf, self.bag_anchor);
+        if root != b.current_mmr_root {
+            return Err(ThinSyncError::BadResponse("current_mmr_root does not match the locally computed root".into()));
+        }
+        self.peaks = peaks;
+        self.root = root;
+        self.weight = weight;
+        self.leaf_count = next_count;
+        if self.recent.len() == RECENT_BLOCKS {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(b.clone());
+        Ok(())
+    }
+
+    /// Apply consecutive records from an incremental response, stopping at the first
+    /// failure. Returns how many were applied.
+    pub fn apply_blocks_hex(&mut self, blocks_hex: &str) -> Result<usize, (usize, ThinSyncError)> {
+        let blocks = decode_shard_blocks(blocks_hex).map_err(|e| (0, ThinSyncError::BadResponse(e)))?;
+        for (i, b) in blocks.iter().enumerate() {
+            self.apply_block(b).map_err(|e| (i, e))?;
+        }
+        Ok(blocks.len())
+    }
+
+    /// Build the state from a session response. A session that starts at height 0 is replayed
+    /// from the anchor, block by block. Otherwise the range proof's peaks must bag to its root and
+    /// chain back to the anchor, and every record's PoW-valid leaf must equal the proof's leaf at
+    /// that index. The records must link (`next.prev_mmr_root == this.current_mmr_root`) and the
+    /// last one must end at the proof root: `current_mmr_root` is not part of a block's hash, so
+    /// the links are what pin it. The weight comes from the proven peaks, not from the wire.
+    pub fn from_session(
+        params: ThinShardParams,
+        anchor: ShardAnchor,
+        resp: &ThinShardSessionResponse,
+    ) -> Result<Self, ThinSyncError> {
+        let bad = |m: &str| ThinSyncError::BadResponse(m.to_string());
+        let blocks = decode_shard_blocks(&resp.blocks_hex).map_err(ThinSyncError::BadResponse)?;
+        if blocks.is_empty() {
+            return Err(bad("no blocks"));
+        }
+        let n = blocks.len() as u32;
+        let first = resp.leaf_count.checked_sub(n).ok_or_else(|| bad("more blocks than leaves"))?;
+        for (i, b) in blocks.iter().enumerate() {
+            if b.height != first + i as u32 {
+                return Err(bad("blocks are not consecutive up to the tip"));
+            }
+        }
+        let mut st = Self::new(params, anchor);
+        if first == 0 {
+            for b in &blocks {
+                st.apply_block(b)?;
+            }
+            if hex::encode(<[u8; 32]>::from(st.root)) != resp.root_hex {
+                return Err(bad("response root differs from the replayed root"));
+            }
+            return Ok(st);
+        }
+        let Some(proof) = &resp.range_proof else {
+            return Err(bad("a proof is required when the session does not start at height 0"));
+        };
+        if proof.leaf_count != resp.leaf_count || proof.end != resp.leaf_count {
+            return Err(bad("proof does not end at the response's leaf count"));
+        }
+        if hex::encode(<[u8; 32]>::from(proof.root)) != resp.root_hex {
+            return Err(bad("response root differs from the proof root"));
+        }
+        if !proof.verify_with_anchor(<[u8; 32]>::from(anchor.root)) {
+            return Err(bad("range proof does not verify against the anchor"));
+        }
+        if first > proof.start {
+            return Err(bad("blocks do not cover the proof range"));
+        }
+        for b in blocks.iter().filter(|b| b.height >= proof.start) {
+            let hash = st.check_work(b)?;
+            let idx = (b.height - proof.start) as usize;
+            let leaf = WeightedHash::from_leaf_rbits(&hash, b.difficulty);
+            if proof.leaves.get(idx) != Some(&leaf) {
+                return Err(bad("a block does not match the proof's leaf"));
+            }
+        }
+        for w in blocks.windows(2) {
+            if w[1].prev_mmr_root != w[0].current_mmr_root {
+                return Err(bad("blocks do not link by their MMR roots"));
+            }
+        }
+        if blocks.last().map(|b| b.current_mmr_root) != Some(proof.root) {
+            return Err(bad("the last block does not end at the proof root"));
+        }
+        st.weight = bag_peaks_weighted_u128(&proof.peaks, st.bag_anchor).1;
+        st.peaks = proof.peaks.clone();
+        st.leaf_count = resp.leaf_count;
+        st.root = proof.root;
+        let keep = blocks.len().saturating_sub(RECENT_BLOCKS);
+        st.recent = blocks.into_iter().skip(keep).collect();
+        Ok(st)
+    }
+}
+
+/// Result of tying a payment's inclusion proof to Filament's own verified shard chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    /// The block that paid is the block at that height in the chain Filament verified itself.
+    Bound,
+    /// Not shown (yet): why. Retry on a later round.
+    Unbound(String),
+}
+
+/// Design §6: an invoice may be confirmed only when the block that paid it is in the chain
+/// Filament verified with its own proof-of-work checks and quorum, not merely in a chain some
+/// Keystone proved to itself. The inclusion notification's batch proof gives the leaf of the
+/// paying block at `height`; this checks that leaf against `st`:
+///
+/// * the proof verifies against the shard anchor (it is a proof about this shard's MMR);
+/// * if `height` is one of the records `st` holds, the leaf recomputed from the record equals it;
+/// * otherwise a fresh range proof for `height` from a Keystone must verify against the anchor,
+///   end at exactly `st`'s root and leaf count (a proof for any other root is ignored), and carry
+///   the same leaf. Height 0 has no range proof (the genesis leaf is excluded), so it binds only
+///   while it is a held record.
+///
+/// The Keystone is asked for a proof, never for a verdict: a lying or lagging one just fails to bind.
+pub async fn bind_inclusion(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    notif_proof_bytes: &[u8],
+) -> Binding {
+    match bound_leaf(http, endpoints, st, shard_id, height, notif_proof_bytes).await {
+        Ok(_) => Binding::Bound,
+        Err(why) => Binding::Unbound(why),
+    }
+}
+
+/// The leaf of the block at `height` in the chain `st` verified itself, or why it cannot be shown.
+///
+/// `notif_proof_bytes` is the stored inclusion notification's batch proof. It may be EMPTY: an
+/// invoice claimed from an indexer's answer has no notification (late-payment backfill). Nothing is
+/// then claimed by a third party, and the leaf comes from `st` alone (a held record) or from a fresh
+/// range proof that verifies against the shard anchor and ends at exactly `st`'s root. With a proof,
+/// it must agree with that leaf.
+async fn bound_leaf(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    notif_proof_bytes: &[u8],
+) -> Result<WeightedHash, String> {
+    use network_common::common::proofs::{WeightedMMRBatchProof, WeightedMMRRangeProof};
+    let anchor = <[u8; 32]>::from(st.anchor().root);
+    let claimed: Option<WeightedHash> = if notif_proof_bytes.is_empty() {
+        None
+    } else {
+        let Ok((proof, _)) = bincode::serde::decode_from_slice::<WeightedMMRBatchProof, _>(
+            notif_proof_bytes,
+            bincode::config::standard(),
+        ) else {
+            return Err("the stored inclusion proof does not decode".into());
+        };
+        if !proof.verify_with_anchor(anchor) {
+            return Err("the inclusion proof does not verify against the shard anchor".into());
+        }
+        let Some(pos) = proof.leaf_indices.iter().position(|&i| i == height) else {
+            return Err("the inclusion proof does not cover the paying block".into());
+        };
+        Some(proof.leaf_hashes[pos])
+    };
+    if height >= st.leaf_count() {
+        return Err("the paying block is above our verified tip".into());
+    }
+    if let Some(local) = st.leaf_at(height) {
+        return match claimed {
+            Some(c) if c != local => Err("the paying block is not the block in our verified chain".into()),
+            _ => Ok(local),
+        };
+    }
+    if height == 0 {
+        return Err("the genesis block can only be bound while it is a held record".into());
+    }
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let url = format!("{ep}/shard/{shard_id}/chain/range/{height}/{height}");
+        let range: WeightedMMRRangeProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(r) => r,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        if range.root != st.root() || range.leaf_count != st.leaf_count() {
+            last = format!("{ep}: its proof is for another root than ours");
+            continue;
+        }
+        if range.start != height || range.leaves.len() != 1 || !range.verify_with_anchor(anchor) {
+            last = format!("{ep}: its proof does not verify");
+            continue;
+        }
+        return match claimed {
+            Some(c) if c != range.leaves[0] => Err("the paying block is not the block in our verified chain".into()),
+            _ => Ok(range.leaves[0]),
+        };
+    }
+    Err(last)
+}
+
+/// A shard block record's own block hash, as the node computes it.
+pub(crate) fn record_block_hash(shard_id: u16, b: &FullShardBlockData) -> [u8; 32] {
+    b.to_header(shard_id).hash()
+}
+
+/// Design §6, the part that ties the *payment* to the block: `proof` must show that the output at
+/// `output_idx` of the block at `height` is committed by `tx_merkle_root` (the root in a block
+/// record already bound to Filament's verified chain), and that output must pay `recipient` at
+/// least `amount_atoms` (0 = any amount). Pure; no network.
+pub fn check_payment(
+    tx_merkle_root: &[u8; 32],
+    proof: &TxInclusionProof,
+    height: u32,
+    output_idx: u16,
+    recipient: &[u8; 32],
+    amount_atoms: u64,
+) -> Result<(), String> {
+    if proof.height != height || proof.output_idx != u32::from(output_idx) {
+        return Err("the proof is for another output".into());
+    }
+    if !proof.verify(tx_merkle_root) {
+        return Err("the proof does not verify against the block's tx_merkle_root".into());
+    }
+    let out = proof.output().ok_or_else(|| "the proof carries no such output".to_string())?;
+    if !proof.value_is_committed() {
+        return Err("the output is a shard coinbase reward, whose amount the proof does not commit".into());
+    }
+    if &out.recipient != recipient {
+        return Err("the output does not pay the invoice's recipient".into());
+    }
+    if out.value < amount_atoms {
+        return Err(format!("the output pays {} atoms, the invoice asks {}", out.value, amount_atoms));
+    }
+    Ok(())
+}
+
+/// `tx_merkle_root` of the block record whose hash is `claimed`, the leaf of the verified chain at
+/// `height`: a held record, or one fetched from a Keystone and checked to hash to exactly that leaf.
+async fn record_root_bound_to(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    claimed: WeightedHash,
+) -> Result<[u8; 32], String> {
+    if let Some(b) = st.recent().find(|b| b.height == height) {
+        return Ok(b.tx_merkle_root);
+    }
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
+        let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(r) => r,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        let rec = match decode_shard_blocks(&resp.blocks_hex).map(|mut v| v.drain(..).find(|b| b.height == height)) {
+            Ok(Some(r)) => r,
+            _ => {
+                last = format!("{ep}: no block record for height {height}");
+                continue;
+            }
+        };
+        if WeightedHash::from_leaf_rbits(&st.block_hash(&rec), rec.difficulty) != claimed {
+            last = format!("{ep}: its block record is not the block in our verified chain");
+            continue;
+        }
+        return Ok(rec.tx_merkle_root);
+    }
+    Err(last)
+}
+
+/// What a [`TxInclusionProof`] shows about one output, once it verifies against `tx_merkle_root`:
+/// `(recipient, value_atoms, value_is_committed)`. Pure; no network.
+pub fn output_facts(
+    tx_merkle_root: &[u8; 32],
+    proof: &TxInclusionProof,
+    height: u32,
+    output_idx: u16,
+) -> Result<([u8; 32], u64, bool), String> {
+    if proof.height != height || proof.output_idx != u32::from(output_idx) {
+        return Err("the proof is for another output".into());
+    }
+    if !proof.verify(tx_merkle_root) {
+        return Err("the proof does not verify against the block's tx_merkle_root".into());
+    }
+    let out = proof.output().ok_or_else(|| "the proof carries no such output".to_string())?;
+    Ok((out.recipient, out.value, proof.value_is_committed()))
+}
+
+/// One named step of [`verify_output`], for the reply's `checks` list.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct VerifyCheck {
+    pub name: &'static str,
+    pub ok: bool,
+}
+
+/// The answer of [`verify_output`] (B5): a verdict with the reason and the steps behind it. No size,
+/// proof-type or timing field is invented; every field is something that was checked.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProofVerdict {
+    pub valid: bool,
+    /// `verified_chain` (the block is in the shard chain Filament verified itself) or
+    /// `keystone_quorum` (no verified chain for this shard; `required` Keystones agree).
+    pub assurance: &'static str,
+    pub shard_id: u16,
+    pub height: u32,
+    pub output_idx: u16,
+    pub tx_merkle_root: Option<String>,
+    pub recipient: Option<String>,
+    pub value_atoms: Option<u64>,
+    pub value_committed: Option<bool>,
+    pub checks: Vec<VerifyCheck>,
+    pub keystones_asked: usize,
+    pub keystones_agreeing: usize,
+    pub reason: Option<String>,
+}
+
+/// B5: verify that the output `(height, output_idx)` of a shard block is committed by that block, and
+/// optionally that it pays `recipient` at least `amount_atoms`.
+///
+/// * `st = Some(..)` (thin sync follows the shard): the block is first bound to the chain Filament
+///   verified itself (`block_bound`), then every Keystone is asked for the inclusion proof; one valid
+///   proof against that bound root is conclusive, the count of agreeing Keystones is reported.
+/// * `st = None`: each Keystone supplies its own block record and proof; valid when at least `required`
+///   of them prove the same output inside the same block hash (`assurance = keystone_quorum`).
+///
+/// A Keystone is asked for a proof, never a verdict.
+#[allow(clippy::too_many_arguments)]
+pub async fn verify_output(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: Option<&ThinShardState>,
+    shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    want_recipient: Option<[u8; 32]>,
+    want_amount: Option<u64>,
+    required: usize,
+) -> ProofVerdict {
+    let mut v = ProofVerdict {
+        valid: false,
+        assurance: if st.is_some() { "verified_chain" } else { "keystone_quorum" },
+        shard_id,
+        height,
+        output_idx,
+        tx_merkle_root: None,
+        recipient: None,
+        value_atoms: None,
+        value_committed: None,
+        checks: Vec::new(),
+        keystones_asked: endpoints.len(),
+        keystones_agreeing: 0,
+        reason: None,
+    };
+    if endpoints.is_empty() {
+        v.reason = Some("no Keystone endpoint is configured".into());
+        return v;
+    }
+    // The trusted root, when the chain is Filament's own.
+    let mut fixed_root: Option<[u8; 32]> = None;
+    if let Some(st) = st {
+        let bound = match bound_leaf(http, endpoints, st, shard_id, height, &[]).await {
+            Ok(leaf) => record_root_bound_to(http, endpoints, st, shard_id, height, leaf).await,
+            Err(e) => Err(e),
+        };
+        match bound {
+            Ok(root) => {
+                v.checks.push(VerifyCheck { name: "block_bound_to_verified_chain", ok: true });
+                v.tx_merkle_root = Some(hex::encode(root));
+                fixed_root = Some(root);
+            }
+            Err(why) => {
+                v.checks.push(VerifyCheck { name: "block_bound_to_verified_chain", ok: false });
+                v.reason = Some(format!("block record not bound to the verified chain: {why}"));
+                return v;
+            }
+        }
+    }
+
+    // Per Keystone: (block hash it vouches for, facts) when its proof verifies.
+    let mut proven: Vec<([u8; 32], [u8; 32], u64, bool)> = Vec::new();
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let root = match fixed_root {
+            Some(r) => r,
+            None => {
+                let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
+                let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last = format!("{ep}: {e}");
+                        continue;
+                    }
+                };
+                let Some(rec) = decode_shard_blocks(&resp.blocks_hex).ok().and_then(|x| x.into_iter().find(|b| b.height == height)) else {
+                    last = format!("{ep}: no block record for height {height}");
+                    continue;
+                };
+                // remember the hash this Keystone's block has, keyed below through `proven`
+                let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+                let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        last = format!("{ep}: {e}");
+                        continue;
+                    }
+                };
+                match output_facts(&rec.tx_merkle_root, &proof, height, output_idx) {
+                    Ok((r, val, c)) => proven.push((record_block_hash(shard_id, &rec), r, val, c)),
+                    Err(e) => last = format!("{ep}: {e}"),
+                }
+                if v.tx_merkle_root.is_none() {
+                    v.tx_merkle_root = Some(hex::encode(rec.tx_merkle_root));
+                }
+                continue;
+            }
+        };
+        let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+        let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(p) => p,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        match output_facts(&root, &proof, height, output_idx) {
+            Ok((r, val, c)) => proven.push(([0u8; 32], r, val, c)),
+            Err(e) => last = format!("{ep}: {e}"),
+        }
+    }
+
+    // Group by block hash (all zero in the thin case: one bound block); take the largest group.
+    let mut groups: std::collections::HashMap<[u8; 32], Vec<&([u8; 32], [u8; 32], u64, bool)>> = std::collections::HashMap::new();
+    for p in &proven {
+        groups.entry(p.0).or_default().push(p);
+    }
+    let best = groups.values().max_by_key(|g| g.len());
+    let Some(best) = best else {
+        v.checks.push(VerifyCheck { name: "path_reaches_tx_merkle_root", ok: false });
+        v.reason = Some(format!("no Keystone supplied a proof that verifies ({last})"));
+        return v;
+    };
+    v.keystones_agreeing = best.len();
+    let (_, recipient, value, committed) = *best[0];
+    v.checks.push(VerifyCheck { name: "path_reaches_tx_merkle_root", ok: true });
+    v.checks.push(VerifyCheck { name: "output_exists", ok: true });
+    v.recipient = Some(hex::encode(recipient));
+    v.value_atoms = Some(value);
+    v.value_committed = Some(committed);
+    v.checks.push(VerifyCheck { name: "value_committed", ok: committed });
+    let mut ok = true;
+    if let Some(want) = want_recipient {
+        let m = recipient == want;
+        v.checks.push(VerifyCheck { name: "recipient_matches", ok: m });
+        ok &= m;
+    }
+    if let Some(want) = want_amount {
+        // an uncommitted coinbase reward amount cannot be compared with an asked amount
+        let m = committed && value >= want;
+        v.checks.push(VerifyCheck { name: "amount_at_least", ok: m });
+        ok &= m;
+    }
+    let enough = st.is_some() || best.len() >= required.max(1);
+    v.checks.push(VerifyCheck { name: "enough_keystones_agree", ok: enough });
+    v.valid = ok && enough;
+    if !v.valid {
+        v.reason = Some(if !enough {
+            format!("fewer than {} Keystones prove this output in the same block ({} do)", required.max(1), best.len())
+        } else {
+            "the proof verifies, but the output does not match what was asked".into()
+        });
+    }
+    v
+}
+
+/// [`bind_inclusion`] plus the payment itself: the paying block's record (held, or fetched and
+/// checked to hash to the very leaf the verified chain holds) supplies `tx_merkle_root`; a Keystone
+/// is then asked for a [`TxInclusionProof`] of the output, which Filament verifies and compares
+/// with the invoice. A Keystone's notification alone (`height`, `output_idx`, value, address) is
+/// never enough: a lying one could name any real block.
+#[allow(clippy::too_many_arguments)]
+pub async fn bind_payment(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    st: &ThinShardState,
+    shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    recipient: &[u8; 32],
+    amount_atoms: u64,
+    notif_proof_bytes: &[u8],
+) -> Binding {
+    let claimed = match bound_leaf(http, endpoints, st, shard_id, height, notif_proof_bytes).await {
+        Ok(leaf) => leaf,
+        Err(why) => return Binding::Unbound(why),
+    };
+    let root = match record_root_bound_to(http, endpoints, st, shard_id, height, claimed).await {
+        Ok(r) => r,
+        Err(why) => return Binding::Unbound(why),
+    };
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+        let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(p) => p,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        match check_payment(&root, &proof, height, output_idx, recipient, amount_atoms) {
+            Ok(()) => return Binding::Bound,
+            Err(e) => last = format!("{ep}: {e}"),
+        }
+    }
+    Binding::Unbound(last)
+}
+
+/// Lower-assurance payment check for a shard Filament has no verified chain for (a dynamically
+/// activated shard: its activation cannot be derived from verified headers, see the design doc).
+/// Each Keystone is asked for the block record at `height` and a [`TxInclusionProof`] of the
+/// output; a Keystone counts only if its proof verifies against its own record's
+/// `tx_merkle_root` and pays the invoice. The payment is `Bound` when at least `required`
+/// distinct Keystones agree on the same block hash. One Keystone can no longer name a block or
+/// forge an output; `required` colluding ones still can, which is why the invoice is labelled
+/// [`crate::mmr_client::invoice::ASSURANCE_KEYSTONE_QUORUM`].
+#[allow(clippy::too_many_arguments)]
+pub async fn quorum_payment(
+    http: &reqwest::Client,
+    endpoints: &[String],
+    shard_id: u16,
+    height: u32,
+    output_idx: u16,
+    recipient: &[u8; 32],
+    amount_atoms: u64,
+    required: usize,
+) -> Binding {
+    use std::collections::HashMap;
+    let mut agree: HashMap<[u8; 32], usize> = HashMap::new();
+    let mut last = String::from("no Keystone answered");
+    for ep in endpoints {
+        let url = format!("{ep}/shard/{shard_id}/chain/headers/{height}?max=1");
+        let resp: ThinShardBlocksResponse = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(r) => r,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        let Some(rec) = decode_shard_blocks(&resp.blocks_hex).ok().and_then(|v| v.into_iter().find(|b| b.height == height)) else {
+            last = format!("{ep}: no block record for height {height}");
+            continue;
+        };
+        let url = format!("{ep}/shard/{shard_id}/tx-proof?height={height}&output_idx={output_idx}");
+        let proof: TxInclusionProof = match crate::mmr_client::thin_sync::fetch_json(http, &url).await {
+            Ok(p) => p,
+            Err(e) => {
+                last = format!("{ep}: {e}");
+                continue;
+            }
+        };
+        match check_payment(&rec.tx_merkle_root, &proof, height, output_idx, recipient, amount_atoms) {
+            Ok(()) => *agree.entry(record_block_hash(shard_id, &rec)).or_insert(0) += 1,
+            Err(e) => last = format!("{ep}: {e}"),
+        }
+    }
+    if agree.values().any(|&n| n >= required.max(1)) {
+        Binding::Bound
+    } else {
+        Binding::Unbound(format!("fewer than {} Keystones prove this payment ({last})", required.max(1)))
+    }
+}
+
+impl ThinState for ThinShardState {
+    fn leaf_count(&self) -> u32 {
+        self.leaf_count
+    }
+    fn root(&self) -> WeightedHash {
+        self.root
+    }
+    fn weight(&self) -> u128 {
+        self.weight
+    }
+    fn prev_root_at(&self, height: u32) -> Option<WeightedHash> {
+        self.recent.iter().find(|b| b.height == height).map(|b| b.prev_mmr_root)
+    }
+}
