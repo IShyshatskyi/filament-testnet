@@ -17,3 +17,10 @@ pub use fork_proof::{ForkProof, ForkProofError, ForkProofResult};
 
 pub mod thin_sync;
 pub use thin_sync::*;
+
+pub mod chain_summary_v2;
+pub use chain_summary_v2::{
+    adopted_epoch_record, estimated_epoch_window_overhead_bytes, newest_trusted_epoch,
+    verify_chain_summary_v2, ChainSummaryV2Error, EpochBoundaryInSummary, MMRChainSummaryV2,
+    CHAIN_SUMMARY_V2_DEFAULT_EPOCHS, CHAIN_SUMMARY_V2_MAX_EPOCHS, CHAIN_SUMMARY_V2_PATH,
+};
