@@ -11,6 +11,8 @@ full nodes before it believes anything. Full nodes (**Keystone**) serve data; Fi
 This repository is the public **test-network** packaging. It is experimental and unaudited:
 read [DISCLAIMER.md](DISCLAIMER.md) before use. Cargo package and binary: **`filament`**.
 
+**Website:** [Filament-testnet on hcrn.net](https://hcrn.net/Filament_Testnet.html) · [HCRN home](https://hcrn.net/)
+
 ## What it verifies
 
 | Check | How |
@@ -241,6 +243,7 @@ it is not suitable for trustless money.
 
 | Document | Contents |
 |---|---|
+| [hcrn.net/Filament_Testnet.html](https://hcrn.net/Filament_Testnet.html) | Public product page and isolation build guide |
 | [docs/reference.md](docs/reference.md) | Technical reference: data model, proofs, thin sync, genesis and networks, API, security model |
 | [docs/thin-sync.md](docs/thin-sync.md) | How the sync works, the checks, the quorum, invoice assurance levels, status values, measured sizes |
 | [docs/security.md](docs/security.md) | Threat model, what is verified, what is not, safe operation |
